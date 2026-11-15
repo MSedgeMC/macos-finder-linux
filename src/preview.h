@@ -5,6 +5,10 @@
 #include <QCache>
 #include <QImage>
 #include <QList>
+#include <QPair>
+#include <QPointer>
+#include <QSet>
+#include <QStringList>
 #include <QUrl>
 #include <QWidget>
 
@@ -19,9 +23,13 @@ class QVideoWidget;
 class QSlider;
 class QHBoxLayout;
 class QVBoxLayout;
+class QLineEdit;
+class QToolButton;
+class QAction;
+namespace KIO { class PreviewJob; }
 
-// Read-only preview shared by Gallery and the separate Quick Look window.
-// The caller owns application activation and the native window/session policy.
+// Preview shared by Gallery and the separate Quick Look window. The caller
+// owns native actions and serializes tag mutations with other application writes.
 class PreviewPane : public QWidget {
     Q_OBJECT
 public:
@@ -32,13 +40,24 @@ public:
     void advance(int delta);
     void setCompact(bool compact);
     void setGallery(bool gallery);
+    void refreshTags();
+    // Call for every tagChangeRequested completion, including rejected/busy
+    // requests. Errors are displayed without optimistically changing tag chips.
+    void tagChangeFinished(const QUrl &url, const QString &error = QString());
 
 signals:
     void openRequested(const QUrl &url);
     void closeRequested();
+    void getInfoRequested(const QUrl &url);
+    // Export a rotated original as a new copy through native conflict/Undo
+    // handling. Do not export the bounded/scaled preview or overwrite silently.
+    void rotateCopyRequested(const QUrl &url);
+    // operation matches the application's TagsJob: 1 = add, 2 = remove.
+    void tagChangeRequested(const QUrl &url, const QString &tag, int operation);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void changeEvent(QEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -54,6 +73,15 @@ private:
     void showFallback(const QString &message = QString());
     void setMetadata(const QString &text);
     void updateGalleryWidth();
+    void createGallery();
+    void updateGalleryMetadata();
+    void setInformation(const QString &key, const QString &value, bool detail = false);
+    void updateThumbnail(const QImage &image = QImage());
+    void updateTagWidgets();
+    void requestTagChange(const QString &tag, int operation);
+    void updateQuickActions();
+    void requestNativePreview(bool contentPreview);
+    void cancelNativePreview();
 
     QList<QUrl> m_urls;
     int m_index = -1;
@@ -62,6 +90,17 @@ private:
     QString m_mime;
     QString m_mediaPath;
     QString m_metadataText;
+    QString m_kindSizeText;
+    QList<QPair<QString, QString>> m_information;
+    QList<QPair<QString, QString>> m_moreInformation;
+    QStringList m_tags;
+    QString m_tagError;
+    QString m_tagReadError;
+    QSet<QUrl> m_pendingTags;
+    quint64 m_tagGeneration = 0;
+    bool m_readingTags = false;
+    bool m_moreDetails = false;
+    bool m_rotatableImage = false;
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;
@@ -69,6 +108,20 @@ private:
     QWidget *m_previewArea;
     QWidget *m_galleryArea = nullptr;
     QWidget *m_gallerySidebar = nullptr;
+    QWidget *m_tagChips = nullptr;
+    QWidget *m_tagColors = nullptr;
+    QLabel *m_thumbnail = nullptr;
+    QLabel *m_kindSize = nullptr;
+    QLabel *m_tagStatus = nullptr;
+    QLineEdit *m_tagEditor = nullptr;
+    QPushButton *m_showMore = nullptr;
+    QPushButton *m_getInfo = nullptr;
+    QToolButton *m_moreActions = nullptr;
+    QAction *m_copyLocation = nullptr;
+    QAction *m_rotateCopy = nullptr;
+    QList<QToolButton *> m_colorButtons;
+    QPointer<KIO::PreviewJob> m_nativePreview;
+    QImage m_thumbnailImage;
     QImage m_image;
     QCache<QString, QImage> m_images{32768}; // 32 MiB, charged in KiB.
     QLabel *m_name;
