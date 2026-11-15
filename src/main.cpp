@@ -186,7 +186,7 @@ static QIcon symbol(const QString &name) {
   QPainter p(&pix);
   p.setRenderHint(QPainter::Antialiasing);
   p.setPen(
-      QPen(QColor("#e8e8ed"), 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      QPen(FinderAppearance::color(FinderAppearance::HeaderText), 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   if (name == "back" || name == "forward") {
     int a = name == "back" ? 13 : 7, b = name == "back" ? 7 : 13;
     p.drawPolyline(QPolygonF{{qreal(a), 4}, {qreal(b), 10}, {qreal(a), 16}});
@@ -222,7 +222,7 @@ static QIcon symbol(const QString &name) {
     p.drawPolygon(QPolygonF{{3, 4}, {11, 4}, {17, 10}, {10, 17}, {3, 10}});
     p.drawEllipse(QPointF(6, 7), 1, 1);
   } else if (name == "more") {
-    p.setBrush(QColor("#e8e8ed"));
+    p.setBrush(FinderAppearance::color(FinderAppearance::HeaderText));
     for (int x : {4, 10, 16})
       p.drawEllipse(QPointF(x, 10), .8, .8);
   } else if (name == "sidebar") {
@@ -526,6 +526,7 @@ public:
       auto *a = new QAction(
           symbol(names[i]),
           QStringList{"Icons", "List", "Columns", "Gallery"}[i], this);
+      a->setProperty("finderSymbol", names[i]);
       a->setCheckable(true);
       a->setData(i);
       modeActions->addAction(a);
@@ -977,7 +978,7 @@ public:
     makeActions();
     applyToolbarOrder();
     applyStyle();
-    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); header->update(); sidebar->update(); updateMaterial(); });
+    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); refreshToolbarSymbols(); header->update(); sidebar->update(); updateMaterial(); });
     addTab(initial, true);
     qApp->installEventFilter(this);
     installScrolling(this);
@@ -2060,6 +2061,7 @@ private:
   QToolButton *button(const QString &name, const QString &label,
                       QWidget *parent) {
     auto *b = new QToolButton(parent);
+    b->setProperty("finderSymbol", name);
     b->setIcon(symbol(name));
     b->setIconSize({20, 20});
     b->setToolTip(label);
@@ -2068,6 +2070,18 @@ private:
     b->setAutoRaise(true);
     b->setFocusPolicy(Qt::StrongFocus);
     return b;
+  }
+  void refreshToolbarSymbols() {
+    for (auto *action : findChildren<QAction *>()) {
+      const auto name = action->property("finderSymbol").toString();
+      if (!name.isEmpty()) action->setIcon(symbol(name));
+    }
+    for (auto *tool : findChildren<QToolButton *>()) {
+      const auto name = tool->property("finderSymbol").toString();
+      if (!name.isEmpty() && !tool->defaultAction()) tool->setIcon(symbol(name));
+    }
+    const int mode = showingSearch() ? searchPresentation->mode() : int(browser()->mode());
+    modePopup->setIcon(symbol(QStringList{"icons", "list", "columns", "gallery"}[mode]));
   }
   QString title(QUrl u) const {
     auto t = u.fileName();
