@@ -419,6 +419,29 @@ public:
     using View::View;
     DropHandler handler;
 protected:
+    void dropEvent(QDropEvent *event) override {
+        auto index = this->indexAt(event->position().toPoint());
+        if (!index.isValid()) index = this->rootIndex();
+        if (handler) handler(event, index);
+        else View::dropEvent(event);
+    }
+};
+
+class FinderListView : public DropView<QTreeView> {
+public:
+    using DropView::DropView;
+    QRect visualRect(const QModelIndex &index) const override {
+        QRect rect = QTreeView::visualRect(index);
+        if (index.data(SectionStartRole).toBool()) rect.setTop(rect.top() + SectionHeight);
+        return rect;
+    }
+    QModelIndex indexAt(const QPoint &point) const override {
+        const QModelIndex index = QTreeView::indexAt(point);
+        if (index.data(SectionStartRole).toBool() && point.y() < QTreeView::visualRect(index).top() + SectionHeight)
+            return {};
+        return index;
+    }
+protected:
     void mousePressEvent(QMouseEvent *event) override {
         if (onHeading(event->position().toPoint())) { event->accept(); return; }
         QTreeView::mousePressEvent(event);
@@ -447,29 +470,6 @@ protected:
         if (content.bottom() < content.top()) return;
         QTreeView::setSelection(content, flags);
     }
-    void dropEvent(QDropEvent *event) override {
-        auto index = this->indexAt(event->position().toPoint());
-        if (!index.isValid()) index = this->rootIndex();
-        if (handler) handler(event, index);
-        else View::dropEvent(event);
-    }
-};
-
-class FinderListView : public DropView<QTreeView> {
-public:
-    using DropView::DropView;
-    QRect visualRect(const QModelIndex &index) const override {
-        QRect rect = QTreeView::visualRect(index);
-        if (index.data(SectionStartRole).toBool()) rect.setTop(rect.top() + SectionHeight);
-        return rect;
-    }
-    QModelIndex indexAt(const QPoint &point) const override {
-        const QModelIndex index = QTreeView::indexAt(point);
-        if (index.data(SectionStartRole).toBool() && point.y() < QTreeView::visualRect(index).top() + SectionHeight)
-            return {};
-        return index;
-    }
-protected:
     void drawRow(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         QTreeView::drawRow(painter, option, index);
         if (index.data(SectionStartRole).toBool()) {
