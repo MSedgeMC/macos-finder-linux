@@ -29,6 +29,7 @@ app = QGuiApplication([])
 assert all(screen.name().startswith('Virtual-') for screen in app.screens())
 bus = dbus.SessionBus()
 effects = bus.get_object('org.kde.KWin', '/Effects')
+effects.unloadEffect('dimscreen',dbus_interface='org.kde.kwin.Effects')
 effects.loadEffect('blur', dbus_interface='org.kde.kwin.Effects')
 assert 'blur' in effects.Get('org.kde.kwin.Effects', 'loadedEffects',
                               dbus_interface='org.freedesktop.DBus.Properties')
@@ -109,7 +110,11 @@ try:
         pts=[(x,y) for y in range(image.height) for x in range(image.width) if image.getpixel((x,y))[:3]==(255,95,87)]
         assert pts
         return min(x for x,y in pts),min(y for x,y in pts)
-    cr=red_bounds(alpha);sr=red_bounds(first);origin=(sr[0]-cr[0],sr[1]-cr[1])
+    def image_bounds(im):
+        pts=[(x,y) for y in range(im.height) for x in range(im.width) if im.getpixel((x,y))[:3]==(40,198,221)]
+        assert pts,'lossless preview marker absent'
+        return min(x for x,y in pts),min(y for x,y in pts)
+    cr=image_bounds(alpha);sr=image_bounds(first);origin=(sr[0]-cr[0],sr[1]-cr[1])
     crop=(origin[0]+26,origin[1]+26,origin[0]+alpha.width-26,origin[1]+alpha.height-26)
     assert ImageChops.difference(first.crop(crop),second.crop(crop)).getbbox() is None,'backdrop visible through preview'
     for width,height in ((480,320),(620,420)):
