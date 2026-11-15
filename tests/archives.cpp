@@ -18,6 +18,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -137,7 +138,10 @@ int main(int argc, char **argv)
     check(!qEnvironmentVariableIsEmpty("XDG_RUNTIME_DIR") && !qEnvironmentVariableIsEmpty("XDG_CONFIG_HOME")
         && !qEnvironmentVariableIsEmpty("XDG_DATA_HOME") && !qEnvironmentVariableIsEmpty("DBUS_SESSION_BUS_ADDRESS"), "private XDG/session required");
     QApplication app(argc, argv);
-    QTemporaryDir files; check(files.isValid(), "private fixtures");
+    // KIO refuses Trash on /tmp's pseudo-filesystem when it is a different
+    // device from the login home. Keep fixtures in a private directory on the
+    // home filesystem; the worker's Trash still uses PRIVATE XDG_DATA_HOME.
+    QTemporaryDir files(QDir::homePath() + QStringLiteral("/.finder-archives-test-XXXXXX")); check(files.isValid(), "private fixtures");
     auto path = [&](const QString &name) { return files.filePath(name); };
     auto url = [&](const QString &name) { return QUrl::fromLocalFile(path(name)); };
     const QByteArray original("Finder portable ZIP\0binary\n", 27);
@@ -164,6 +168,7 @@ int main(int argc, char **argv)
     archives.compress({url("report final.α.txt")}); observed.finish(archives, ++completed);
     check(observed.error.isEmpty() && observed.outputs == QList<QUrl>{url("report final.α.txt.zip")}, "native single ZIP publication");
     const auto singleZip = bytes(path("report final.α.txt.zip"));
+    check((qFromLittleEndian<quint16>(singleZip.constData() + 6) & 0x0800) != 0, "portable ZIP UTF-8 filename flag");
     KZip single(path("report final.α.txt.zip")); check(single.open(QIODevice::ReadOnly), "read created portable ZIP");
     const auto *record = dynamic_cast<const KArchiveFile *>(single.directory()->entry(QStringLiteral("report final.α.txt")));
     check(record && record->data() == original, "ZIP original bytes and UTF-8 path"); single.close();
@@ -231,6 +236,13 @@ int main(int argc, char **argv)
     auto mismatched = fixture({{"good", "bytes"}}); mismatched[30] = 'e'; reject(mismatched, "local/central path mismatch rejected");
     auto damaged = fixture({{"damaged", "content"}}); damaged[30 + 7] = 'X'; reject(damaged, "CRC validation catches damaged payload");
     reject(fixture({{"short", "small", S_IFREG | 0644, 0, 0x0800, 1}}), "actual decompressed output budget enforced");
+    const QByteArray inflated(1024 * 1024, 'z');
+    const QByteArray zlib = qCompress(inflated);
+    auto deflateBomb = fixture({{"deflate-bomb", zlib.mid(2, zlib.size() - 6), S_IFREG | 0644, 8, 0x0800, 1}});
+    const int central = deflateBomb.indexOf(QByteArray("PK\x01\x02", 4));
+    qToLittleEndian<quint32>(crc(inflated), deflateBomb.data() + 14);
+    qToLittleEndian<quint32>(crc(inflated), deflateBomb.data() + central + 16);
+    reject(deflateBomb, "streamed actual deflate expansion exceeds declared bytes");
     auto truncated = fixture({{"truncated", "data"}}); truncated.chop(8); reject(truncated, "truncated ZIP rejected");
     auto multiDisk = fixture({{"multi", "data"}}); qToLittleEndian<quint16>(1, multiDisk.data() + multiDisk.size() - 18); reject(multiDisk, "multi-volume ZIP rejected");
     QByteArray deep;
@@ -262,6 +274,12 @@ int main(int argc, char **argv)
     rejectLimited(fixture({{"large", QByteArray(33, 'x')}}));
     limitedObserved.reset(); limited.compress({url("Project")}); limitedObserved.finish(limited, ++smallCompleted);
     check(!limitedObserved.error.isEmpty() && limitedObserved.outputs.isEmpty(), "compression entry/depth caps");
+    FinderArchives::Limits tinyOutput; tinyOutput.archiveBytes = 32;
+    Archives outputLimited(nullptr, tinyOutput); Observer outputObserved(outputLimited);
+    outputLimited.compress({url("report final.α.txt")}); outputObserved.finish(outputLimited, 1);
+    check(!outputObserved.error.isEmpty() && outputObserved.outputs.isEmpty(), "compressed output write bound");
+    outputObserved.reset(); outputLimited.extract(url("report final.α.txt.zip")); outputObserved.finish(outputLimited, 2);
+    check(!outputObserved.error.isEmpty() && outputObserved.outputs.isEmpty(), "compressed input snapshot bound");
 
     check(::symlink(QFile::encodeName(path("Project")).constData(), QFile::encodeName(path("linked-folder")).constData()) == 0, "symlink fixture");
     observed.reset(); archives.compress({url("linked-folder")}); observed.finish(archives, ++completed);
@@ -306,7 +324,39 @@ int main(int argc, char **argv)
     int ticks = 0; QTimer responsiveness; responsiveness.setInterval(1); QObject::connect(&responsiveness, &QTimer::timeout, &app, [&] { ++ticks; }); responsiveness.start();
     observed.reset(); archives.compress({url("large.dat")}); observed.finish(archives, ++completed); responsiveness.stop();
     check(observed.error.isEmpty() && ticks > 10, "compression leaves GUI event loop responsive");
-    write(path("large-root.zip"), fixture({{"large-root/one.dat", QByteArray(4 * 1024 * 1024, 'x')}, {"large-root/two.dat", QByteArray(4 * 1024 * 1024, 'y')}}));
+    FinderArchives::Limits deadline; deadline.processingMilliseconds = 1;
+    Archives timeLimited(nullptr, deadline); Observer timed(timeLimited);
+    timeLimited.compress({url("large.dat")}); timed.finish(timeLimited, 1);
+    check(!timed.error.isEmpty() && timed.outputs.isEmpty(), "worker processing deadline");
+    const auto liveCancel = QObject::connect(&archives, &Archives::progressChanged, &archives, [&](qint64 count, qint64) {
+        if (count > 0) archives.cancel();
+    });
+    observed.reset(); archives.compress({url("large.dat")}); observed.finish(archives, ++completed); QObject::disconnect(liveCancel);
+    check(observed.cancelled && observed.outputs.isEmpty(), "cancel during streamed work before publication");
+
+    QList<Entry> partialEntries;
+    for (int i = 0; i < 200; ++i) partialEntries.append({"partial-root/file-" + QByteArray::number(i), QByteArray(4096, 'p')});
+    write(path("partial-root.zip"), fixture(partialEntries));
+    QTimer partialCancel; partialCancel.setInterval(1);
+    QObject::connect(&partialCancel, &QTimer::timeout, &archives, [&] {
+        if (!QDir(path("partial-root")).entryList(QDir::Files).isEmpty()) { partialCancel.stop(); archives.cancel(); }
+    });
+    observed.reset(); partialCancel.start(); archives.extract(url("partial-root.zip")); observed.finish(archives, ++completed); partialCancel.stop();
+    check(observed.cancelled && observed.outputs == QList<QUrl>{url("partial-root")} && QFileInfo(path("partial-root")).isDir(), "native publish cancellation reports retained partial root");
+    errorDialogs.start();
+    KIO::FileUndoManager::self()->undo();
+    // Native Put/Trash can emit undoJobFinished twice in KIO 6.24. The output
+    // disappearance and unlocked manager establish the completed operation.
+    const bool undone = waitFor([&] { return undo >= 5 && !QFile::exists(path("partial-root")); });
+    check(undone && !QFile::exists(path("partial-root")), "native partial output remains one Undo");
+    errorDialogs.stop();
+    QDir privateTrash(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/Trash"));
+    // Remove only this uniquely named fixture from the private test Trash.
+    const auto trashed = QDir(privateTrash.filePath("files")).entryList({QStringLiteral("partial-root*")}, QDir::AllEntries | QDir::NoDotAndDotDot);
+    for (const auto &item : trashed) {
+        QDir(privateTrash.filePath("files/" + item)).removeRecursively();
+        QFile::remove(privateTrash.filePath("info/" + item + ".trashinfo"));
+    }
 
     for (int i = 0; i < 6; ++i) {
         auto *closing = new Archives;

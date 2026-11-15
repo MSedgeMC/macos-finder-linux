@@ -67,6 +67,18 @@ signals:
     void progress(qint64 completed, qint64 total);
 };
 
+// KIO's CopyJob recorder discards every failed/killed job, even when it emitted
+// copyingDone for some entries. A native Put creation receipt records only the
+// new top-level output we observed being created. Undo moves that whole output
+// to Trash through KIO, retaining partial data instead of deleting user files.
+// No staging URL is ever a move/restore target and no failed copy is recorded
+// twice. This receipt itself performs no filesystem work.
+class ArchiveCreationReceipt : public KIO::Job {
+public:
+    ArchiveCreationReceipt() : KIO::Job() {}
+    void finish() { emitResult(); }
+};
+
 namespace {
 constexpr qsizetype chunkSize = 65536;
 constexpr int pathBytesLimit = 4096;
@@ -87,7 +99,7 @@ struct Work {
     Work(Limits caps, std::shared_ptr<std::atomic_bool> flag,
          std::function<void(qint64, qint64)> callback)
         : limits(caps), cancelled(std::move(flag)), progress(std::move(callback)) { clock.start(); progressClock.start(); }
-    bool fail(const QString &text) { if (error.isEmpty()) error = text; return false; }
+    bool fail(const QString &text) { if (error.isEmpty()) error = text.isEmpty() ? QStringLiteral("The archive backend could not complete the operation.") : text; return false; }
     bool proceed() {
         if (cancelled->load()) return fail(QStringLiteral("Archive operation cancelled."));
         if (clock.elapsed() > limits.processingMilliseconds)
@@ -114,6 +126,8 @@ QThreadPool &pool()
     Q_UNUSED(configured);
     return workers;
 }
+std::atomic_int queuedTasks{0}; // Includes running work. Never queue indefinitely.
+constexpr int queueLimit = 8;
 
 bool localUrl(const QUrl &url)
 {
@@ -211,6 +225,7 @@ struct ZipEntry {
     quint16 method = 0, flags = 0;
     mode_t mode = 0644;
     bool directory = false, zip64 = false;
+    qint64 centralOffset = 0;
     QDateTime modified;
 };
 
@@ -256,6 +271,7 @@ bool inspectZip(QFile &file, QList<ZipEntry> &entries, Work &work)
         if (next > offset + length || !readAt(file, qint64(cursor + 46), nameLength + extraLength, variable, work))
             return work.fail(QStringLiteral("The ZIP directory entry extends outside its directory."));
         ZipEntry entry;
+        entry.centralOffset = qint64(cursor);
         entry.raw = variable.first(nameLength); entry.flags = u16(header, 8); entry.method = u16(header, 10);
         entry.crc = u32(header, 16); entry.compressed = u32(header, 20); entry.size = u32(header, 24); entry.offset = u32(header, 42);
         entry.directory = entry.raw.endsWith('/');
@@ -449,8 +465,8 @@ bool zipSources(const QList<QUrl> &sources, const QString &staged, Work &work)
         struct stat now {};
         if (::fstat(input.value, &now)) return work.systemError(QStringLiteral("Cannot inspect %1").arg(entry.path));
         if (!sameFile(entry.metadata, now)) return work.fail(QStringLiteral("A selected item changed while the ZIP was being prepared."));
-        const auto mtime = QDateTime::fromSecsSinceEpoch(now.st_mtim.tv_sec, QTimeZone::UTC);
-        const auto atime = QDateTime::fromSecsSinceEpoch(now.st_atim.tv_sec, QTimeZone::UTC);
+        const auto mtime = QDateTime::fromSecsSinceEpoch(now.st_mtim.tv_sec, QTimeZone::UTC).toLocalTime();
+        const auto atime = QDateTime::fromSecsSinceEpoch(now.st_atim.tv_sec, QTimeZone::UTC).toLocalTime();
         const mode_t permissions = now.st_mode & (S_IFMT | 0777);
         if (S_ISDIR(now.st_mode)) {
             if (!zip.writeDir(entry.name, {}, {}, permissions, atime, mtime, {})) return work.fail(zip.errorString());
@@ -471,6 +487,18 @@ bool zipSources(const QList<QUrl> &sources, const QString &staged, Work &work)
         if (!zip.finishWriting(read)) return work.fail(zip.errorString());
     }
     if (!zip.close() || !output.file.flush()) return work.fail(output.file.error() == QFileDevice::NoError ? zip.errorString() : output.file.errorString());
+    // KZip 6.24 writes UTF-8 Unix filenames without the ZIP language flag.
+    // Verify its output, then mark both copies of each filename as UTF-8 so
+    // CP437-default Windows/other ZIP readers retain the portable spelling.
+    QList<ZipEntry> writtenEntries;
+    if (!inspectZip(output.file, writtenEntries, work)) return false;
+    for (const auto &entry : writtenEntries) {
+        QByteArray languageFlags(2, '\0');
+        qToLittleEndian<quint16>(entry.flags | 0x0800, languageFlags.data());
+        for (const qint64 position : {qint64(entry.offset + 6), entry.centralOffset + 8})
+            if (!output.file.seek(position) || output.file.write(languageFlags) != 2) return work.fail(output.file.errorString());
+    }
+    if (!output.file.flush()) return work.fail(output.file.errorString());
     // Check directory changes too, so a disappearing/new item is never silently
     // treated as a complete snapshot. Sources are never removed or rewritten.
     for (const auto &entry : entries) {
@@ -684,6 +712,11 @@ void Archives::extract(const QUrl &archive)
 }
 void Archives::start(const QList<QUrl> &sources, const QUrl &directory, bool extraction)
 {
+    if (queuedTasks.fetch_add(1) >= queueLimit) {
+        queuedTasks.fetch_sub(1);
+        emit errorOccurred(tr("The archive worker queue is full. Try again when another archive finishes."));
+        return;
+    }
     m_state->cancelled = std::make_shared<std::atomic_bool>(false);
     const auto flag = m_state->cancelled;
     const auto generation = ++m_state->generation;
@@ -709,6 +742,7 @@ void Archives::start(const QList<QUrl> &sources, const QUrl &directory, bool ext
         Work work(limits, flag, [task](qint64 done, qint64 total) { emit task->progress(done, total); });
         *result = perform(sources, directory, extraction, work);
         if (result->error.isEmpty() && !work.error.isEmpty()) result->error = work.error;
+        queuedTasks.fetch_sub(1);
         emit task->done();
     }));
 }
@@ -737,9 +771,19 @@ void Archives::publish()
     });
     connect(job, &KJob::percentChanged, this, [this](KJob *, unsigned long percent) { emit publicationProgressChanged(int(percent)); });
     connect(job, &KJob::result, job, [temporary = m_state->temporary] { Q_UNUSED(temporary); });
+    // Retain partial-publication Undo even if the window/controller dies.
+    connect(job, &KJob::result, job, [actual, created](KJob *finished) {
+        if (*created && finished->error()) {
+            auto *receipt = new ArchiveCreationReceipt;
+            KIO::FileUndoManager::self()->recordJob(KIO::FileUndoManager::Put, {}, *actual, receipt);
+            receipt->finish();
+        }
+    });
     connect(job, &KJob::result, this, [this, actual, created](KJob *finished) {
         m_state->job = nullptr;
-        if (*created) { m_state->outputs.append(*actual); emit outputCreated(*actual); }
+        if (*created) {
+            m_state->outputs.append(*actual); emit outputCreated(*actual);
+        }
         if (m_state->cancelled->load() || finished->error() == KJob::KilledJobError) { complete(true); return; }
         if (finished->error()) { complete(false, finished->errorText()); return; }
         std::sort(m_state->publishedDirectories.begin(), m_state->publishedDirectories.end(),

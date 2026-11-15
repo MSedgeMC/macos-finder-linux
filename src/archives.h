@@ -34,7 +34,8 @@ struct Limits {
 // KArchive is the public LGPL library; this module contains no copied renderer
 // or archive library code. Stored/deflated, unencrypted, single-volume ZIPs
 // (including ZIP64 sizes/offsets within the budgets) are supported.
-// One task per controller; a process-wide two-thread pool, 64 KiB streaming,
+// One task per controller; a process-wide two-thread pool/eight-task queue,
+// 64 KiB streaming,
 // bounded metadata and deadlines. Limits may only reduce the hard defaults.
 // Sources and default output directories must be local, without symlink
 // components. Publication uses native KIO copy, conflict UI, and one Undo job.
