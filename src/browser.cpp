@@ -50,6 +50,7 @@
 #include <KPropertiesDialog>
 #include <KProtocolManager>
 #include <KJobWidgets>
+#include <KUrlMimeData>
 #include <KIO/CopyJob>
 #include <KIO/DropJob>
 #include <KIO/FileUndoManager>
@@ -67,6 +68,7 @@ namespace {
 using DropHandler = std::function<void(QDropEvent *, const QModelIndex &)>;
 constexpr int TagsRole = Qt::UserRole + 131;
 constexpr int SectionStartRole = Qt::UserRole + 132;
+constexpr int CutRole = Qt::UserRole + 133;
 constexpr int SectionHeight = 30;
 
 QString itemType(const KFileItem &item) {
@@ -93,6 +95,7 @@ public:
     }
     ~FinderProxy() override { if (tagWorker) tagWorker->requestInterruption(); }
     Browser::Group grouping = Browser::GroupNone;
+    QSet<QUrl> cutUrls;
 
     void setGroup(Browser::Group value) {
         grouping = value;
@@ -126,6 +129,7 @@ public:
     }
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
         if (role == TagsRole) return tagCache.value(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
+        if (role == CutRole) return cutUrls.contains(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
         if (role == Qt::DisplayRole && index.column() == KDirModel::Type)
             return itemType(mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>());
         if (role == CategoryDisplayRole || role == CategorySortRole) {
@@ -358,7 +362,10 @@ public:
         if (sectionRows && index.data(SectionStartRole).toBool()) content.rect.setTop(content.rect.top() + SectionHeight);
         const int dotsWidth = tags.isEmpty() ? 0 : qMin(3, int(tags.size())) * 9 + 6;
         content.rect.adjust(0, 0, -dotsWidth, 0);
+        painter->save();
+        if (index.data(CutRole).toBool()) painter->setOpacity(painter->opacity() * 0.5);
         KFileItemDelegate::paint(painter, content, index);
+        painter->restore();
         painter->save(); painter->setRenderHint(QPainter::Antialiasing); painter->setPen(Qt::NoPen);
         for (int n = 0; n < qMin(3, int(tags.size())); ++n) {
             painter->setBrush(FileTags::tagColor(tags.at(n)));
@@ -411,6 +418,8 @@ public:
             painter->drawRoundedRect(iconHighlight, 8, 8);
         }
         const QVariant decoration = index.data(Qt::DecorationRole);
+        painter->save();
+        if (index.data(CutRole).toBool()) painter->setOpacity(painter->opacity() * 0.5);
         // Paint decoded native thumbnails directly, preserving their pixels,
         // aspect ratio and device scale. A MIME icon remains the honest fallback.
         QPixmap preview;
@@ -422,6 +431,7 @@ public:
             const QRectF target(QPointF(iconRect.center()) - QPointF(extent.width()/2, extent.height()/2), extent);
             painter->drawPixmap(target, preview, QRectF(preview.rect()));
         } else decoration.value<QIcon>().paint(painter, iconRect, Qt::AlignCenter, enabled ? QIcon::Normal : QIcon::Disabled);
+        painter->restore();
 
         QFont font(option.font);
         font.setPixelSize(m_options->textSize);
@@ -1055,6 +1065,16 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->count(); });
     connect(d->model->dirLister(), &KDirLister::completed, this, [this] { d->count(); d->applySelection(); emit statusMessage({}); });
     connect(d->model->dirLister(), &KDirLister::started, this, [this](const auto &) { emit statusMessage("Loading…"); });
+    connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
+        d->proxy->cutUrls.clear();
+        const auto *mime = QApplication::clipboard()->mimeData();
+        if (mime && mime->data("application/x-kde-cutselection") == "1") {
+            for (const auto &url : KUrlMimeData::urlsFromMimeData(mime, KUrlMimeData::PreferLocalUrls)) d->proxy->cutUrls.insert(url);
+        }
+        // Cut state is a cheap presentation flag, never a new metadata or
+        // thumbnail request for every row in the directory.
+        for (auto *view : QList<QAbstractItemView *>{d->icons, d->list, d->columns, d->strip}) view->viewport()->update();
+    });
     setStyleSheet("#finderBrowser QAbstractItemView{background:#1e1e1e;color:#ededf0;border:0;}"
                   "#finderBrowser QTreeView{alternate-background-color:#252525;}"
                   "#finderBrowser QAbstractItemView::item:selected{background:#3b3b40;color:white;}"
@@ -1259,11 +1279,12 @@ void Browser::autoSizeListColumns(int column) {
     }
 }
 void Browser::copySelected(bool cut) {
-    const auto urls = selectedUrls(); if (urls.isEmpty()) return;
-    auto *mime = new QMimeData; mime->setUrls(urls);
+    const auto rows = d->selectedNames(); if (rows.isEmpty()) return;
+    auto *mime = d->proxy->mimeData(rows);
+    if (!mime) return;
     mime->setData("application/x-kde-cutselection", cut ? "1" : "0");
     QApplication::clipboard()->setMimeData(mime);
-    emit statusMessage(QString::number(urls.size()) + (cut ? " item(s) ready to move" : " item(s) copied"));
+    emit statusMessage(QString::number(rows.size()) + (cut ? " item(s) ready to move" : " item(s) copied"));
 }
 void Browser::paste(bool move) {
     if (!url().isValid()) return;
