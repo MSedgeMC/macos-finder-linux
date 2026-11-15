@@ -38,6 +38,7 @@
 #include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QContextMenuEvent>
 #include <QColumnView>
 #include <QComboBox>
 #include <QDateEdit>
@@ -47,6 +48,8 @@
 #include <QFileDialog>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
@@ -94,6 +97,7 @@
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QTextEdit>
 #include <QThread>
 #include <QTimer>
@@ -103,6 +107,7 @@
 #include <QWindow>
 #include <QWheelEvent>
 #include <QScrollBar>
+#include <QScreen>
 #include <cmath>
 #include <mutex>
 
@@ -275,6 +280,16 @@ protected:
   }
   void enterEvent(QEnterEvent *event) override { QToolButton::enterEvent(event); update(); }
   void leaveEvent(QEvent *event) override { QToolButton::leaveEvent(event); update(); }
+  void contextMenuEvent(QContextMenuEvent *event) override {
+    if (menu()) { menu()->exec(event->globalPos()); event->accept(); }
+    else QToolButton::contextMenuEvent(event);
+  }
+  void mousePressEvent(QMouseEvent *event) override {
+    if (kind == "maximize" && menu() && event->button() == Qt::LeftButton && !event->modifiers().testFlag(Qt::AltModifier)) {
+      menu()->popup(mapToGlobal(QPoint(0, height()))); event->accept(); return;
+    }
+    QToolButton::mousePressEvent(event);
+  }
 private:
   QString kind;
 };
@@ -416,7 +431,7 @@ public:
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
     resize(1100, 720);
-    setMinimumSize(700, 440);
+    setMinimumSize(560, 300);
     auto *base = new QWidget;
     base->setGraphicsEffect(new ContourEffect(base));
     setCentralWidget(base);
@@ -466,6 +481,18 @@ public:
     hl->addWidget(nav);
     connect(back, &QToolButton::clicked, this, [this] { history(-1); });
     connect(forward, &QToolButton::clicked, this, [this] { history(1); });
+    for (auto *navButton : {back, forward}) {
+      navButton->setContextMenuPolicy(Qt::CustomContextMenu);
+      connect(navButton, &QWidget::customContextMenuRequested, this, [this, navButton](const QPoint &point) {
+        QMenu menu(this); const auto state = states.value(browser());
+        const int direction = navButton == back ? -1 : 1;
+        for (int i = state.historyIndex + direction; i >= 0 && i < state.history.size(); i += direction) {
+          auto *action = menu.addAction(title(state.history[i]), this, [this, i] { history(i - states[browser()].historyIndex); });
+          action->setToolTip(state.history[i].toDisplayString(QUrl::RemovePassword));
+        }
+        if (!menu.isEmpty()) menu.exec(navButton->mapToGlobal(point));
+      });
+    }
     folderTitle = new QLabel;
     folderTitle->setObjectName("finderFolderTitle");
     folderTitle->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1829,6 +1856,40 @@ private:
     s.navigatingHistory = false;
     refresh();
   }
+  void tileWindow(qreal x, qreal y, qreal w, qreal h) {
+    if (QGuiApplication::platformName() != "wayland") {
+      const auto area = windowHandle()->screen()->availableGeometry();
+      showNormal(); setGeometry(QRect(area.x() + qRound(area.width() * x), area.y() + qRound(area.height() * y),
+                                     qRound(area.width() * w), qRound(area.height() * h))); return;
+    }
+    auto temporary = std::make_shared<QTemporaryDir>();
+    if (!temporary->isValid()) { status->setText("Could not prepare the window layout."); return; }
+    const auto path = temporary->filePath("layout.js"); QFile file(path);
+    // Select this process's active Finder window; refuse an ambiguous fallback.
+    const auto caption = QString::fromUtf8(QJsonDocument(QJsonArray{windowTitle()}).toJson(QJsonDocument::Compact));
+    const auto script = QString("(function(){var c=workspace.activeWindow;var title=%1[0];"
+      "if(!c||c.pid!==%2||c.caption!==title){var a=workspace.windowList().filter(function(v){return v.pid===%2&&v.caption===title;});if(a.length!==1)throw new Error('Finder window is ambiguous');c=a[0];}"
+      "var r=workspace.clientArea(KWin.MaximizeArea,c);c.fullScreen=false;c.setMaximize(false,false);"
+      "c.frameGeometry={x:r.x+r.width*%3,y:r.y+r.height*%4,width:r.width*%5,height:r.height*%6};})();")
+      .arg(caption).arg(QCoreApplication::applicationPid()).arg(x).arg(y).arg(w).arg(h);
+    if (!file.open(QIODevice::WriteOnly) || file.write(script.toUtf8()) < 0) { status->setText("Could not prepare the window layout."); return; } file.close();
+    const auto plugin = "finder-layout-" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    auto message = QDBusMessage::createMethodCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript");
+    message << path << plugin;
+    QPointer<FinderWindow> owner(this);
+    auto *loaded = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(message), qApp);
+    connect(loaded, &QDBusPendingCallWatcher::finished, qApp, [owner, temporary, plugin](QDBusPendingCallWatcher *watcher) {
+      QDBusPendingReply<int> reply = *watcher; watcher->deleteLater();
+      if (reply.isError() || reply.value() < 0) { if (owner) owner->status->setText("The compositor could not arrange this window."); return; }
+      auto run = QDBusMessage::createMethodCall("org.kde.KWin", "/Scripting/Script" + QString::number(reply.value()), "org.kde.kwin.Script", "run");
+      auto *running = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(run), qApp);
+      connect(running, &QDBusPendingCallWatcher::finished, qApp, [owner, temporary, plugin](QDBusPendingCallWatcher *finished) {
+        if (finished->isError() && owner) owner->status->setText("The compositor could not arrange this window.");
+        finished->deleteLater(); auto unload = QDBusMessage::createMethodCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript"); unload << plugin;
+        QDBusConnection::sessionBus().asyncCall(unload);
+      });
+    });
+  }
   void saveView() {
     if (restoring || !browser())
       return;
@@ -2545,12 +2606,22 @@ private:
     addAction(window, "minimizeAll", "Minimize All", {"Meta+Alt+M"}, [this] { emit minimizeAllRequested(); });
     addAction(window, "minimize", "Minimize", {"Meta+M"}, [this] { showMinimized(); });
     addAction(window, "zoom", "Zoom", {}, [this] { isMaximized() ? showNormal() : showMaximized(); });
+    auto *moveResize = window->addMenu("Move & Resize");
+    moveResize->addAction(namedActions["zoom"])->setText("Fill / Restore");
+    const QList<QPair<QString, QRectF>> layouts{{"Left Half", {0,0,.5,1}}, {"Right Half", {.5,0,.5,1}},
+      {"Top Half", {0,0,1,.5}}, {"Bottom Half", {0,.5,1,.5}}, {"Top Left", {0,0,.5,.5}},
+      {"Top Right", {.5,0,.5,.5}}, {"Bottom Left", {0,.5,.5,.5}}, {"Bottom Right", {.5,.5,.5,.5}}};
+    for (const auto &[name, rect] : layouts) moveResize->addAction(name, this, [this, rect] { tileWindow(rect.x(), rect.y(), rect.width(), rect.height()); });
     auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
       if (isFullScreen()) { if (wasMaximizedBeforeFullscreen) showMaximized(); else showNormal(); }
       else { wasMaximizedBeforeFullscreen = isMaximized(); showFullScreen(); }
       updateMaterial();
     });
     fullscreen->setCheckable(true);
+    moveResize->addAction(fullscreen);
+    if (auto *zoomControl = findChild<WindowControl *>("window-maximize")) {
+      zoomControl->setMenu(moveResize); zoomControl->setToolTip("Move & Resize (Option-click to fill)");
+    }
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
     addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
     addAction(window, "detachTab", "Move Tab to New Window", {}, [this] { detachTab(tabs->currentIndex()); });
