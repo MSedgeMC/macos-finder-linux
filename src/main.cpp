@@ -1572,10 +1572,10 @@ private:
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns",
                                           "gallery"}[int(browser()->mode())]));
     auto &state = states[browser()];
-    const auto selected = browser()->selectedUrls();
-    if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(selected);
-    if (browser()->mode() == Browser::Columns) state.column->setUrls(selected);
-    if (browser()->previewShown()) state.preview->setUrls(selected);
+    const auto previewUrls = browser()->selectedUrls();
+    if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(previewUrls);
+    if (browser()->mode() == Browser::Columns) state.column->setUrls(previewUrls);
+    if (browser()->previewShown()) state.preview->setUrls(previewUrls);
     for (auto *action : groupActions->actions()) action->setChecked(action->data().toInt() == int(browser()->group()));
     if (namedActions.contains("compress")) namedActions["compress"]->setEnabled(!showingSearch() && browser()->canCompressSelection());
     {
