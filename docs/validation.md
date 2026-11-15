@@ -120,7 +120,12 @@ The generic-kit comparison and remaining differences are described in
 [design and platform scope](design.md).
 
 The previous installed boundary fix passed 14 captures and nine smoke checks.
-The latest staged update passed all 22 boundary captures. All 14
+The latest staged and installed update passed all 22 boundary captures.
+The installed copy also passed the compositor blur check (detail ratio 0.119)
+with an unchanged opaque file pane. Its hash matched the staged executable,
+Finder remained the folder default and the private test interface was absent
+from the production daemon. Only the executable content changed; the update
+restarted the windowless file-manager daemon and retained a scoped backup. All 14
 offline installer cases passed, including preservation of existing MIME-file
 permissions. Deployment changed only the executable and restarted only the
 windowless file-manager daemon; staged hashes, folder-default and FileManager1
