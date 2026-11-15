@@ -1014,7 +1014,10 @@ public:
           }
           const auto image = reader.read();
           if (image.isNull()) { *error = reader.errorString(); return; }
-          if (!image.transformed(QTransform().rotate(-90)).save(staged, "PNG"))
+          auto rotated = image.transformed(QTransform().rotate(-90));
+          rotated.setDotsPerMeterX(image.dotsPerMeterY());
+          rotated.setDotsPerMeterY(image.dotsPerMeterX());
+          if (!rotated.save(staged, "PNG"))
             *error = "Could not write the rotated image copy.";
         });
         connect(worker, &QThread::finished, this, [this, url, staged, error, temporary] {
