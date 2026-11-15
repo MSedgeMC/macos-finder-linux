@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 #include "places.h"
+#include "tags.h"
 
 #include <KFilePlacesModel>
 #include <KProtocolInfo>
@@ -59,13 +60,13 @@ const QMap<QString, QPainterPath> &placeGlyphs() {
         p.moveTo(2.5, 9); p.lineTo(10, 3); p.lineTo(17.5, 9);
         p.moveTo(4.5, 8); p.lineTo(4.5, 17); p.lineTo(8, 17); p.lineTo(8, 12);
         p.lineTo(12, 12); p.lineTo(12, 17); p.lineTo(15.5, 17); p.lineTo(15.5, 8); all["home"] = p;
-        p = {}; p.addRoundedRect(QRectF(2, 3.5, 16, 11), 1.4, 1.4);
-        p.moveTo(10, 14.5); p.lineTo(10, 17); p.moveTo(6.5, 17); p.lineTo(13.5, 17); all["desktop"] = p;
+        p = {}; p.addRoundedRect(QRectF(2, 3.5, 16, 13), 2, 2);
+        p.moveTo(2, 13); p.lineTo(18, 13); all["desktop"] = p;
         p = {}; p.moveTo(5, 2.5); p.lineTo(11.5, 2.5); p.lineTo(15.5, 6.5); p.lineTo(15.5, 17.5);
         p.lineTo(5, 17.5); p.closeSubpath(); p.moveTo(11.5, 2.5); p.lineTo(11.5, 6.5); p.lineTo(15.5, 6.5);
-        p.moveTo(7.5, 10); p.lineTo(13, 10); p.moveTo(7.5, 13); p.lineTo(13, 13); all["documents"] = p;
-        p = {}; p.moveTo(10, 2.5); p.lineTo(10, 13); p.moveTo(6, 9); p.lineTo(10, 13); p.lineTo(14, 9);
-        p.moveTo(3, 13.5); p.lineTo(3, 17.5); p.lineTo(17, 17.5); p.lineTo(17, 13.5); all["downloads"] = p;
+        all["documents"] = p;
+        p = {}; p.addEllipse(QRectF(2, 2, 16, 16));
+        p.moveTo(10, 5); p.lineTo(10, 14); p.moveTo(6.5, 10.5); p.lineTo(10, 14); p.lineTo(13.5, 10.5); all["downloads"] = p;
         p = {}; p.moveTo(8, 14); p.lineTo(8, 5); p.lineTo(16, 3); p.lineTo(16, 12);
         p.addEllipse(QRectF(3, 13, 5, 4)); p.addEllipse(QRectF(11, 11, 5, 4)); all["music"] = p;
         p = {}; p.addRoundedRect(QRectF(2.5, 3, 15, 14), 1.2, 1.2); p.addEllipse(QRectF(12, 5.5, 2.5, 2.5));
@@ -462,22 +463,35 @@ public:
             item->setData(true, HeadingRole); item->setData("section:" + name, KeyRole);
             item->setFlags(Qt::NoItemFlags); rows->appendRow(item);
         };
+        auto defaultPlace = [&](const QString &key, const QString &label, const QUrl &url, const QString &glyph) -> QStandardItem * {
+            const auto source = find(url);
+            if (!source.isValid() && !q->allPlacesShown()) {
+                for (int row = 0; row < model->rowCount(); ++row) {
+                    const auto candidate = model->index(row, 0);
+                    if (model->url(candidate).matches(url, QUrl::StripTrailingSlash) && model->isHidden(candidate))
+                        return nullptr;
+                }
+            }
+            return append(key, label, url, glyph, source);
+        };
         QUrl recent("recentlyused:/files");
         if (!KProtocolInfo::isKnownProtocol("recentlyused"))
             recent = QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/RecentDocuments");
-        append("recents", "Recents", recent, "recent", find(recent));
+        auto *recentItem = defaultPlace("recents", "Recents", recent, "recent");
+        if (recentItem && recent.isLocalFile())
+            recentItem->setToolTip("Open KDE's recent-document links. The recentlyused KIO worker is unavailable.");
         const QUrl shared(KProtocolInfo::isKnownProtocol("smb") ? "smb:/" : "remote:/");
         auto *sharedItem = append("shared", "Shared", shared, "shared");
         sharedItem->setToolTip(shared.scheme() == "smb" ? "Browse shared folders on the Linux SMB network."
                                                       : "Browse saved Linux network folders. Add a shared folder using Go to Folder.");
         section("Favorites");
         const QUrl applications = QUrl::fromLocalFile("/usr/share/applications");
-        append("applications", "Applications", applications, "applications", find(applications));
+        defaultPlace("applications", "Applications", applications, "applications");
         for (const auto &place : QList<QPair<QStandardPaths::StandardLocation, QString>>{
                  {QStandardPaths::DesktopLocation, "Desktop"}, {QStandardPaths::DocumentsLocation, "Documents"},
                  {QStandardPaths::DownloadLocation, "Downloads"}}) {
             const QUrl url = QUrl::fromLocalFile(QStandardPaths::writableLocation(place.first));
-            append(place.second.toLower(), place.second, url, place.second.toLower(), find(url));
+            defaultPlace(place.second.toLower(), place.second, url, place.second.toLower());
         }
         // Keep real local bookmarks and useful saved queries, in source order.
         // Presentation defaults do not reorder or write KDE's shared bookmarks.
@@ -502,28 +516,24 @@ public:
         }
         if (!hasRootDisk) {
             const QUrl root = QUrl::fromLocalFile("/");
-            append("filesystem", "Linux Filesystem", root, "device", find(root));
+            defaultPlace("filesystem", "Linux Filesystem", root, "device");
         }
         const QUrl network("remote:/");
-        append("network", "Network", network, "network", find(network));
+        defaultPlace("network", "Network", network, "network");
         for (const auto &index : available) {
             if (used.contains(index) || model->groupType(index) != KFilePlacesModel::RemoteType || model->url(index) == shared) continue;
             append("remote:" + model->url(index).toString(), model->text(index), model->url(index), glyphFor(model, index), index);
             used.append(index);
         }
         const QUrl trash("trash:/");
-        append("trash", "Trash", trash, "trash", find(trash));
+        defaultPlace("trash", "Trash", trash, "trash");
         section("Tags");
-        const QList<QPair<QString, QColor>> colors{{"Red", QColor("#ff3b30")}, {"Orange", QColor("#ff9500")},
-            {"Yellow", QColor("#ffcc00")}, {"Green", QColor("#34c759")}, {"Blue", QColor("#007aff")},
-            {"Purple", QColor("#af52de")}, {"Gray", QColor("#8e8e93")}};
-        QStringList colorNames;
-        for (const auto &color : colors) {
-            colorNames.append(color.first);
-            auto *item = append("tag:" + color.first, color.first, {}, {});
-            item->setData(color.first, TagRole); item->setData(color.second, TagColorRole);
+        const QStringList colorNames = FileTags::standardTags();
+        for (const QString &color : colorNames) {
+            auto *item = append("tag:" + color, color, {}, {});
+            item->setData(color, TagRole); item->setData(FileTags::tagColor(color), TagColorRole);
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-            item->setToolTip("Show local files tagged " + color.first + ".");
+            item->setToolTip("Show local files tagged " + color + ".");
         }
         for (const auto &index : available) {
             if (model->groupType(index) != KFilePlacesModel::TagsType || colorNames.contains(model->text(index))) continue;
