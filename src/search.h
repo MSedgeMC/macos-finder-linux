@@ -29,6 +29,10 @@ public:
         int maxContentBytes = 512 * 1024;
         // Scan this descendant first, within the same total search budgets.
         QString preferredPath;
+        bool hasCriteria() const {
+            return !requiredTag.isEmpty() || !kind.isEmpty() || !contentText.trimmed().isEmpty()
+                || minimumSize >= 0 || maximumSize >= 0 || modifiedAfter >= 0 || modifiedBefore >= 0;
+        }
     };
 
     explicit LocalFileSearch(QObject *parent = nullptr);

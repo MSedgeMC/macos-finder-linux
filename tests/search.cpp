@@ -151,6 +151,15 @@ int main(int argc, char **argv) {
         result = scan(search, url, "   ");
         require(result.error.isEmpty() && result.count == 0 && result.urls.isEmpty(), "empty query scanned entire tree");
         cases.append("empty query finishes with no results");
+        LocalFileSearch::Options criteria;
+        criteria.kind = "image";
+        result = scan(search, url, QString(), criteria);
+        require(result.error.isEmpty() && result.urls.contains(QUrl::fromLocalFile(root + "/nested/deeper/needle-photo.png")), "kind-only search returns matching files");
+        criteria = {};
+        criteria.minimumSize = 1;
+        result = scan(search, url, QString(), criteria);
+        require(result.error.isEmpty() && result.count > 0, "size-only search returns matching files");
+        cases.append("metadata-only criteria scan without a filename query");
 
         const QString large = temporary.path() + "/large";
         for (int directory = 0; directory < 100; ++directory)

@@ -165,7 +165,7 @@ private:
             emit complete(request.generation, count, limited, skipped, failure, canceled());
         };
         if (canceled()) { finish(); return; }
-        if (request.query.isEmpty() && request.options.requiredTag.isEmpty()) { finish(); return; }
+        if (request.query.isEmpty() && !request.options.hasCriteria()) { finish(); return; }
         if (!request.root.isLocalFile() || (!request.root.host().isEmpty() && request.root.host() != "localhost")) {
             failure = QStringLiteral("Recursive filename search is available for local folders.");
             finish();
