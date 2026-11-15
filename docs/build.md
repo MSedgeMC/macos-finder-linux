@@ -43,7 +43,7 @@ file manager.
 
 `BUILD_TESTING` is on by default. CTest exercises search, native tags, scrolling,
 preview and editing outputs, ZIP operations, Smart Folders, browser metadata and
-arrangement, search editing, Inspector and appearance. Every executable uses
+arrangement, search editing/results in four modes, Inspector and appearance. Every executable uses
 temporary fixtures, private XDG directories and a private session bus. Widget
 tests use Qt offscreen and never connect to the working display. The
 tag fixture needs a local writable filesystem supporting `user.*` extended

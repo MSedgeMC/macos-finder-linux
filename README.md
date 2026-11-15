@@ -29,7 +29,8 @@ selection or pins its real metadata. Closed windows and explicitly saved session
 can restore their tabs and views. Linux `user.xdg.tags` preserves custom tags.
 Bounded local search supports names, dates, sizes, tags and Unicode text with
 nested Any/All/None criteria. Optional Baloo queries use an existing index and
-report its coverage; the app does not start an indexer.
+report its coverage; the app does not start an indexer. Search results support
+all four presentations with shared selection, sorting and Gallery previews.
 
 ![Gallery view](screenshots/gallery.png)
 

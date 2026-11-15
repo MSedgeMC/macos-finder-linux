@@ -117,7 +117,9 @@ Their platform shaders and rendering APIs are references, not compatible Qt
 assets or evidence of equality with current macOS.
 
 iCloud, AirDrop, macOS sharing services, Finder extensions, the complete Quick
-Actions catalog and every Finder preview format are not implemented. Search results currently use a metadata List. Native remote
+Actions catalog and every Finder preview format are not implemented. Search results share exact URL selection and sorting across Icons, List, flat
+Columns with real Location details, and Gallery with a decoded preview. Search
+Columns does not manufacture a directory hierarchy from unrelated hits. Native remote
 directory support depends on installed KIO workers, and blur depends on KWin.
 No lossless comparison with identical files, geometry, scale, typography and
 backdrop has established pixel parity.
