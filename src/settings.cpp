@@ -267,6 +267,8 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     m_favoriteDown->setObjectName("finderSettingsFavoriteDown");
     m_favoriteUp->setAccessibleName(tr("Move favorite tag slot up"));
     m_favoriteDown->setAccessibleName(tr("Move favorite tag slot down"));
+    m_favoriteUp->setFixedWidth(32);
+    m_favoriteDown->setFixedWidth(32);
     buttonRow(tagPage, {m_assignFavorite, m_clearFavorite, m_favoriteUp, m_favoriteDown});
     auto *favoriteHelp = new QLabel(tr("Drag tags into the seven shortcut slots, or select a tag and a slot. Drag slots to reorder them. Clearing a slot keeps the tag and its file metadata."), this);
     favoriteHelp->setWordWrap(true);
@@ -316,6 +318,9 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     connect(m_tagColor, &QComboBox::currentIndexChanged, this, [this] {
         const auto *item = m_tagList->currentItem();
         if (!item || !m_pendingRequest.isEmpty()) return;
+        // While entering a new name, the color belongs to the prospective tag.
+        // Do not recolor the selected registry entry as a side effect of create.
+        if (m_tagName->text().trimmed() != item->text()) return;
         auto tags = FinderPreferences::tagRegistry();
         for (auto &tag : tags)
             if (tag.id == item->data(Qt::UserRole).toString()) { tag.color = QColor(m_tagColor->currentData().toString()); break; }
