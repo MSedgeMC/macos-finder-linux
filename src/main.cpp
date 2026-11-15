@@ -467,6 +467,8 @@ public:
     modePopup->hide();
     hl->addWidget(modePopup);
     arrange = button("sort", "Sort By", header);
+    arrange->setObjectName("finderArrange");
+    arrange->setFixedWidth(44);
     auto *sortMenu = new QMenu(arrange);
     sortGroup = new QActionGroup(this);
     for (auto entry :
@@ -601,6 +603,8 @@ public:
         searchTimer->start();
     });
     auto *searchButton = button("search", "Search", header);
+    searchButton->setObjectName("finderSearchButton");
+    searchButton->setFixedWidth(36);
     connect(searchButton, &QToolButton::clicked, this,
             [this] { showSearch(); });
     hl->addWidget(searchButton);
@@ -1654,6 +1658,7 @@ private:
         QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
         #navigationCapsule,#modeCapsule,#actionsCapsule{background:rgba(255,255,255,12);border:1px solid rgba(255,255,255,25);border-radius:18px;}
+        #finderArrange,#finderSearchButton{background:rgba(255,255,255,8);border:1px solid rgba(255,255,255,22);border-radius:18px;}
         QToolButton{border:0;border-radius:16px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,20);} QToolButton:checked{background:rgba(255,255,255,35);} QToolButton:disabled{opacity:.4;}
         QToolButton::menu-indicator{image:none;width:0;height:0;}
         #window-close:hover{background:#bb4949;} #finderPlaces{background:transparent;border:0;}
@@ -2065,6 +2070,42 @@ public slots:
       }
     return QString::fromUtf8(
         QJsonDocument(items).toJson(QJsonDocument::Compact));
+  }
+  QString sidebarRows() {
+    QJsonArray rows;
+    if (auto *window = m->active()) {
+      auto *places = window->findChild<FinderPlacesView *>("finderPlaces");
+      if (places && places->presentationView()) {
+        auto *tree = places->presentationView();
+        for (int i = 0; i < tree->model()->rowCount(); ++i) {
+          const auto index = tree->model()->index(i, 0);
+          const auto rect = tree->visualRect(index);
+          rows << QJsonObject{{"text", index.data().toString()}, {"height", rect.height()},
+                              {"selectable", bool(index.flags() & Qt::ItemIsSelectable)}};
+        }
+      }
+    }
+    return QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact));
+  }
+  bool activateSidebar(const QString &label) {
+    auto *window = m->active();
+    if (!window) return false;
+    auto *places = window->findChild<FinderPlacesView *>("finderPlaces");
+    if (!places || !places->presentationView()) return false;
+    auto *tree = places->presentationView();
+    for (int i = 0; i < tree->model()->rowCount(); ++i) {
+      const auto index = tree->model()->index(i, 0);
+      if (index.data().toString() != label) continue;
+      tree->scrollTo(index);
+      const auto pos = tree->visualRect(index).center();
+      const auto global = tree->viewport()->mapToGlobal(pos);
+      QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos), QPointF(global), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+      QApplication::sendEvent(tree->viewport(), &press);
+      QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos), QPointF(global), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+      QApplication::sendEvent(tree->viewport(), &release);
+      return true;
+    }
+    return false;
   }
   bool captureTopLevel(const QString &title, const QString &path) {
     for (auto *w : QApplication::topLevelWidgets())
