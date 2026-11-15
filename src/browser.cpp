@@ -1205,13 +1205,22 @@ void Browser::copySelected(bool cut) {
 }
 void Browser::paste(bool move) {
     if (!url().isValid()) return;
+    const auto destination = url();
     const auto *mime = QApplication::clipboard()->mimeData();
     if (move && mime->hasUrls()) {
-        d->copyJob(KIO::move(mime->urls(), url()), "Moving…");
+        d->copyJob(KIO::move(mime->urls(), destination), "Moving…");
     } else {
-        auto *job = KIO::paste(mime, url());
+        auto *job = KIO::paste(mime, destination);
         d->job(job, "Pasting…");
-        connect(job, &KIO::PasteJob::itemCreated, this, [this](const QUrl &created) { selectUrls({created}); });
+        auto created = std::make_shared<QList<QUrl>>();
+        connect(job, &KIO::PasteJob::itemCreated, this, [created, destination](const QUrl &item) {
+            // Folder copies also emit descendants. Select the new top-level
+            // entries together after the job, rather than the last copied file.
+            if (parentUrl(item) == destination) created->append(item);
+        });
+        connect(job, &KJob::result, this, [this, created, destination] {
+            if (url() == destination && !created->isEmpty()) selectUrls(*created);
+        });
     }
 }
 void Browser::trashSelected() { const auto urls = selectedUrls(); if (!urls.isEmpty()) d->copyJob(KIO::trash(urls), "Moving to Trash…"); }
