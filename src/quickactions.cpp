@@ -817,7 +817,11 @@ void QuickActions::trigger(Action action, const QList<QUrl> &urls)
     case Action::RotateLeft:
     case Action::RotateRight: {
         ImageOptions options;
-        options.format = writableImageFormats().contains(formatFor(urls.first())) ? formatFor(urls.first()) : writableImageFormats().first();
+        const auto formats = writableImageFormats();
+        // A decoded JPEG rotated into JPEG would add a lossy generation.
+        // Save decoded source pixels in a lossless container by default.
+        options.format = formatFor(urls.first()) == "tiff" && formats.contains("tiff") ? QByteArray("tiff")
+            : formats.contains("png") ? QByteArray("png") : formats.first();
         ImageEdits edits; edits.quarterTurns = action == Action::RotateLeft ? -1 : 1;
         chooseImageDestination(urls, options, edits, tr(" rotated")); break;
     }

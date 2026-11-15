@@ -230,6 +230,18 @@ int main(int argc, char **argv)
     observed.reset(); actions.exportImages({url("blue.png")}, {url("after-cancel.png")}, imageOptions); observed.finish(actions, 15);
     check(observed.error.isEmpty() && QImage(url("after-cancel.png").toLocalFile()) == blue, "new generation works after cancellation");
 
+    // A user can cancel after KIO has saved one member of a batch. That member
+    // must remain reported and undoable while the second copy never starts.
+    observed.reset();
+    const auto cancelAfterCopy = QObject::connect(&actions, &QuickActions::outputCreated, &actions,
+        [&](const QUrl &output) { if (output == url("partial-first.png")) actions.cancel(); });
+    actions.exportImages({url("blue.png"), url("source.png")}, {url("partial-first.png"), url("partial-second.png")}, imageOptions);
+    observed.finish(actions, 16); QObject::disconnect(cancelAfterCopy);
+    check(observed.cancelled && observed.outputs == QList<QUrl>{url("partial-first.png")}
+        && QFile::exists(url("partial-first.png").toLocalFile()) && !QFile::exists(url("partial-second.png").toLocalFile()), "saved outputs reported on cancellation after native publication");
+    KIO::FileUndoManager::self()->undo();
+    check(waitFor([&] { return undoFinished == 2; }) && !QFile::exists(url("partial-first.png").toLocalFile()), "partial saved copy remains undoable");
+
     ImageCanvas canvas; canvas.resize(800, 500); canvas.setImage(decoded.scaled(200, 150), decoded.size()); canvas.show();
     canvas.setTool(ImageCanvas::Tool::Rectangle);
     auto map = canvas.imageToWidget(); drag(canvas, map.map(QPointF(150, 120)), map.map(QPointF(350, 240)));
