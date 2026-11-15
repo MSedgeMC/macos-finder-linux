@@ -3429,20 +3429,22 @@ public slots:
     return true;
   }
   bool setControl(const QString &name, int value) {
-    for (auto *w : QApplication::topLevelWidgets())
+    QList<QWidget *> windows; if (auto *window = QApplication::activeWindow()) windows.append(window);
+    if (auto *window = m->active(); window && !windows.contains(window)) windows.append(window);
+    for (auto *w : windows)
       if (w->isVisible()) {
-        if (auto *b = w->findChild<QComboBox *>(name)) {
+        if (auto *b = w->findChild<QComboBox *>(name); b && b->isVisible()) {
           b->setCurrentIndex(value);
           return true;
         }
-        if (auto *b = w->findChild<QTabWidget *>(name)) {
+        if (auto *b = w->findChild<QTabWidget *>(name); b && b->isVisible()) {
           b->setCurrentIndex(value); return true;
         }
-        if (auto *b = w->findChild<QSpinBox *>(name)) {
+        if (auto *b = w->findChild<QSpinBox *>(name); b && b->isVisible()) {
           b->setValue(value);
           return true;
         }
-        if (auto *b = w->findChild<QCheckBox *>(name)) {
+        if (auto *b = w->findChild<QCheckBox *>(name); b && b->isVisible()) {
           b->setChecked(value);
           return true;
         }
@@ -3450,8 +3452,10 @@ public slots:
     return false;
   }
   bool setText(const QString &name, const QString &text) {
-    for (auto *w : QApplication::topLevelWidgets()) if (w->isVisible())
-      if (auto *line = w->findChild<QLineEdit *>(name)) { line->setText(text); return true; }
+    QList<QWidget *> windows; if (auto *window = QApplication::activeWindow()) windows.append(window);
+    if (auto *window = m->active(); window && !windows.contains(window)) windows.append(window);
+    for (auto *w : windows) if (w->isVisible())
+      if (auto *line = w->findChild<QLineEdit *>(name); line && line->isVisible()) { line->setText(text); return true; }
     return false;
   }
   bool dialogButton(const QString &text) {
