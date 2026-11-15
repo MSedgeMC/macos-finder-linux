@@ -11,12 +11,13 @@
 #include <QStringList>
 #include <QUrl>
 #include <QWidget>
+#include <memory>
 
 class QLabel;
+class QShowEvent;
 class QPushButton;
 class QTextEdit;
 class QStackedWidget;
-class QPdfDocument;
 class QMediaPlayer;
 class QAudioOutput;
 class QVideoWidget;
@@ -27,6 +28,8 @@ class QLineEdit;
 class QToolButton;
 class QAction;
 namespace KIO { class PreviewJob; }
+struct PreviewRaster;
+struct PreviewWorkQueue;
 
 // Preview shared by Gallery and the separate Quick Look window. The caller
 // owns native actions and serializes tag mutations with other application writes.
@@ -41,6 +44,12 @@ public:
     void setCompact(bool compact);
     void setGallery(bool gallery);
     void refreshTags();
+    // Force re-read after a host file/metadata notification, even if size and
+    // mtime are unchanged. Running work and stale deliveries are cancelled.
+    void refreshCurrent();
+    // Geometry of the auto-oriented original, never the bounded display raster.
+    // rotateCopyRequested continues to identify the original source file.
+    QSize originalImageSize() const;
     // Call for every tagChangeRequested completion, including rejected/busy
     // requests. Errors are displayed without optimistically changing tag chips.
     void tagChangeFinished(const QUrl &url, const QString &error = QString());
@@ -59,6 +68,7 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
     void hideEvent(QHideEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     bool eventFilter(QObject *object, QEvent *event) override;
 
@@ -82,6 +92,8 @@ private:
     void updateQuickActions();
     void requestNativePreview(bool contentPreview);
     void cancelNativePreview();
+    void requestRaster(bool pdf, int page = 0);
+    void applyRaster(const PreviewRaster &raster, bool pdf);
 
     QList<QUrl> m_urls;
     int m_index = -1;
@@ -96,11 +108,17 @@ private:
     QStringList m_tags;
     QString m_tagError;
     QString m_tagReadError;
+    QHash<QUrl, QString> m_tagErrors;
     QSet<QUrl> m_pendingTags;
     quint64 m_tagGeneration = 0;
     bool m_readingTags = false;
     bool m_moreDetails = false;
     bool m_rotatableImage = false;
+    quint64 m_previewGeneration = 0;
+    int m_pageCount = 0;
+    QSize m_originalImageSize;
+    std::shared_ptr<PreviewWorkQueue> m_renderWork;
+    std::shared_ptr<PreviewWorkQueue> m_tagWork;
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;
@@ -123,7 +141,7 @@ private:
     QPointer<KIO::PreviewJob> m_nativePreview;
     QImage m_thumbnailImage;
     QImage m_image;
-    QCache<QString, QImage> m_images{32768}; // 32 MiB, charged in KiB.
+    QCache<QString, PreviewRaster> m_images{32768}; // 32 MiB, charged in KiB.
     QLabel *m_name;
     QLabel *m_count;
     QLabel *m_metadata;
@@ -144,7 +162,6 @@ private:
     QWidget *m_pageControls;
     QWidget *m_mediaControls;
     QWidget *m_videoPage;
-    QPdfDocument *m_pdf;
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audio = nullptr;
     QVideoWidget *m_video = nullptr;

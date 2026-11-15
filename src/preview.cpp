@@ -6,6 +6,7 @@
 #include <KFileItem>
 #include <KIO/PreviewJob>
 #include <QAction>
+#include <QApplication>
 #include <QAudioOutput>
 #include <QClipboard>
 #include <QColorSpace>
@@ -34,6 +35,8 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QThread>
+#include <QThreadPool>
+#include <QRunnable>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVideoWidget>
@@ -41,12 +44,90 @@
 #include <QtEndian>
 #include <algorithm>
 #include <memory>
+#include <atomic>
+#include <functional>
+
+struct PreviewRaster {
+    QImage image;
+    QSize originalSize;
+    QSizeF resolution;
+    QSizeF pagePoints;
+    int pageCount = 0;
+    bool rotatable = false;
+    QString error;
+};
+
+// Each pane/domain has at most one submitted job and one replaceable pending
+// request. Across all panes, expensive preview/tag reads use only two workers.
+// Decoders/PDFium cannot be interrupted mid-call; checkpoints discard their
+// output and skip later phases. Destruction never waits on the GUI thread.
+struct PreviewWorkQueue {
+    bool running = false; // GUI thread only.
+    std::shared_ptr<std::atomic_bool> cancelled;
+    std::function<void()> pending;
+    void cancel() {
+        if (cancelled) cancelled->store(true);
+        pending = {};
+    }
+};
+
+class PreviewTask : public QObject {
+    Q_OBJECT
+signals:
+    void finished();
+};
 
 namespace {
 constexpr qsizetype textLimit = 512 * 1024;
 constexpr qint64 maxDecodedPixels = 16 * 1024 * 1024;
 const QSize renderLimit(1600, 1200);
 constexpr qint64 nativePreviewLimit = 64 * 1024 * 1024;
+
+QThreadPool &previewPool()
+{
+    static QThreadPool pool;
+    static const bool configured = [&] {
+        pool.setMaxThreadCount(2);
+        pool.setExpiryTimeout(30000);
+        // Join before QApplication teardown, never when a pane is closed.
+        QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [&] { pool.waitForDone(); });
+        return true;
+    }();
+    Q_UNUSED(configured);
+    return pool;
+}
+
+template<typename Work, typename Done>
+void submitPreview(const std::shared_ptr<PreviewWorkQueue> &queue, QObject *context, Work work, Done done)
+{
+    if (queue->cancelled) queue->cancelled->store(true);
+    queue->pending = [queue, context, work = std::move(work), done = std::move(done)]() mutable {
+        queue->running = true;
+        auto cancelled = queue->cancelled = std::make_shared<std::atomic_bool>(false);
+        auto task = std::shared_ptr<PreviewTask>(new PreviewTask, [](PreviewTask *object) { object->deleteLater(); });
+        using Result = decltype(work(cancelled));
+        auto result = std::make_shared<Result>();
+        QObject::connect(task.get(), &PreviewTask::finished, context, [queue, cancelled, task, result, done] {
+            queue->running = false;
+            if (!cancelled->load()) done(*result);
+            // done may itself submit the next request (e.g. fallback).
+            if (!queue->running && queue->pending) {
+                auto next = std::move(queue->pending);
+                queue->pending = {};
+                next();
+            }
+        }, Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
+        previewPool().start(QRunnable::create([task, cancelled, result, work = std::move(work)] {
+            if (!cancelled->load()) *result = work(cancelled);
+            emit task->finished();
+        }));
+    };
+    if (!queue->running) {
+        auto next = std::move(queue->pending);
+        queue->pending = {};
+        next();
+    }
+}
 
 QSizeF tiffResolution(const QByteArray &bytes)
 {
@@ -151,6 +232,75 @@ QString playbackTime(qint64 milliseconds)
     return QStringLiteral("%1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+PreviewRaster readRaster(const QString &path, bool pdf, int page, const QSize &limit,
+                         const std::shared_ptr<std::atomic_bool> &cancelled)
+{
+    PreviewRaster result;
+    if (cancelled->load()) return result;
+    if (pdf) {
+        // The document is created, used, closed and destroyed on this worker.
+        // No QPdfDocument instance crosses thread affinity boundaries.
+        QPdfDocument document;
+        const auto error = document.load(path);
+        if (cancelled->load()) return result;
+        result.pageCount = document.pageCount();
+        if (error != QPdfDocument::Error::None || result.pageCount < 1) {
+            result.error = error == QPdfDocument::Error::IncorrectPassword
+                ? PreviewPane::tr("This PDF is password protected.\nOpen it with its default application.")
+                : PreviewPane::tr("The PDF could not be opened.\nOpen it with its default application.");
+            return result;
+        }
+        page = std::clamp(page, 0, result.pageCount - 1);
+        result.pagePoints = document.pagePointSize(page);
+        QSize size = result.pagePoints.toSize();
+        if (size.isValid()) {
+            size.scale(limit, Qt::KeepAspectRatio);
+            const QImage raster = document.render(page, size);
+            if (cancelled->load()) return result;
+            if (!raster.isNull()) {
+                result.image = QImage(raster.size(), QImage::Format_ARGB32_Premultiplied);
+                result.image.fill(Qt::white);
+                QPainter painter(&result.image);
+                painter.drawImage(0, 0, raster);
+            }
+        }
+        if (result.image.isNull()) result.error = PreviewPane::tr("This PDF page could not be rendered.");
+        return result;
+    }
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QSize original = reader.size();
+    result.originalSize = original;
+    const bool rotated = reader.transformation().testFlag(QImageIOHandler::TransformationRotate90);
+    if (rotated) result.originalSize.transpose();
+    result.resolution = explicitImageResolution(path);
+    if (rotated) result.resolution.transpose();
+    const qint64 pixels = qint64(original.width()) * original.height();
+    if (!original.isValid() || pixels <= 0 ||
+        (pixels > maxDecodedPixels && !reader.supportsOption(QImageIOHandler::ScaledSize))) {
+        result.error = PreviewPane::tr("This image is too large to preview safely.\nOpen it with its default application.");
+        return result;
+    }
+    if (cancelled->load()) return result;
+    if (original.width() > limit.width() || original.height() > limit.height())
+        reader.setScaledSize(original.scaled(limit, Qt::KeepAspectRatio));
+    QImage image = reader.read();
+    if (cancelled->load()) return result;
+    if (image.isNull()) {
+        result.error = PreviewPane::tr("The image could not be decoded: %1\nOpen it with its default application.")
+            .arg(reader.errorString());
+        return result;
+    }
+    const int densityX = image.dotsPerMeterX(), densityY = image.dotsPerMeterY();
+    if (image.width() > limit.width() || image.height() > limit.height())
+        image = image.scaled(limit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    image.setDotsPerMeterX(densityX);
+    image.setDotsPerMeterY(densityY);
+    result.image = image;
+    result.rotatable = !reader.supportsAnimation();
+    return result;
+}
+
 QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 {
     auto *result = new QPushButton(text, parent);
@@ -161,7 +311,8 @@ QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 }
 }
 
-PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent), m_pdf(new QPdfDocument(this))
+PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
+    m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>())
 {
     setObjectName(QStringLiteral("finderPreviewPane"));
     setAutoFillBackground(true);
@@ -293,8 +444,19 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent), m_pdf(new QPdfDocum
 
 PreviewPane::~PreviewPane()
 {
+    m_renderWork->cancel();
+    m_tagWork->cancel();
     cancelNativePreview();
     stopMedia();
+}
+
+QSize PreviewPane::originalImageSize() const { return m_originalImageSize; }
+
+void PreviewPane::refreshCurrent()
+{
+    m_images.clear();
+    m_fingerprint.clear();
+    showCurrent();
 }
 
 void PreviewPane::setUrls(const QList<QUrl> &urls)
@@ -637,6 +799,7 @@ void PreviewPane::refreshTags()
 {
     if (!m_gallery) return;
     const QUrl url = currentUrl();
+    m_tagWork->cancel();
     const quint64 generation = ++m_tagGeneration;
     m_tags.clear();
     m_tagReadError.clear();
@@ -644,19 +807,17 @@ void PreviewPane::refreshTags()
     updateTagWidgets();
     if (!m_readingTags) return;
     struct Result { QStringList tags; QString error; };
-    auto result = std::make_shared<Result>();
-    // Reads run off the UI thread; all writes are owned by the application's
-    // serialized TagsJob. A generation rejects stale results after selection.
-    auto *worker = QThread::create([url, result] { result->tags = FileTags::tags(url, &result->error); });
-    connect(worker, &QThread::finished, this, [this, url, generation, result] {
+    submitPreview(m_tagWork, this, [url](const auto &cancelled) {
+        Result result;
+        if (!cancelled->load()) result.tags = FileTags::tags(url, &result.error);
+        return result;
+    }, [this, url, generation](const Result &result) {
         if (generation != m_tagGeneration || url != currentUrl()) return;
         m_readingTags = false;
-        m_tags = result->tags;
-        m_tagReadError = result->error;
+        m_tags = result.tags;
+        m_tagReadError = result.error;
         updateTagWidgets();
     });
-    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-    worker->start();
 }
 
 void PreviewPane::updateTagWidgets()
@@ -711,6 +872,8 @@ void PreviewPane::requestTagChange(const QString &value, int operation)
         return;
     }
     ++m_tagGeneration;
+    m_tagWork->cancel();
+    m_tagErrors.remove(currentUrl());
     m_pendingTags.insert(currentUrl());
     m_tagError.clear();
     updateTagWidgets();
@@ -720,6 +883,8 @@ void PreviewPane::requestTagChange(const QString &value, int operation)
 void PreviewPane::tagChangeFinished(const QUrl &url, const QString &error)
 {
     m_pendingTags.remove(url);
+    if (error.isEmpty()) m_tagErrors.remove(url);
+    else m_tagErrors.insert(url, error);
     if (url != currentUrl()) return;
     if (error.isEmpty()) {
         m_tagError.clear();
@@ -772,7 +937,9 @@ void PreviewPane::requestNativePreview(bool contentPreview)
             if (image.width() > renderLimit.width() || image.height() > renderLimit.height())
                 image = image.scaled(renderLimit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
             if (contentPreview) {
-                m_images.insert(fingerprint + QStringLiteral("|native"), new QImage(image),
+                auto *raster = new PreviewRaster;
+                raster->image = image;
+                m_images.insert(fingerprint + QStringLiteral("|native"), raster,
                     std::max<qsizetype>(1, image.sizeInBytes() / 1024));
                 showImage(image);
             } else updateThumbnail(image);
@@ -795,15 +962,18 @@ void PreviewPane::showCurrent()
     m_name->setToolTip(url.toDisplayString(QUrl::RemovePassword));
     if (url.isEmpty()) {
         cancelNativePreview();
+        m_renderWork->cancel();
+        ++m_previewGeneration;
         m_fingerprint.clear();
         m_mime.clear();
-        m_tagError.clear();
+        m_tagError = m_tagErrors.value(url);
         m_kindSizeText.clear();
         m_information.clear();
         m_moreInformation.clear();
         m_rotatableImage = false;
         stopMedia();
-        m_pdf->close();
+        m_pageCount = 0;
+        m_originalImageSize = {};
         m_image = QImage();
         m_pageControls->hide();
         m_mediaControls->hide();
@@ -816,11 +986,14 @@ void PreviewPane::showCurrent()
     }
     if (!url.isLocalFile()) {
         cancelNativePreview();
+        m_renderWork->cancel();
+        ++m_previewGeneration;
         stopMedia();
-        m_pdf->close();
+        m_pageCount = 0;
+        m_originalImageSize = {};
         m_fingerprint.clear();
         m_mime.clear();
-        m_tagError.clear();
+        m_tagError = m_tagErrors.value(url);
         m_image = QImage();
         m_kindSizeText = tr("Remote item");
         m_information.clear();
@@ -841,15 +1014,18 @@ void PreviewPane::showCurrent()
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
     if (fingerprint == m_fingerprint) return;
     cancelNativePreview();
+    m_renderWork->cancel();
+    ++m_previewGeneration;
     m_fingerprint = fingerprint;
     m_mime.clear();
-    m_tagError.clear();
+    m_tagError = m_tagErrors.value(url);
     m_information.clear();
     m_moreInformation.clear();
     m_rotatableImage = false;
     if (m_tagEditor) m_tagEditor->clear();
     stopMedia();
-    m_pdf->close();
+    m_pageCount = 0;
+    m_originalImageSize = {};
     m_page = 0;
     m_image = QImage();
     m_picture->clear();
@@ -886,7 +1062,7 @@ void PreviewPane::showCurrent()
         showFallback(tr("Preview is unavailable for this file type."));
         return;
     }
-    const QMimeType mime = QMimeDatabase().mimeTypeForFile(info);
+    const QMimeType mime = QMimeDatabase().mimeTypeForFile(info, QMimeDatabase::MatchExtension);
     m_mime = mime.name();
     const QString kind = mime.comment().isEmpty() ? mime.name() : mime.comment();
     m_kindSizeText = tr("%1 – %2").arg(kind, QLocale().formattedDataSize(info.size()));
@@ -897,70 +1073,12 @@ void PreviewPane::showCurrent()
         .arg(mime.comment(), QLocale().formattedDataSize(info.size()),
              QLocale().toString(info.lastModified(), QLocale::ShortFormat)));
 
-    QImageReader reader(info.absoluteFilePath());
-    reader.setAutoTransform(true);
-    // Some image plugins claim arbitrary text/PDF inputs. Keep document and
-    // text navigation in their proper native preview instead of accepting
-    // those plugins' rasterized first page as an image.
-    if ((m_mime.startsWith(QStringLiteral("image/")) || mime.isDefault()) && reader.canRead()) {
-        const QSize original = reader.size();
-        QSize oriented = original;
-        if (reader.transformation().testFlag(QImageIOHandler::TransformationRotate90)) oriented.transpose();
-        if (oriented.isValid())
-            setInformation(tr("Dimensions"), tr("%1 × %2").arg(oriented.width()).arg(oriented.height()));
-        QSizeF resolution = explicitImageResolution(info.absoluteFilePath());
-        if (reader.transformation().testFlag(QImageIOHandler::TransformationRotate90)) resolution.transpose();
-        if (!resolution.isEmpty())
-            setInformation(tr("Resolution"), tr("%1 × %2 dpi")
-                .arg(QLocale().toString(resolution.width(), 'f', 0), QLocale().toString(resolution.height(), 'f', 0)));
-        if (QImage *cached = m_images.object(fingerprint)) {
-            // Rebuild original geometry above before using the cached raster.
-            m_rotatableImage = !reader.supportsAnimation();
-            updateQuickActions();
-            setInformation(tr("Color Space"), cached->colorSpace().description(), true);
-            setMetadata(m_metadataText + tr(" · %1 × %2").arg(oriented.width()).arg(oriented.height()));
-            showImage(*cached);
-            return;
-        }
-        const qint64 pixels = qint64(original.width()) * original.height();
-        if (!original.isValid() || pixels <= 0 ||
-            (pixels > maxDecodedPixels && !reader.supportsOption(QImageIOHandler::ScaledSize))) {
-            showFallback(tr("This image is too large to preview safely.\nOpen it with its default application."));
-            return;
-        }
-        if (original.width() > renderLimit.width() || original.height() > renderLimit.height())
-            reader.setScaledSize(original.scaled(renderLimit, Qt::KeepAspectRatio));
-        QImage image = reader.read();
-        if (!image.isNull()) {
-            const int densityX = image.dotsPerMeterX(), densityY = image.dotsPerMeterY();
-            if (image.width() > renderLimit.width() || image.height() > renderLimit.height())
-                image = image.scaled(renderLimit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            image.setDotsPerMeterX(densityX);
-            image.setDotsPerMeterY(densityY);
-            m_images.insert(fingerprint, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
-            setInformation(tr("Color Space"), image.colorSpace().description(), true);
-            m_rotatableImage = !reader.supportsAnimation();
-            updateQuickActions();
-            setMetadata(m_metadataText + tr(" · %1 × %2").arg(oriented.width()).arg(oriented.height()));
-            showImage(image);
-            return;
-        }
-        m_rotatableImage = false;
-        updateQuickActions();
-        showFallback(tr("The image could not be decoded.\nOpen it with its default application."));
+    if (m_mime.startsWith(QStringLiteral("image/")) || mime.isDefault()) {
+        requestRaster(false);
         return;
     }
     if (mime.inherits(QStringLiteral("application/pdf"))) {
-        const auto error = m_pdf->load(info.absoluteFilePath());
-        if (error == QPdfDocument::Error::None && m_pdf->pageCount() > 0) {
-            setInformation(tr("Pages"), QLocale().toString(m_pdf->pageCount()));
-            m_pageControls->show();
-            renderPage(0);
-        } else {
-            showFallback(error == QPdfDocument::Error::IncorrectPassword
-                ? tr("This PDF is password protected.\nOpen it with its default application.")
-                : tr("The PDF could not be opened.\nOpen it with its default application."));
-        }
+        requestRaster(true);
         return;
     }
     const QStringList textSuffixes = {QStringLiteral("md"), QStringLiteral("json"), QStringLiteral("yaml"),
@@ -1014,7 +1132,7 @@ void PreviewPane::showCurrent()
         return;
     }
     showFallback(tr("%1\n\n%2\nOpen with its default application to view this format.").arg(info.fileName(), mime.comment()));
-    if (const QImage *cached = m_images.object(fingerprint + QStringLiteral("|native"))) showImage(*cached);
+    if (const PreviewRaster *cached = m_images.object(fingerprint + QStringLiteral("|native"))) showImage(cached->image);
     else requestNativePreview(true);
 }
 
@@ -1041,39 +1159,66 @@ void PreviewPane::updateImageSize()
     m_picture->setPixmap(pixmap);
 }
 
-void PreviewPane::renderPage(int page)
+void PreviewPane::requestRaster(bool pdf, int page)
 {
-    if (m_pdf->pageCount() < 1) return;
-    m_page = std::clamp(page, 0, m_pdf->pageCount() - 1);
-    QSize size = m_pdf->pagePointSize(m_page).toSize();
-    if (!size.isValid()) {
-        showFallback(tr("This PDF page could not be rendered."));
+    const QUrl url = currentUrl();
+    const QString fingerprint = m_fingerprint;
+    const quint64 generation = ++m_previewGeneration;
+    const QString key = fingerprint + (pdf ? QStringLiteral("|page:%1").arg(page) : QString());
+    m_page = page;
+    if (const PreviewRaster *cached = m_images.object(key)) {
+        m_renderWork->cancel();
+        applyRaster(*cached, pdf);
         return;
     }
-    const QSizeF points = m_pdf->pagePointSize(m_page);
-    setInformation(tr("Page Size"), tr("%1 × %2 pt")
-        .arg(QLocale().toString(points.width(), 'f', 1), QLocale().toString(points.height(), 'f', 1)), true);
-    size.scale(renderLimit, Qt::KeepAspectRatio);
-    const QString key = m_fingerprint + QStringLiteral("|page:%1").arg(m_page);
-    QImage image;
-    if (const QImage *cached = m_images.object(key)) image = *cached;
-    else {
-        const QImage pageImage = m_pdf->render(m_page, size);
-        if (!pageImage.isNull()) {
-            // QtPdf leaves the page background transparent. Composite it on
-            // paper white so black PDF content remains legible on dark glass.
-            image = QImage(pageImage.size(), QImage::Format_ARGB32_Premultiplied);
-            image.fill(Qt::white);
-            QPainter painter(&image);
-            painter.drawImage(0, 0, pageImage);
-            m_images.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
+    showFallback(tr("Loading preview…"));
+    submitPreview(m_renderWork, this,
+        [path = url.toLocalFile(), pdf, page](const auto &cancelled) {
+            return readRaster(path, pdf, page, renderLimit, cancelled);
+        },
+        [this, url, fingerprint, generation, key, pdf](const PreviewRaster &raster) {
+            if (generation != m_previewGeneration || url != currentUrl() || fingerprint != m_fingerprint) return;
+            if (!raster.image.isNull()) m_images.insert(key, new PreviewRaster(raster),
+                std::max<qsizetype>(1, (raster.image.sizeInBytes() + 1023) / 1024));
+            applyRaster(raster, pdf);
+        });
+}
+
+void PreviewPane::applyRaster(const PreviewRaster &raster, bool pdf)
+{
+    if (pdf) {
+        m_pageCount = raster.pageCount;
+        if (m_pageCount > 0) {
+            m_page = std::clamp(m_page, 0, m_pageCount - 1);
+            setInformation(tr("Pages"), QLocale().toString(m_pageCount));
+            m_pageControls->show();
+            m_pagePrevious->setEnabled(m_page > 0);
+            m_pageNext->setEnabled(m_page + 1 < m_pageCount);
+            m_pageLabel->setText(tr("Page %1 of %2").arg(m_page + 1).arg(m_pageCount));
+            setInformation(tr("Page Size"), tr("%1 × %2 pt")
+                .arg(QLocale().toString(raster.pagePoints.width(), 'f', 1),
+                     QLocale().toString(raster.pagePoints.height(), 'f', 1)), true);
         }
+    } else {
+        m_originalImageSize = raster.originalSize;
+        m_rotatableImage = raster.rotatable;
+        if (raster.originalSize.isValid())
+            setInformation(tr("Dimensions"), tr("%1 × %2").arg(raster.originalSize.width()).arg(raster.originalSize.height()));
+        if (!raster.resolution.isEmpty())
+            setInformation(tr("Resolution"), tr("%1 × %2 dpi")
+                .arg(QLocale().toString(raster.resolution.width(), 'f', 0),
+                     QLocale().toString(raster.resolution.height(), 'f', 0)));
+        setInformation(tr("Color Space"), raster.image.colorSpace().description(), true);
+        updateQuickActions();
     }
-    if (image.isNull()) showFallback(tr("This PDF page could not be rendered."));
-    else showImage(image);
-    m_pagePrevious->setEnabled(m_page > 0);
-    m_pageNext->setEnabled(m_page + 1 < m_pdf->pageCount());
-    m_pageLabel->setText(tr("Page %1 of %2").arg(m_page + 1).arg(m_pdf->pageCount()));
+    if (raster.image.isNull()) showFallback(raster.error);
+    else showImage(raster.image);
+}
+
+void PreviewPane::renderPage(int page)
+{
+    if (m_pageCount < 1) return;
+    requestRaster(true, std::clamp(page, 0, m_pageCount - 1));
 }
 
 void PreviewPane::stopMedia()
@@ -1144,8 +1289,20 @@ void PreviewPane::changeEvent(QEvent *event)
 
 void PreviewPane::hideEvent(QHideEvent *event)
 {
+    cancelNativePreview();
+    m_renderWork->cancel();
+    m_tagWork->cancel();
+    ++m_previewGeneration;
+    ++m_tagGeneration;
+    m_fingerprint.clear();
     if (m_player) m_player->stop();
     QWidget::hideEvent(event);
+}
+
+void PreviewPane::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    showCurrent();
 }
 
 void PreviewPane::keyPressEvent(QKeyEvent *event)
@@ -1167,3 +1324,5 @@ bool PreviewPane::eventFilter(QObject *object, QEvent *event)
     if (object == m_picture && event->type() == QEvent::Resize) updateImageSize();
     return QWidget::eventFilter(object, event);
 }
+
+#include "preview.moc"
