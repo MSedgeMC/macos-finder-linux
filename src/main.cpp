@@ -2701,10 +2701,39 @@ private:
     // The contour is cached until geometry/state changes, never sampled at idle.
     const bool square = isMaximized() || isFullScreen();
     if (materialContourSize != size() || materialContourSquare != square) {
-      materialContour = QRegion(windowContour(QRectF(rect()), square ? 0 : 16).toFillPolygon().toPolygon());
+      materialContour = QRegion(rect());
+      if (!square) {
+        const auto contour = windowContour(QRectF(rect()), 16);
+        const int span = qMin(26, qMin(width(), height()) / 2);
+        materialContour = QRegion(QRect(0, span, width(), height() - 2 * span));
+        for (int row = 0; row < span; ++row) for (int y : {row, height() - row - 1}) {
+          int left = 0, right = 0;
+          // Only include whole logical cells inside the curved alpha path.
+          // Polygon rounding can otherwise cover zero-alpha pixels at 1.5x.
+          while (left < span && !contour.contains(QRectF(left - 2, y - 2, 5, 5).intersected(QRectF(rect())))) ++left;
+          while (right < span && !contour.contains(QRectF(width() - right - 3, y - 2, 5, 5).intersected(QRectF(rect())))) ++right;
+          materialContour += QRegion(QRect(left, y, width() - left - right, 1));
+        }
+      }
       materialContourSize = size(); materialContourSquare = square;
     }
     region &= materialContour;
+    // QT_SCALE_FACTOR is an extra application zoom above the compositor's
+    // output scale. KDE's Wayland API consumes wl_surface coordinates and
+    // doesn't apply that multiplier itself. Native output DPR stays logical.
+    if (QGuiApplication::platformName() == "wayland") {
+      bool valid = false; const qreal appScale = qEnvironmentVariable("QT_SCALE_FACTOR").toDouble(&valid);
+      if (valid && std::isfinite(appScale) && appScale > 0 && appScale != 1) {
+        QRegion scaled;
+        for (const QRect &part : region) {
+          const int left = int(std::ceil(part.x() * appScale)), top = int(std::ceil(part.y() * appScale));
+          const int right = int(std::floor((part.x() + part.width()) * appScale));
+          const int bottom = int(std::floor((part.y() + part.height()) * appScale));
+          scaled += QRegion(QRect(left, top, right - left, bottom - top));
+        }
+        region = scaled;
+      }
+    }
     KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
     KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.04, 1.10, 1.0, region);
   }

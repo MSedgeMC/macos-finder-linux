@@ -83,6 +83,7 @@ def capture(name):
 try:
     wait_for(lambda:bus.name_has_owner('org.local.FinderTest'),'test service')
     api=dbus.Interface(bus.get_object('org.local.FinderTest','/Test'),'org.local.FinderTest')
+    if float(os.environ.get('QT_SCALE_FACTOR','1'))>1: assert api.resizeWindow(780,440)
     assert api.moveWindow(100,20)
     QTest.qWait(300)
     assert api.setMaterialBlur(True)
@@ -102,7 +103,9 @@ try:
     clientRed=red_bounds(alpha); screenRed=red_bounds(blurred)
     origin=(screenRed[0]-clientRed[0],screenRed[1]-clientRed[1])
     assert origin[0]>=0 and origin[1]>=0, origin
-    radius=26 # 16px radius plus continuous-corner transition span
+    state=json.loads(str(api.diagnostics()))
+    scale=alpha.width/state['width']
+    radius=round(26*scale) # circular radius plus continuous transition span
     samples=changedOutside=0; maxOutsideDelta=0
     for sx,sy in ((0,0),(alpha.width-radius,0),(0,alpha.height-radius),
                   (alpha.width-radius,alpha.height-radius)):
@@ -116,16 +119,17 @@ try:
     assert samples>40, samples
     assert changedOutside==0, ('compositor effect outside rounded alpha',changedOutside,samples,maxOutsideDelta)
     # Header/sidebar must join without a separately painted shadow line.
-    assert alpha.getpixel((80,50)) == alpha.getpixel((80,51)) == alpha.getpixel((80,52)), 'painted header shadow'
+    assert alpha.getpixel((round(80*scale),round(50*scale))) == alpha.getpixel((round(80*scale),round(51*scale))) == alpha.getpixel((round(80*scale),round(52*scale))), 'painted header shadow'
     blurred.crop((origin[0]-8,origin[1]-8,origin[0]+80,origin[1]+80)).save(out/'corner-composited.png')
-    inside=(128,590,330,650)
+    def box(x1,y1,x2,y2):return (origin[0]+round(x1*scale),origin[1]+round(y1*scale),origin[0]+round(x2*scale),origin[1]+round(y2*scale))
+    inside=box(28,state['height']-130,230,state['height']-70)
     def detail(image):
         crop=image.crop(inside)
-        return sum(ImageStat.Stat(ImageChops.difference(crop,ImageChops.offset(crop,4,0))).mean)/3
+        return sum(ImageStat.Stat(ImageChops.difference(crop,ImageChops.offset(crop,round(4*scale),0))).mean)/3
     blurred_detail,sharp_detail=detail(blurred),detail(sharp)
     assert sharp_detail>15,(blurred_detail,sharp_detail)
     assert blurred_detail<sharp_detail*.45,('backdrop not blurred',blurred_detail,sharp_detail)
-    opaque=(390,580,640,650)
+    opaque=box(310,state['height']-140,560,state['height']-70)
     assert ImageChops.difference(blurred.crop(opaque),sharp.crop(opaque)).getbbox() is None
     assert api.setMaterialBlur(True)
     pattern.setColor(QColor('#2183dd'))
