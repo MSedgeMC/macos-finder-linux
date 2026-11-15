@@ -7,6 +7,16 @@
 #include "preview.h"
 #include "tags.h"
 #include <QAction>
+#include <QAbstractScrollArea>
+#include <QScrollBar>
+#include <QClipboard>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <KIO/FileUndoManager>
+#include <KIO/RenameDialog>
+#include <KJob>
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QDir>
@@ -47,6 +57,23 @@ void check(bool value, const char *message)
 {
     if (!value) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
 }
+QByteArray fileBytes(const QString &path)
+{
+    QFile file(path); check(file.open(QIODevice::ReadOnly), "read private media fixture"); return file.readAll();
+}
+bool runBackend(const QString &program, const QStringList &arguments, QByteArray *output = nullptr)
+{
+    QProcess process; process.start(program, arguments);
+    if (!process.waitForStarted(5000) || !process.waitForFinished(10000)) { process.kill(); process.waitForFinished(5000); return false; }
+    if (output) *output = process.readAllStandardOutput();
+    return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+}
+KIO::RenameDialog *trimConflict()
+{
+    for (auto *widget : QApplication::topLevelWidgets())
+        if (auto *dialog = qobject_cast<KIO::RenameDialog *>(widget); dialog && dialog->isVisible()) return dialog;
+    return nullptr;
+}
 }
 
 int main(int argc, char **argv)
@@ -79,10 +106,14 @@ int main(int argc, char **argv)
     check(red.save(redPath) && blue.save(bluePath), "image fixtures");
     {
         QPdfWriter writer(pdfPath);
+        writer.setResolution(72);
         QPainter painter(&writer);
+        QFont font = painter.font(); font.setPointSize(16); painter.setFont(font);
+        painter.drawText(QPointF(60, 80), "Portable PDF needle one");
         painter.fillRect(QRect(100, 100, 300, 300), Qt::black);
         check(writer.newPage(), "second PDF page");
         painter.fillRect(QRect(100, 100, 300, 300), Qt::red);
+        painter.drawText(QPointF(60, 80), "Portable PDF needle two");
     }
     const auto redUrl = QUrl::fromLocalFile(redPath), blueUrl = QUrl::fromLocalFile(bluePath);
     PreviewPane pane;
@@ -111,10 +142,33 @@ int main(int argc, char **argv)
     check(pane.originalImageSize() == red.size(), "cache retains original geometry");
     pane.setUrls({QUrl::fromLocalFile(pdfPath)});
     auto *pages = pane.findChild<QLabel *>("previewPageCount");
-    check(waitFor([&] { return pages->text() == "Page 1 of 2" && content->currentWidget() == image; }), "worker loads PDF");
-    check(image->pixmap().toImage().pixelColor(0,0) == QColor(Qt::white), "PDF paper is white");
+    auto *pdfView = pane.findChild<QAbstractScrollArea *>("previewPdf");
+    check(waitFor([&] { return pages->text() == "Page 1 of 2" && content->currentWidget() == pdfView; }), "worker loads PDF");
+    check(pdfView->verticalScrollBar()->maximum() > 0, "multipage PDF has a real scroll range");
+    const int fitRange = pdfView->verticalScrollBar()->maximum();
+    pane.setZoomFactor(2);
+    check(pdfView->verticalScrollBar()->maximum() > fitRange, "PDF zoom changes document geometry");
+    pane.resetZoom();
+    int searches = 0, matches = -1; bool limited = true;
+    QObject::connect(&pane, &PreviewPane::pdfSearchFinished, [&](const QString &, int count, bool bounded) { ++searches; matches = count; limited = bounded; });
+    pane.searchPdf("needle");
+    check(waitFor([&] { return searches == 1; }) && matches == 2 && !limited, "public QtPdf text search spans both pages");
+    pane.advancePdfSearch(1);
+    check(pane.pdfCurrentPage() == 1, "next PDF match navigates to second page");
+    pane.setPdfPage(0);
+    QPdfDocument selectionFixture;
+    check(selectionFixture.load(pdfPath) == QPdfDocument::Error::None, "selection fixture opens");
+    const auto fixtureSelection = selectionFixture.getAllText(0);
+    const auto textBounds = fixtureSelection.boundingRectangle();
+    selectionFixture.close();
+    pane.selectPdfText(0, textBounds.topLeft(), textBounds.bottomRight());
+    check(waitFor([&] { return pane.selectedPdfText().contains("needle"); }), "PDF text selection supplies real text");
+    QKeyEvent copyPdf(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
+    QApplication::sendEvent(pdfView, &copyPdf);
+    check(QGuiApplication::clipboard()->text().contains("needle"), "PDF selection copies to clipboard");
     pane.findChild<QPushButton *>("previewNextPage")->click();
-    check(waitFor([&] { return pages->text() == "Page 2 of 2" && content->currentWidget() == image; }), "worker renders next PDF page");
+    check(waitFor([&] { return pages->text() == "Page 2 of 2" && content->currentWidget() == pdfView; }), "worker renders next PDF page");
+    pane.searchPdf("needle");
     pane.setUrls({redUrl});
     pane.hide();
     pane.setUrls({blueUrl});
@@ -136,6 +190,10 @@ int main(int argc, char **argv)
     check(waitFor([&] { return pane.originalImageSize() == blue.size(); }), "primary selection renders");
     pane.setZoomFactor(2);
     check(pane.zoomFactor() == 2, "zoom API");
+    pane.setHostWindowControls(true);
+    pane.setCompact(true); pane.setCompact(false);
+    check(pane.findChild<QPushButton *>("previewClose")->isHidden(), "native host close ownership survives embedding changes");
+    pane.setHostWindowControls(false);
     const QImage beforePan = image->grab().toImage();
     const QPointF centre(image->rect().center());
     QMouseEvent press(QEvent::MouseButtonPress, centre, centre, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
@@ -203,7 +261,7 @@ int main(int argc, char **argv)
     pane.printToPrinter(pdfPrinter(files.filePath("printed-image.pdf")));
     check(waitFor([&] { return printed == 1; }) && printError.isEmpty(), "original image prints to private PDF");
     pane.setUrls({QUrl::fromLocalFile(pdfPath)});
-    check(waitFor([&] { return pages->text() == "Page 1 of 2" && content->currentWidget() == image; }), "print PDF source loads");
+    check(waitFor([&] { return pages->text() == "Page 1 of 2" && content->currentWidget() == pdfView; }), "print PDF source loads");
     const auto printedPdf = files.filePath("printed-pages.pdf");
     pane.printToPrinter(pdfPrinter(printedPdf));
     check(waitFor([&] { return printed == 2; }) && printError.isEmpty(), "all PDF pages print asynchronously");
@@ -253,16 +311,90 @@ int main(int argc, char **argv)
     pane.setGallery(false);
     const auto textPath = files.filePath("preview.txt");
     { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n"); }
+    int readiness = 0;
+    QObject::connect(&pane, &PreviewPane::printReadinessChanged, [&](bool ready) { if (ready) ++readiness; });
     pane.setUrls({QUrl::fromLocalFile(textPath)});
+    check(!pane.canPrintCurrent(), "text Print waits for asynchronous readiness");
     auto *text = pane.findChild<QTextEdit *>("previewText");
-    check(content->currentWidget() == text, "text preview remains available");
+    check(waitFor([&] { return content->currentWidget() == text; }), "text preview loads asynchronously");
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    check(readiness == 1 && pane.canPrintCurrent(), "text Print readiness notifies host after first load");
+    pane.printToPrinter(pdfPrinter(files.filePath("printed-text.pdf")));
+    check(printed == 5 && printError.isEmpty(), "first-show text prints after readiness");
+#endif
     text->setFocus();
     QKeyEvent focusedSpace(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
     QApplication::sendEvent(text, &focusedSpace);
     check(pane.isVisible(), "Space in focused text preserves Quick Look");
+    const QString ffmpeg = QStandardPaths::findExecutable("ffmpeg"), ffprobe = QStandardPaths::findExecutable("ffprobe");
+    if (!ffmpeg.isEmpty() && !ffprobe.isEmpty()) {
+        const QString audioPath = files.filePath("audio.wav");
+        check(runBackend(ffmpeg, {"-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "pcm_s16le", audioPath}), "real audio fixture");
+        const auto originalAudio = fileBytes(audioPath);
+        const QUrl audioUrl = QUrl::fromLocalFile(audioPath), audioCopy = QUrl::fromLocalFile(files.filePath("audio-trim.wav"));
+        pane.setUrls({audioUrl});
+        check(pane.canTrimCurrent() && pane.findChild<QAction *>("previewTrimCopy")->isEnabled(), "installed media trim backend exposed");
+        int trimmed = 0, trimProgress = -1; QString trimError; QUrl actual;
+        QObject::connect(&pane, &PreviewPane::trimFinished, [&](const QUrl &source, const QUrl &output, const QString &error) {
+            check(source == pane.currentUrl(), "trim completion retains source identity");
+            ++trimmed; actual = output; trimError = error;
+            if (!error.isEmpty()) std::cerr << "Trim error: " << error.toStdString() << "\n";
+        });
+        QObject::connect(&pane, &PreviewPane::trimProgressChanged, [&](int value) { trimProgress = value; });
+        dispatch.restart(); pane.exportTrimCopy(500, 1750, audioCopy);
+        check(dispatch.elapsed() < 200 && pane.trimBusy(), "trim dispatch is asynchronous");
+        check(waitFor([&] { return trimmed == 1 && !pane.trimBusy(); }) && trimError.isEmpty() && actual == audioCopy, "real audio trim publishes native copy");
+        QByteArray duration;
+        check(runBackend(ffprobe, {"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", audioCopy.toLocalFile()}, &duration)
+            && std::abs(duration.trimmed().toDouble() - 1.25) < .02, "encoded audio has requested trim duration");
+        check(trimProgress == 100 && fileBytes(audioPath) == originalAudio, "trim progress finishes and original bytes survive");
+        check(KIO::FileUndoManager::self()->isUndoAvailable(), "trim copy registers native Undo");
+        int undos = 0;
+        QObject::connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoJobFinished, &app, [&] { ++undos; });
+        KIO::FileUndoManager::self()->uiInterface()->setShowProgressInfo(false);
+        KIO::FileUndoManager::self()->undo();
+        check(waitFor([&] { return undos == 1; }) && !QFile::exists(audioCopy.toLocalFile()) && fileBytes(audioPath) == originalAudio,
+            "native Undo removes trimmed copy after staging cleanup");
+        check(runBackend(ffmpeg, {"-nostdin", "-v", "error", "-i", audioPath, "-c:a", "pcm_s16le", audioCopy.toLocalFile()}), "existing collision fixture");
+        const auto existing = fileBytes(audioCopy.toLocalFile());
+        pane.exportTrimCopy(0, 1000, audioCopy);
+        check(waitFor([] { return trimConflict() != nullptr; }), "trim presents genuine native conflict");
+        check(fileBytes(audioCopy.toLocalFile()) == existing, "trim never silently overwrites collision");
+        trimConflict()->suggestNewNamePressed(); trimConflict()->renamePressed();
+        check(waitFor([&] { return trimmed == 2; }) && trimError.isEmpty() && actual != audioCopy && QFile::exists(actual.toLocalFile()), "trim reports actual renamed native destination");
+        pane.exportTrimCopy(0, 1000, audioCopy);
+        check(waitFor([] { return trimConflict() != nullptr; }), "second native trim conflict");
+        trimConflict()->cancelPressed();
+        const bool conflictCancelled = waitFor([&] { return trimmed == 3; });
+        check(conflictCancelled && !trimError.isEmpty() && actual.isEmpty() && fileBytes(audioCopy.toLocalFile()) == existing,
+            "native conflict cancellation preserves existing destination");
+        pane.exportTrimCopy(0, 1000, audioUrl);
+        check(trimmed == 4 && !trimError.isEmpty() && !pane.trimBusy() && fileBytes(audioPath) == originalAudio, "trim refuses source overwrite");
+        const QUrl cancelled = QUrl::fromLocalFile(files.filePath("cancelled-trim.wav"));
+        pane.exportTrimCopy(0, 3000, cancelled); pane.cancelTrim();
+        check(trimmed == 5 && !pane.trimBusy() && !trimError.isEmpty() && !QFile::exists(cancelled.toLocalFile()), "probe cancellation cleans unpublished copy");
+        pane.exportTrimCopy(0, 3000, cancelled);
+        pane.hide();
+        check(trimmed == 6 && !pane.trimBusy() && !trimError.isEmpty() && !QFile::exists(cancelled.toLocalFile()), "hide cancels trim without publishing");
+        pane.show();
+        const QString videoPath = files.filePath("video.mp4");
+        check(runBackend(ffmpeg, {"-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=64x48:r=10:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", videoPath}), "real video fixture");
+        const auto videoOriginal = fileBytes(videoPath);
+        pane.setUrls({QUrl::fromLocalFile(videoPath)});
+        const QUrl videoCopy = QUrl::fromLocalFile(files.filePath("video-trim.mp4"));
+        pane.exportTrimCopy(500, 1500, videoCopy);
+        check(waitFor([&] { return trimmed == 7; }) && trimError.isEmpty() && actual == videoCopy, "real video trim publishes native copy");
+        check(runBackend(ffprobe, {"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", videoCopy.toLocalFile()}, &duration)
+            && std::abs(duration.trimmed().toDouble() - 1.) < .15 && fileBytes(videoPath) == videoOriginal, "video output duration and source preservation");
+        std::cout << "PASS: real ffmpeg audio/video trim duration, native conflict/renamed result/Undo, progress/cancel and source preservation\n";
+    } else {
+        check(!pane.canTrimCurrent(), "absent backend cannot expose fake trim");
+        std::cout << "SKIP: trim fixtures require installed ffmpeg and ffprobe\n";
+    }
     pane.hide();
     std::cout << "PASS: async preview, stale cancellation, original geometry, PDF pages, hide/destruction\n";
     std::cout << "PASS: reusable lifecycle, primary selection, zoom/pan, contact sheet, slideshow, fullscreen, file freshness\n";
     std::cout << "PASS: host open/share capabilities, deferred tag errors and native tag refresh\n";
+    std::cout << "PASS: PDF multipage scrolling/zoom/search/selection/copy, native host controls and first-show async text Print readiness\n";
     return 0;
 }

@@ -7,6 +7,7 @@
 #include <QList>
 #include <QPair>
 #include <QPointer>
+#include <QPolygonF>
 #include <QSet>
 #include <QStringList>
 #include <QUrl>
@@ -32,10 +33,13 @@ class QTimer;
 class QFileSystemWatcher;
 class QPrinter;
 class QMenu;
+class QDialog;
+class PreviewPdfView;
 namespace KIO { class PreviewJob; }
 struct PreviewRaster;
 struct PreviewWorkQueue;
 struct PreviewPrintState;
+struct PreviewTrimState;
 
 // Preview shared by Gallery and the separate Quick Look window. The caller
 // owns mutations and serializes tag writes. Built-in native launch/print/share
@@ -98,6 +102,25 @@ public:
     // Call for every tagChangeRequested completion, including rejected/busy
     // requests. Errors are displayed without optimistically changing tag chips.
     void tagChangeFinished(const QUrl &url, const QString &error = QString());
+    // A separately decorated native Quick Look host owns close/minimize/zoom.
+    // This only suppresses the embedded close button, never changes window flags.
+    void setHostWindowControls(bool enabled);
+    // Zero-based PDF navigation. Search/selection are asynchronous and bounded;
+    // image-only PDFs require an external OCR provider for searchable text.
+    int pdfPageCount() const;
+    int pdfCurrentPage() const;
+    void setPdfPage(int page);
+    void searchPdf(const QString &text);
+    void advancePdfSearch(int delta);
+    void selectPdfText(int page, const QPointF &start, const QPointF &end);
+    QString selectedPdfText() const;
+    // Installed ffmpeg/ffprobe only. Export a new same-container copy through
+    // native KIO conflict/Undo handling; the original is never replaced.
+    bool canTrimCurrent() const;
+    bool trimBusy() const;
+    void trimCurrent();
+    void exportTrimCopy(qint64 startMs, qint64 endMs, const QUrl &destination);
+    void cancelTrim();
 
 signals:
     void openRequested(const QUrl &url);
@@ -119,6 +142,13 @@ signals:
     void printFinished(const QUrl &url, const QString &error);
     // Host supplies genuine file actions for the current preview selection.
     void quickActionsMenuRequested(QMenu *menu, const QList<QUrl> &urls);
+    void printReadinessChanged(bool ready);
+    void pdfPageChanged(int page, int pageCount);
+    void pdfSearchFinished(const QString &query, int matches, bool limited);
+    void pdfSelectionChanged(const QString &text);
+    void trimProgressChanged(int percent);
+    // destination is the actual native-conflict result; may be empty on error.
+    void trimFinished(const QUrl &source, const QUrl &destination, const QString &error);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -159,6 +189,12 @@ private:
     void updateNativeActions();
     void requestPrintPage();
     void finishPrint(const QString &error);
+    void resetPdf();
+    void requestPdfPages();
+    void requestPdfSearchBatch();
+    void updatePdfPageControls();
+    void finishTrim(const QString &error);
+    void probeTrimSource();
 
     QList<QUrl> m_urls;
     int m_index = -1;
@@ -211,6 +247,31 @@ private:
     bool m_shareProviderAvailable = false;
     std::shared_ptr<PreviewWorkQueue> m_printWork;
     std::shared_ptr<PreviewPrintState> m_printState;
+    bool m_printReady = false;
+    bool m_textReady = false;
+    bool m_hostWindowControls = false;
+    PreviewPdfView *m_pdfView;
+    QLineEdit *m_pdfSearch;
+    QLineEdit *m_pdfPageEntry;
+    QLabel *m_pdfSearchStatus;
+    QPushButton *m_pdfSearchPrevious;
+    QPushButton *m_pdfSearchNext;
+    QTimer *m_pdfRenderTimer;
+    std::shared_ptr<PreviewWorkQueue> m_pdfSearchWork;
+    std::shared_ptr<PreviewWorkQueue> m_pdfSelectionWork;
+    quint64 m_pdfSearchGeneration = 0;
+    quint64 m_pdfSelectionGeneration = 0;
+    QString m_pdfQuery;
+    QString m_pdfSelectedText;
+    struct PdfMatch { int page; QList<QPolygonF> bounds; };
+    QList<PdfMatch> m_pdfMatches;
+    int m_pdfSearchPage = 0;
+    int m_pdfMatch = -1;
+    qsizetype m_pdfSearchCharacters = 0;
+    QAction *m_trimAction;
+    QPushButton *m_trimButton;
+    std::shared_ptr<PreviewTrimState> m_trimState;
+    QPointer<QDialog> m_trimDialog;
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;

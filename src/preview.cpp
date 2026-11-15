@@ -5,6 +5,8 @@
 
 #include <KFileItem>
 #include <KIO/PreviewJob>
+#include <KIO/CopyJob>
+#include <KIO/FileUndoManager>
 #include <KIO/ApplicationLauncherJob>
 #include <KIO/JobUiDelegateFactory>
 #include <KIO/OpenUrlJob>
@@ -13,6 +15,7 @@
 #include <KService>
 #include <KJobUiDelegate>
 #include <QAction>
+#include <QAbstractScrollArea>
 #include <QApplication>
 #include <QAudioOutput>
 #include <QClipboard>
@@ -21,6 +24,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QHideEvent>
 #include <QImageReader>
@@ -38,6 +45,13 @@
 #include <QMimeDatabase>
 #include <QPainter>
 #include <QPdfDocument>
+#include <QProcess>
+#include <QProgressDialog>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QElapsedTimer>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -66,6 +80,7 @@
 #include <atomic>
 #include <functional>
 #include <cmath>
+#include <sys/stat.h>
 
 struct PreviewRaster {
     QImage image;
@@ -73,8 +88,141 @@ struct PreviewRaster {
     QSizeF resolution;
     QSizeF pagePoints;
     int pageCount = 0;
+    QList<QSizeF> pageSizes;
     bool rotatable = false;
     QString error;
+};
+
+// Paint a virtual document, rather than one widget/pixmap per PDF page. Qt's
+// scrollbar retains native pixel/keyboard scrolling; only visible rasters live
+// here. All PDFium access (including text geometry) stays on worker threads.
+class PreviewPdfView : public QAbstractScrollArea {
+public:
+    using QAbstractScrollArea::QAbstractScrollArea;
+    QList<QSizeF> sizes;
+    QList<QRectF> pages;
+    QHash<int, QImage> rasters;
+    QHash<int, QString> errors;
+    QList<QPolygonF> selection, match;
+    int selectionPage = -1, matchPage = -1;
+    qreal zoom = 1;
+    std::function<void()> visibleChanged;
+    std::function<void(int)> pageChanged;
+    std::function<void(qreal)> zoomRequested;
+    std::function<void(int, QPointF, QPointF)> selectionRequested;
+    std::function<void()> copyRequested;
+    void configure(const QList<QSizeF> &value) { sizes = value; rasters.clear(); errors.clear(); relayout(); }
+    void clear() { sizes.clear(); pages.clear(); rasters.clear(); errors.clear(); selection.clear(); match.clear(); relayout(); }
+    void relayout() {
+        pages.clear();
+        qreal widest = 1;
+        for (const auto &size : sizes) widest = std::max(widest, size.width());
+        const qreal scale = std::min<qreal>(2, std::max(40, viewport()->width() - 32) / widest) * zoom;
+        qreal y = 16, width = viewport()->width();
+        for (const auto &size : sizes) width = std::max(width, size.width() * scale + 32);
+        for (const auto &size : sizes) {
+            const QSizeF fitted = size * scale;
+            pages.append(QRectF((width - fitted.width()) / 2, y, fitted.width(), fitted.height()));
+            y += fitted.height() + 16;
+        }
+        horizontalScrollBar()->setRange(0, std::max(0, qRound(width) - viewport()->width()));
+        verticalScrollBar()->setRange(0, std::max(0, qRound(y) - viewport()->height()));
+        verticalScrollBar()->setPageStep(viewport()->height());
+        horizontalScrollBar()->setPageStep(viewport()->width());
+        viewport()->update();
+        if (visibleChanged) visibleChanged();
+    }
+    QList<int> visiblePages() const {
+        QList<int> result;
+        const QRectF visible(horizontalScrollBar()->value(), verticalScrollBar()->value() - 160,
+                             viewport()->width(), viewport()->height() + 320);
+        for (int i = 0; i < pages.size() && result.size() < 8; ++i)
+            if (pages[i].intersects(visible)) result.append(i);
+        return result;
+    }
+    int currentPage() const {
+        const qreal y = verticalScrollBar()->value() + std::min(80, viewport()->height() / 3);
+        for (int i = 0; i < pages.size(); ++i) if (pages[i].bottom() >= y) return i;
+        return std::max(0, int(pages.size()) - 1);
+    }
+    void jump(int page) {
+        if (page < 0 || page >= pages.size()) return;
+        verticalScrollBar()->setValue(qRound(pages[page].top()) - 16);
+        if (pageChanged) pageChanged(page);
+        if (visibleChanged) visibleChanged();
+    }
+    void revealMatch(int page, const QList<QPolygonF> &bounds) {
+        matchPage = page; match = bounds; jump(page);
+        if (page >= 0 && page < pages.size() && !bounds.isEmpty()) {
+            const auto rect = bounds.first().boundingRect();
+            verticalScrollBar()->setValue(qRound(pages[page].top() + rect.top() * pages[page].height() / sizes[page].height()) - 60);
+        }
+        viewport()->update();
+    }
+protected:
+    void resizeEvent(QResizeEvent *event) override { QAbstractScrollArea::resizeEvent(event); relayout(); }
+    void scrollContentsBy(int, int) override {
+        viewport()->update();
+        if (visibleChanged) visibleChanged();
+        if (pageChanged) pageChanged(currentPage());
+    }
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(viewport());
+        painter.fillRect(viewport()->rect(), palette().brush(QPalette::Base));
+        painter.translate(-horizontalScrollBar()->value(), -verticalScrollBar()->value());
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        for (int page : visiblePages()) {
+            painter.fillRect(pages[page].adjusted(2, 3, 2, 3), QColor(0, 0, 0, 45));
+            painter.fillRect(pages[page], Qt::white);
+            if (rasters.contains(page)) painter.drawImage(pages[page], rasters[page]);
+            else {
+                painter.setPen(Qt::black);
+                painter.drawText(pages[page].adjusted(8, 8, -8, -8), Qt::AlignCenter | Qt::TextWordWrap,
+                                 errors.value(page, PreviewPane::tr("Loading page %1…").arg(page + 1)));
+            }
+            auto highlight = [&](const QList<QPolygonF> &bounds, const QColor &color) {
+                painter.save(); painter.translate(pages[page].topLeft());
+                painter.scale(pages[page].width() / sizes[page].width(), pages[page].height() / sizes[page].height());
+                painter.setPen(Qt::NoPen); painter.setBrush(color);
+                for (const auto &polygon : bounds) painter.drawPolygon(polygon);
+                painter.restore();
+            };
+            if (page == matchPage) highlight(match, QColor(255, 190, 0, 100));
+            if (page == selectionPage) highlight(selection, QColor(40, 120, 240, 100));
+        }
+    }
+    QPointF documentPoint(int page, QPointF point) const {
+        point += QPointF(horizontalScrollBar()->value(), verticalScrollBar()->value());
+        return QPointF(std::clamp((point.x() - pages[page].left()) * sizes[page].width() / pages[page].width(), 0., sizes[page].width()),
+                       std::clamp((point.y() - pages[page].top()) * sizes[page].height() / pages[page].height(), 0., sizes[page].height()));
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() != Qt::LeftButton) return QAbstractScrollArea::mousePressEvent(event);
+        setFocus();
+        const QPointF point = event->position() + QPointF(horizontalScrollBar()->value(), verticalScrollBar()->value());
+        for (int i : visiblePages()) if (pages[i].contains(point)) {
+            dragPage = i; dragStart = documentPoint(i, event->position()); event->accept(); return;
+        }
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && dragPage >= 0 && dragPage < pages.size()) {
+            if (selectionRequested) selectionRequested(dragPage, dragStart, documentPoint(dragPage, event->position()));
+            dragPage = -1; event->accept();
+        } else QAbstractScrollArea::mouseReleaseEvent(event);
+    }
+    void wheelEvent(QWheelEvent *event) override {
+        if ((event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) && zoomRequested) {
+            const qreal delta = event->pixelDelta().isNull() ? event->angleDelta().y() / 120.0 : event->pixelDelta().y() / 40.0;
+            zoomRequested(zoom * std::pow(1.2, delta)); event->accept();
+        } else QAbstractScrollArea::wheelEvent(event);
+    }
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->matches(QKeySequence::Copy) && copyRequested) { copyRequested(); event->accept(); }
+        else QAbstractScrollArea::keyPressEvent(event);
+    }
+private:
+    int dragPage = -1;
+    QPointF dragStart;
 };
 
 struct PreviewPrintState {
@@ -88,6 +236,20 @@ struct PreviewPrintState {
     std::unique_ptr<QPainter> painter;
     QPointer<QProgressDialog> progress;
 #endif
+};
+
+struct PreviewTrimState {
+    QUrl source, destination, actual;
+    qint64 start = 0, end = 0, sourceSize = 0;
+    QDateTime sourceModified;
+    QString staged, format;
+    QByteArray output, diagnostics;
+    bool dialog = false;
+    std::shared_ptr<QTemporaryDir> temporary;
+    QPointer<QProcess> process;
+    QPointer<KIO::CopyJob> job;
+    QPointer<QProgressDialog> progress;
+    QPointer<QTimer> watchdog;
 };
 
 // Each pane/domain has at most one submitted job and one replaceable pending
@@ -320,8 +482,19 @@ QString playbackTime(qint64 milliseconds)
     return QStringLiteral("%1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+QString trimFormat(const QString &suffix)
+{
+    const QString extension = suffix.toLower();
+    if (extension == QStringLiteral("m4v")) return QStringLiteral("mp4");
+    if (extension == QStringLiteral("m4a")) return QStringLiteral("ipod");
+    if (extension == QStringLiteral("mkv")) return QStringLiteral("matroska");
+    const QStringList supported{QStringLiteral("mp4"), QStringLiteral("mov"), QStringLiteral("webm"),
+        QStringLiteral("wav"), QStringLiteral("mp3"), QStringLiteral("flac"), QStringLiteral("ogg"), QStringLiteral("opus")};
+    return supported.contains(extension) ? extension : QString();
+}
+
 PreviewRaster readRaster(const QString &path, bool pdf, int page, const QSize &limit,
-                         const std::shared_ptr<std::atomic_bool> &cancelled)
+                         const std::shared_ptr<std::atomic_bool> &cancelled, bool geometry = false)
 {
     PreviewRaster result;
     if (cancelled->load()) return result;
@@ -337,6 +510,21 @@ PreviewRaster readRaster(const QString &path, bool pdf, int page, const QSize &l
                 ? PreviewPane::tr("This PDF is password protected.\nOpen it with its default application.")
                 : PreviewPane::tr("The PDF could not be opened.\nOpen it with its default application.");
             return result;
+        }
+        if (geometry) {
+            if (result.pageCount > 2000) {
+                result.error = PreviewPane::tr("This PDF exceeds the 2,000-page preview limit. Open it with its default application.");
+                return result;
+            }
+            for (int i = 0; i < result.pageCount && !cancelled->load(); ++i) {
+                const QSizeF points = document.pagePointSize(i);
+                if (!points.isValid() || !std::isfinite(points.width()) || !std::isfinite(points.height())
+                    || points.width() > 14400 || points.height() > 14400) {
+                    result.error = PreviewPane::tr("This PDF has an unsupported page size.");
+                    return result;
+                }
+                result.pageSizes.append(points);
+            }
         }
         page = std::clamp(page, 0, result.pageCount - 1);
         result.pagePoints = document.pagePointSize(page);
@@ -401,7 +589,8 @@ QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 
 PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>()),
-    m_contactWork(std::make_shared<PreviewWorkQueue>()), m_printWork(std::make_shared<PreviewWorkQueue>())
+    m_contactWork(std::make_shared<PreviewWorkQueue>()), m_printWork(std::make_shared<PreviewWorkQueue>()),
+    m_pdfSearchWork(std::make_shared<PreviewWorkQueue>()), m_pdfSelectionWork(std::make_shared<PreviewWorkQueue>())
 {
     setObjectName(QStringLiteral("finderPreviewPane"));
     setAutoFillBackground(true);
@@ -459,6 +648,24 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_picture->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     m_picture->installEventFilter(this);
     m_content->addWidget(m_picture);
+    m_pdfView = new PreviewPdfView(this);
+    m_pdfView->setObjectName(QStringLiteral("previewPdf"));
+    m_pdfView->setAccessibleName(tr("PDF document. Drag to select text; use Copy to copy the selection."));
+    m_pdfView->setFrameShape(QFrame::NoFrame);
+    m_pdfView->setFocusPolicy(Qt::StrongFocus);
+    m_content->addWidget(m_pdfView);
+    m_pdfRenderTimer = new QTimer(this);
+    m_pdfRenderTimer->setSingleShot(true);
+    m_pdfRenderTimer->setInterval(45);
+    m_pdfView->visibleChanged = [this] { m_pdfRenderTimer->start(); };
+    m_pdfView->pageChanged = [this](int page) {
+        if (m_pageCount < 1) return;
+        m_page = page; updatePdfPageControls();
+    };
+    m_pdfView->zoomRequested = [this](qreal zoom) { setZoomFactor(zoom); };
+    m_pdfView->selectionRequested = [this](int page, QPointF start, QPointF end) { selectPdfText(page, start, end); };
+    m_pdfView->copyRequested = [this] { QGuiApplication::clipboard()->setText(m_pdfSelectedText); };
+    connect(m_pdfRenderTimer, &QTimer::timeout, this, &PreviewPane::requestPdfPages);
     m_text = new QTextEdit(this);
     m_text->setObjectName(QStringLiteral("previewText"));
     m_text->setReadOnly(true);
@@ -526,6 +733,9 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_printAction = nativeMenu->addAction(tr("Print…"));
     m_printAction->setObjectName(QStringLiteral("previewPrint"));
     connect(m_printAction, &QAction::triggered, this, &PreviewPane::printCurrent);
+    m_trimAction = nativeMenu->addAction(tr("Trim as Copy…"));
+    m_trimAction->setObjectName(QStringLiteral("previewTrimCopy"));
+    connect(m_trimAction, &QAction::triggered, this, &PreviewPane::trimCurrent);
     m_rotateCopy = nativeMenu->addAction(tr("Rotate Left as Copy…"));
     m_rotateCopy->setObjectName(QStringLiteral("previewRotateCopy"));
     connect(m_rotateCopy, &QAction::triggered, this, [this] {
@@ -567,12 +777,15 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_refreshTimer = new QTimer(this);
     m_refreshTimer->setSingleShot(true);
     m_refreshTimer->setInterval(120);
-    connect(m_sourceWatcher, &QFileSystemWatcher::fileChanged, this, [this] { m_refreshTimer->start(); });
-    connect(m_sourceWatcher, &QFileSystemWatcher::directoryChanged, this, [this] {
+    connect(m_sourceWatcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &changed) {
+        if (changed == currentUrl().toLocalFile()) m_refreshTimer->start();
+    });
+    connect(m_sourceWatcher, &QFileSystemWatcher::directoryChanged, this, [this](const QString &changed) {
         // Changes to adjacent files (including our PDF print output) do not
         // invalidate a source whose inode watch is still active. Removed or
         // atomically replaced sources lose that watch and require re-arming.
         const QString path = currentUrl().toLocalFile();
+        if (changed != QFileInfo(path).absolutePath()) return;
         if (QFileInfo(path).isFile() && m_sourceWatcher->files().contains(path)) return;
         m_refreshTimer->start();
     });
@@ -609,9 +822,38 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     pageLayout->addStretch();
     pageLayout->addWidget(m_pagePrevious);
     pageLayout->addWidget(m_pageLabel);
+    m_pdfPageEntry = new QLineEdit(this);
+    m_pdfPageEntry->setObjectName(QStringLiteral("previewPdfPage"));
+    m_pdfPageEntry->setAccessibleName(tr("Go to PDF page"));
+    m_pdfPageEntry->setMaximumWidth(65);
+    pageLayout->addWidget(m_pdfPageEntry);
     pageLayout->addWidget(m_pageNext);
+    m_pdfSearch = new QLineEdit(this);
+    m_pdfSearch->setObjectName(QStringLiteral("previewPdfSearch"));
+    m_pdfSearch->setPlaceholderText(tr("Find in PDF"));
+    m_pdfSearch->setAccessibleName(tr("Find text in PDF"));
+    m_pdfSearch->setClearButtonEnabled(true);
+    pageLayout->addWidget(m_pdfSearch, 1);
+    m_pdfSearchPrevious = button(QStringLiteral("↑"), QStringLiteral("previewPdfFindPrevious"), this);
+    m_pdfSearchPrevious->setAccessibleName(tr("Previous match"));
+    m_pdfSearchNext = button(QStringLiteral("↓"), QStringLiteral("previewPdfFindNext"), this);
+    m_pdfSearchNext->setAccessibleName(tr("Next match"));
+    pageLayout->addWidget(m_pdfSearchPrevious);
+    pageLayout->addWidget(m_pdfSearchNext);
+    m_pdfSearchStatus = new QLabel(this);
+    m_pdfSearchStatus->setObjectName(QStringLiteral("previewPdfSearchStatus"));
+    pageLayout->addWidget(m_pdfSearchStatus);
     pageLayout->addStretch();
     previewLayout->addWidget(m_pageControls);
+    connect(m_pdfPageEntry, &QLineEdit::returnPressed, this, [this] {
+        bool ok = false; const int page = m_pdfPageEntry->text().toInt(&ok);
+        if (ok && page > 0 && page <= m_pageCount) setPdfPage(page - 1);
+        else updatePdfPageControls();
+    });
+    connect(m_pdfSearch, &QLineEdit::returnPressed, this, [this] { searchPdf(m_pdfSearch->text()); });
+    connect(m_pdfSearch, &QLineEdit::textChanged, this, [this](const QString &text) { if (text.isEmpty()) searchPdf({}); });
+    connect(m_pdfSearchPrevious, &QPushButton::clicked, this, [this] { advancePdfSearch(-1); });
+    connect(m_pdfSearchNext, &QPushButton::clicked, this, [this] { advancePdfSearch(1); });
 
     m_mediaControls = new QWidget(this);
     auto *mediaLayout = new QHBoxLayout(m_mediaControls);
@@ -627,6 +869,9 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     mediaLayout->addWidget(m_play);
     mediaLayout->addWidget(m_seek, 1);
     mediaLayout->addWidget(m_playbackTime);
+    m_trimButton = button(tr("Trim…"), QStringLiteral("previewTrim"), this);
+    mediaLayout->addWidget(m_trimButton);
+    connect(m_trimButton, &QPushButton::clicked, this, &PreviewPane::trimCurrent);
     previewLayout->addWidget(m_mediaControls);
     layout->addWidget(m_previewArea, 1);
     m_metadata = new QLabel(this);
@@ -657,6 +902,9 @@ PreviewPane::~PreviewPane()
     m_tagWork->cancel();
     m_contactWork->cancel();
     m_printWork->cancel();
+    m_pdfSearchWork->cancel();
+    m_pdfSelectionWork->cancel();
+    cancelTrim();
 #if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
     if (m_printState && m_printState->painter) m_printState->painter->end();
     if (m_printState && m_printState->printer) m_printState->printer->abort();
@@ -706,6 +954,10 @@ void PreviewPane::setZoomFactor(qreal factor)
 {
     if (!std::isfinite(factor)) return;
     m_zoom = std::clamp(factor, .25, 16.0);
+    if (m_content->currentWidget() == m_pdfView) {
+        const int page = m_pdfView->currentPage();
+        m_pdfView->zoom = m_zoom; m_pdfView->relayout(); m_pdfView->jump(page);
+    }
     updateImageSize();
     updatePreviewControls();
 }
@@ -787,7 +1039,7 @@ bool PreviewPane::canPrintCurrent() const
     if (m_printState || m_contactSheet || !currentUrl().isLocalFile()) return false;
     const QFileInfo info(currentUrl().toLocalFile());
     return info.isFile() && info.isReadable() && (m_mime.startsWith(QStringLiteral("image/"))
-        || m_mime == QStringLiteral("application/pdf") || m_content->currentWidget() == m_text);
+        || m_mime == QStringLiteral("application/pdf") || (m_textReady && m_content->currentWidget() == m_text));
 #else
     return false;
 #endif
@@ -808,6 +1060,14 @@ void PreviewPane::updateNativeActions()
     m_emailAction->setEnabled(localFiles && bool(emailHandler));
     m_emailAction->setToolTip(emailHandler ? QString() : tr("No native email application is configured."));
     m_printAction->setEnabled(canPrintCurrent());
+    const bool printReady = canPrintCurrent();
+    if (m_printReady != printReady) { m_printReady = printReady; emit printReadinessChanged(printReady); }
+    const bool media = m_mime.startsWith(QStringLiteral("audio/")) || m_mime.startsWith(QStringLiteral("video/"));
+    m_trimAction->setVisible(media);
+    m_trimAction->setEnabled(canTrimCurrent());
+    m_trimButton->setEnabled(canTrimCurrent());
+    const QString trimTip = canTrimCurrent() ? QString() : tr("Trimming requires installed ffmpeg and ffprobe, a local media file and a supported export container.");
+    m_trimAction->setToolTip(trimTip); m_trimButton->setToolTip(trimTip);
     m_rotateCopy->setVisible(m_rotatableImage && !m_contactSheet);
     m_rotateCopy->setEnabled(m_rotatableImage && !m_contactSheet && !currentUrl().isEmpty());
 #if !defined(FINDER_PREVIEW_PRINT_SUPPORT) || !FINDER_PREVIEW_PRINT_SUPPORT
@@ -994,7 +1254,8 @@ void PreviewPane::requestClose()
 void PreviewPane::updatePreviewControls()
 {
     m_viewControls->setVisible(!m_compact && !m_gallery);
-    const bool raster = !m_image.isNull() && !m_contactSheet && m_content->currentWidget() == m_picture;
+    const bool raster = !m_contactSheet && ((!m_image.isNull() && m_content->currentWidget() == m_picture)
+        || (m_pageCount > 0 && m_content->currentWidget() == m_pdfView));
     m_zoomIn->setEnabled(raster && m_zoom < 16);
     m_zoomOut->setEnabled(raster && m_zoom > .25);
     m_zoomReset->setEnabled(raster);
@@ -1103,6 +1364,7 @@ void PreviewPane::setUrls(const QList<QUrl> &urls)
     const bool changed = valid != m_urls;
     m_urls = valid;
     m_index = m_urls.isEmpty() ? -1 : std::max(0, int(m_urls.indexOf(previous)));
+    if (previous != currentUrl()) m_refreshTimer->stop();
     showCurrent();
     if (changed && m_contactSheet) {
         if (m_urls.size() < 2) setContactSheet(false);
@@ -1124,6 +1386,7 @@ void PreviewPane::advance(int delta)
     const int next = std::clamp(m_index + delta, 0, int(m_urls.size()) - 1);
     if (next == m_index) return;
     m_index = next;
+    m_refreshTimer->stop();
     showCurrent();
     if (m_contactSheet) m_contactList->setCurrentRow(m_index);
     emit currentUrlChanged(currentUrl());
@@ -1133,7 +1396,7 @@ void PreviewPane::setCompact(bool compact)
 {
     if (compact) { setSlideshow(false); setContactSheet(false); }
     m_compact = compact;
-    m_close->setVisible(!compact);
+    m_close->setVisible(!compact && !m_hostWindowControls);
     if (!m_gallery) layout()->setContentsMargins(compact ? 12 : 16, 12, compact ? 12 : 16, 12);
     updatePreviewControls();
 }
@@ -1622,6 +1885,8 @@ void PreviewPane::showCurrent()
         return;
     }
     if (url.isEmpty()) {
+        cancelTrim();
+        resetPdf(); m_textReady = false;
         cancelNativePreview();
         m_renderWork->cancel();
         ++m_previewGeneration;
@@ -1646,6 +1911,8 @@ void PreviewPane::showCurrent()
         return;
     }
     if (!url.isLocalFile()) {
+        cancelTrim();
+        resetPdf(); m_textReady = false;
         cancelNativePreview();
         m_renderWork->cancel();
         ++m_previewGeneration;
@@ -1674,6 +1941,8 @@ void PreviewPane::showCurrent()
     const QString fingerprint = url.toString() + QLatin1Char('|') + QString::number(info.size())
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
     if (fingerprint == m_fingerprint) return;
+    cancelTrim();
+    resetPdf(); m_textReady = false;
     cancelNativePreview();
     m_renderWork->cancel();
     ++m_previewGeneration;
@@ -1755,12 +2024,17 @@ void PreviewPane::showCurrent()
     if (m_mime.startsWith(QStringLiteral("text/")) || textSuffixes.contains(info.suffix().toLower())
         || m_mime.endsWith(QStringLiteral("+xml")) || m_mime.endsWith(QStringLiteral("+json"))
         || mime.inherits(QStringLiteral("application/json")) || mime.inherits(QStringLiteral("application/xml"))) {
-        QFile file(info.absoluteFilePath());
+        const quint64 generation = m_previewGeneration;
+        showFallback(tr("Loading text…"));
+        struct TextResult { QString text, error; bool limited = false; };
+        submitPreview(m_renderWork, this, [path = info.absoluteFilePath()](const auto &cancelled) {
+        TextResult result;
+        QFile file(path);
         if (!file.open(QIODevice::ReadOnly)) {
-            showFallback(tr("The file could not be read."));
-            return;
+            result.error = tr("The file could not be read."); return result;
         }
         const QByteArray bytes = file.read(textLimit + 1);
+        if (cancelled->load()) return result;
         QString text;
         if (bytes.startsWith("\xff\xfe") || bytes.startsWith("\xfe\xff")) {
             const bool littleEndian = bytes.startsWith("\xff\xfe");
@@ -1771,16 +2045,21 @@ void PreviewPane::showCurrent()
                 text.append(QChar(littleEndian ? quint16(a | (b << 8)) : quint16((a << 8) | b)));
             }
         } else if (bytes.contains('\0')) {
-            showFallback(tr("This file contains binary data.\nOpen it with its default application."));
-            return;
+            result.error = tr("This file contains binary data.\nOpen it with its default application."); return result;
         } else text = QString::fromUtf8(bytes.left(textLimit));
-        m_text->setPlainText(text);
+        result.text = text; result.limited = bytes.size() > textLimit; return result;
+        }, [this, url, generation](const TextResult &result) {
+        if (url != currentUrl() || generation != m_previewGeneration) return;
+        if (!result.error.isEmpty()) { showFallback(result.error); return; }
+        m_text->setPlainText(result.text);
+        m_textReady = true;
         m_content->setCurrentWidget(m_text);
         updatePreviewControls();
-        if (bytes.size() > textLimit) {
+        if (result.limited) {
             setInformation(tr("Preview"), tr("First 512 KiB"), true);
             setMetadata(m_metadataText + tr(" · Preview limited to the first 512 KiB"));
         }
+        });
         return;
     }
     if (m_mime.startsWith(QStringLiteral("audio/")) || m_mime.startsWith(QStringLiteral("video/"))) {
@@ -1846,7 +2125,7 @@ void PreviewPane::requestRaster(bool pdf, int page)
     showFallback(tr("Loading preview…"));
     submitPreview(m_renderWork, this,
         [path = url.toLocalFile(), pdf, page](const auto &cancelled) {
-            return readRaster(path, pdf, page, renderLimit, cancelled);
+            return readRaster(path, pdf, page, renderLimit, cancelled, pdf);
         },
         [this, url, fingerprint, generation, key, pdf](const PreviewRaster &raster) {
             if (generation != m_previewGeneration || url != currentUrl() || fingerprint != m_fingerprint) return;
@@ -1859,6 +2138,7 @@ void PreviewPane::requestRaster(bool pdf, int page)
 void PreviewPane::applyRaster(const PreviewRaster &raster, bool pdf)
 {
     if (pdf) {
+        if (!raster.error.isEmpty() || raster.pageSizes.isEmpty()) { showFallback(raster.error); return; }
         m_pageCount = raster.pageCount;
         if (m_pageCount > 0) {
             m_page = std::clamp(m_page, 0, m_pageCount - 1);
@@ -1871,6 +2151,14 @@ void PreviewPane::applyRaster(const PreviewRaster &raster, bool pdf)
                 .arg(QLocale().toString(raster.pagePoints.width(), 'f', 1),
                      QLocale().toString(raster.pagePoints.height(), 'f', 1)), true);
         }
+        m_pdfView->zoom = m_zoom;
+        m_pdfView->configure(raster.pageSizes);
+        m_pdfView->rasters.insert(m_page, raster.image);
+        m_content->setCurrentWidget(m_pdfView);
+        m_pdfView->jump(m_page);
+        updateThumbnail(raster.image);
+        updatePdfPageControls(); updatePreviewControls();
+        return;
     } else {
         m_originalImageSize = raster.originalSize;
         m_rotatableImage = raster.rotatable;
@@ -1890,7 +2178,428 @@ void PreviewPane::applyRaster(const PreviewRaster &raster, bool pdf)
 void PreviewPane::renderPage(int page)
 {
     if (m_pageCount < 1) return;
-    requestRaster(true, std::clamp(page, 0, m_pageCount - 1));
+    setPdfPage(page);
+}
+
+void PreviewPane::setHostWindowControls(bool enabled)
+{
+    m_hostWindowControls = enabled;
+    m_close->setVisible(!m_compact && !enabled);
+}
+
+int PreviewPane::pdfPageCount() const { return m_pageCount; }
+int PreviewPane::pdfCurrentPage() const { return m_page; }
+QString PreviewPane::selectedPdfText() const { return m_pdfSelectedText; }
+
+void PreviewPane::resetPdf()
+{
+    ++m_pdfSearchGeneration; ++m_pdfSelectionGeneration;
+    m_pdfSearchWork->cancel(); m_pdfSelectionWork->cancel();
+    m_pdfRenderTimer->stop(); m_pdfView->clear(); m_pdfRenderTimer->stop();
+    m_pdfQuery.clear(); m_pdfMatches.clear(); m_pdfMatch = -1;
+    m_pdfSelectedText.clear();
+    if (m_pdfSearch) { QSignalBlocker block(m_pdfSearch); m_pdfSearch->clear(); }
+    if (m_pdfSearchStatus) m_pdfSearchStatus->clear();
+}
+
+void PreviewPane::setPdfPage(int page)
+{
+    if (m_pageCount < 1 || m_pdfView->pages.isEmpty()) return;
+    m_page = std::clamp(page, 0, m_pageCount - 1);
+    m_pdfView->jump(m_page); updatePdfPageControls();
+}
+
+void PreviewPane::updatePdfPageControls()
+{
+    m_pageLabel->setText(tr("Page %1 of %2").arg(m_page + 1).arg(m_pageCount));
+    if (!m_pdfPageEntry->hasFocus()) m_pdfPageEntry->setText(QString::number(m_page + 1));
+    m_pagePrevious->setEnabled(m_page > 0); m_pageNext->setEnabled(m_page + 1 < m_pageCount);
+    m_pdfSearchPrevious->setEnabled(!m_pdfMatches.isEmpty());
+    m_pdfSearchNext->setEnabled(!m_pdfMatches.isEmpty());
+    emit pdfPageChanged(m_page, m_pageCount);
+}
+
+void PreviewPane::requestPdfPages()
+{
+    if (!isVisible() || m_content->currentWidget() != m_pdfView || m_pageCount < 1) return;
+    const auto visible = m_pdfView->visiblePages();
+    // A scroll/zoom request replaces pending work. Keep at most eight visible
+    // page references; the shared 32 MiB cache charges each raster once.
+    for (auto it = m_pdfView->rasters.begin(); it != m_pdfView->rasters.end();)
+        if (!visible.contains(it.key())) it = m_pdfView->rasters.erase(it); else ++it;
+    int requested = -1;
+    for (int page : visible) {
+        if (m_pdfView->rasters.contains(page) || m_pdfView->errors.contains(page)) continue;
+        const QString key = m_fingerprint + QStringLiteral("|pdf-visible:%1").arg(page);
+        if (const auto *cached = m_images.object(key)) m_pdfView->rasters.insert(page, cached->image);
+        else if (requested < 0) requested = page;
+    }
+    m_pdfView->viewport()->update();
+    if (requested < 0) { m_renderWork->cancel(); return; }
+    const QUrl url = currentUrl(); const quint64 generation = m_previewGeneration;
+    const QString fingerprint = m_fingerprint;
+    const QString key = fingerprint + QStringLiteral("|pdf-visible:%1").arg(requested);
+    submitPreview(m_renderWork, this, [path = url.toLocalFile(), requested](const auto &cancelled) {
+        return readRaster(path, true, requested, renderLimit, cancelled);
+    }, [this, url, generation, fingerprint, key, requested](const PreviewRaster &raster) {
+        if (url != currentUrl() || generation != m_previewGeneration || fingerprint != m_fingerprint
+            || m_content->currentWidget() != m_pdfView) return;
+        if (raster.image.isNull()) m_pdfView->errors.insert(requested, raster.error);
+        else {
+            m_images.insert(key, new PreviewRaster(raster), std::max<qsizetype>(1, (raster.image.sizeInBytes() + 1023) / 1024));
+            if (m_pdfView->visiblePages().contains(requested)) m_pdfView->rasters.insert(requested, raster.image);
+        }
+        m_pdfView->viewport()->update(); m_pdfRenderTimer->start();
+    });
+}
+
+void PreviewPane::selectPdfText(int page, const QPointF &start, const QPointF &end)
+{
+    if (page < 0 || page >= m_pageCount || m_pdfView->pages.isEmpty()) return;
+    const quint64 generation = ++m_pdfSelectionGeneration;
+    const QUrl url = currentUrl(); const QString fingerprint = m_fingerprint;
+    struct Selection { QString text; QList<QPolygonF> bounds; };
+    submitPreview(m_pdfSelectionWork, this, [path = url.toLocalFile(), page, start, end](const auto &cancelled) {
+        Selection result; QPdfDocument document;
+        if (document.load(path) != QPdfDocument::Error::None || cancelled->load()) return result;
+        const auto selected = document.getSelection(page, start, end);
+        if (!cancelled->load() && selected.text().size() <= textLimit && selected.bounds().size() <= 10000) {
+            result.text = selected.text(); result.bounds = selected.bounds();
+        }
+        return result;
+    }, [this, url, fingerprint, generation, page](const Selection &result) {
+        if (generation != m_pdfSelectionGeneration || url != currentUrl() || fingerprint != m_fingerprint) return;
+        m_pdfSelectedText = result.text;
+        m_pdfView->selectionPage = page; m_pdfView->selection = result.bounds; m_pdfView->viewport()->update();
+        emit pdfSelectionChanged(result.text);
+    });
+}
+
+void PreviewPane::searchPdf(const QString &text)
+{
+    ++m_pdfSearchGeneration; m_pdfSearchWork->cancel();
+    m_pdfQuery = text.left(256); m_pdfMatches.clear(); m_pdfMatch = -1;
+    m_pdfSearchPage = 0; m_pdfSearchCharacters = 0;
+    m_pdfView->match.clear(); m_pdfView->viewport()->update();
+    updatePdfPageControls();
+    if (m_pdfQuery.isEmpty() || m_pageCount < 1 || m_pdfView->pages.isEmpty()) {
+        m_pdfSearchStatus->clear(); emit pdfSearchFinished(m_pdfQuery, 0, false); return;
+    }
+    m_pdfSearchStatus->setText(tr("Searching…"));
+    requestPdfSearchBatch();
+}
+
+void PreviewPane::requestPdfSearchBatch()
+{
+    const quint64 generation = m_pdfSearchGeneration; const QUrl url = currentUrl();
+    const QString fingerprint = m_fingerprint, query = m_pdfQuery;
+    const int start = m_pdfSearchPage, end = std::min(start + 8, m_pageCount);
+    const int budget = 1000 - m_pdfMatches.size();
+    struct Search { QList<PdfMatch> matches; int next = 0; qsizetype characters = 0; bool limited = false; QString error; };
+    submitPreview(m_pdfSearchWork, this, [path = url.toLocalFile(), query, start, end, budget](const auto &cancelled) {
+        Search result; result.next = start;
+        QPdfDocument document;
+        if (document.load(path) != QPdfDocument::Error::None) { result.error = tr("This PDF could not be searched."); return result; }
+        QElapsedTimer elapsed; elapsed.start();
+        for (int page = start; page < end && !cancelled->load(); ++page) {
+            const QString text = document.getAllText(page).text();
+            result.characters += text.size(); result.next = page + 1;
+            const QString bounded = text.left(textLimit);
+            result.limited = result.limited || text.size() > textLimit;
+            qsizetype position = 0;
+            while (!cancelled->load() && (position = bounded.indexOf(query, position, Qt::CaseInsensitive)) >= 0) {
+                const auto found = document.getSelectionAtIndex(page, int(position), query.size());
+                result.matches.append({page, found.bounds()}); position += std::max<qsizetype>(1, query.size());
+                if (result.matches.size() >= budget || elapsed.elapsed() > 2000) { result.limited = true; break; }
+            }
+            if (result.matches.size() >= budget || elapsed.elapsed() > 2000) { result.limited = true; break; }
+        }
+        return result;
+    }, [this, generation, url, fingerprint, query](const Search &result) {
+        if (generation != m_pdfSearchGeneration || url != currentUrl() || fingerprint != m_fingerprint) return;
+        m_pdfMatches.append(result.matches); m_pdfSearchPage = result.next;
+        m_pdfSearchCharacters += result.characters;
+        const bool limited = result.limited || m_pdfSearchCharacters > 4 * 1024 * 1024 || m_pdfMatches.size() >= 1000;
+        if (!result.error.isEmpty()) { m_pdfSearchStatus->setText(result.error); emit pdfSearchFinished(query, m_pdfMatches.size(), true); return; }
+        if (m_pdfSearchPage < m_pageCount && !limited) {
+            QTimer::singleShot(0, this, [this, generation] { if (generation == m_pdfSearchGeneration) requestPdfSearchBatch(); }); return;
+        }
+        m_pdfSearchStatus->setText(limited ? tr("%1+ matches (limit)").arg(m_pdfMatches.size()) : tr("%1 matches").arg(m_pdfMatches.size()));
+        updatePdfPageControls(); if (!m_pdfMatches.isEmpty()) advancePdfSearch(1);
+        emit pdfSearchFinished(query, m_pdfMatches.size(), limited);
+    });
+}
+
+void PreviewPane::advancePdfSearch(int delta)
+{
+    if (m_pdfMatches.isEmpty()) return;
+    m_pdfMatch = (m_pdfMatch + delta % m_pdfMatches.size() + m_pdfMatches.size()) % m_pdfMatches.size();
+    const auto &match = m_pdfMatches[m_pdfMatch];
+    m_pdfView->revealMatch(match.page, match.bounds); m_page = match.page; updatePdfPageControls();
+}
+
+bool PreviewPane::canTrimCurrent() const
+{
+    if (m_trimState || m_trimDialog || m_contactSheet || !currentUrl().isLocalFile()
+        || !(m_mime.startsWith(QStringLiteral("audio/")) || m_mime.startsWith(QStringLiteral("video/")))) return false;
+    const QFileInfo info(currentUrl().toLocalFile());
+    return info.isFile() && info.isReadable() && !trimFormat(info.suffix()).isEmpty()
+        && !QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty()
+        && !QStandardPaths::findExecutable(QStringLiteral("ffprobe")).isEmpty();
+}
+
+bool PreviewPane::trimBusy() const { return bool(m_trimState); }
+
+void PreviewPane::trimCurrent()
+{
+    if (!canTrimCurrent()) return;
+    setSlideshow(false);
+    m_trimState = std::make_shared<PreviewTrimState>();
+    m_trimState->source = currentUrl(); m_trimState->dialog = true;
+    probeTrimSource();
+}
+
+void PreviewPane::exportTrimCopy(qint64 startMs, qint64 endMs, const QUrl &destination)
+{
+    const QUrl source = currentUrl();
+    auto fail = [this, source, destination](const QString &error) {
+        emit actionError(source, error); emit trimFinished(source, destination, error);
+    };
+    if (!canTrimCurrent()) { fail(tr("Trimming is unavailable for this file or backend.")); return; }
+    const QFileInfo input(source.toLocalFile()), output(destination.toLocalFile());
+    if (!destination.isLocalFile() || destination.fileName().isEmpty() || !output.dir().exists()
+        || input.absoluteFilePath() == output.absoluteFilePath()
+        || (output.exists() && input.canonicalFilePath() == output.canonicalFilePath())) {
+        fail(tr("Choose a different local destination for the trimmed copy.")); return;
+    }
+    struct stat sourceStat{}, destinationStat{};
+    if (::stat(input.absoluteFilePath().toLocal8Bit().constData(), &sourceStat) == 0
+        && ::stat(output.absoluteFilePath().toLocal8Bit().constData(), &destinationStat) == 0
+        && sourceStat.st_dev == destinationStat.st_dev && sourceStat.st_ino == destinationStat.st_ino) {
+        fail(tr("The copy destination refers to the original file.")); return;
+    }
+    if (trimFormat(input.suffix()) != trimFormat(output.suffix())) {
+        fail(tr("Keep the original file's export container for this trimmed copy.")); return;
+    }
+    if (startMs < 0 || endMs <= startMs || endMs - startMs > 3600000) {
+        fail(tr("Choose a trim range between 1 millisecond and 1 hour.")); return;
+    }
+    m_trimState = std::make_shared<PreviewTrimState>();
+    m_trimState->source = source; m_trimState->destination = destination;
+    m_trimState->start = startMs; m_trimState->end = endMs;
+    m_trimState->sourceSize = input.size(); m_trimState->sourceModified = input.lastModified();
+    m_trimState->format = trimFormat(output.suffix());
+    setSlideshow(false);
+    if (m_player) m_player->pause();
+    probeTrimSource();
+}
+
+void PreviewPane::probeTrimSource()
+{
+    const auto state = m_trimState;
+    auto *progress = new QProgressDialog(tr("Reading media duration…"), tr("Cancel"), 0, 100, window());
+    progress->setObjectName(QStringLiteral("previewTrimProgress"));
+    progress->setWindowTitle(tr("Trim %1 as Copy").arg(state->source.fileName()));
+    progress->setMinimumDuration(0); progress->setAutoClose(false); progress->setAutoReset(false);
+    state->progress = progress;
+    connect(progress, &QProgressDialog::canceled, this, &PreviewPane::cancelTrim);
+    progress->show(); updateNativeActions();
+    auto *process = new QProcess;
+    state->process = process;
+    auto *watchdog = new QTimer(this); state->watchdog = watchdog;
+    watchdog->setSingleShot(true); watchdog->start(15000);
+    connect(watchdog, &QTimer::timeout, this, [this, state] {
+        if (m_trimState == state) finishTrim(tr("The media backend exceeded its processing time limit."));
+    });
+    connect(process, &QProcess::readyReadStandardOutput, this, [state] {
+        if (state->process) {
+            state->output += state->process->readAllStandardOutput();
+            if (state->output.size() > 65536) state->output = state->output.right(65536);
+        }
+    });
+    connect(process, &QProcess::errorOccurred, this, [this, state](QProcess::ProcessError error) {
+        if (m_trimState == state && error == QProcess::FailedToStart) finishTrim(tr("The ffprobe backend could not start."));
+    });
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), process, &QObject::deleteLater);
+    connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [this, state, process](int code, QProcess::ExitStatus status) {
+        if (m_trimState != state) return;
+        state->output += process->readAllStandardOutput();
+        state->process = nullptr;
+        state->watchdog->stop();
+        const auto object = QJsonDocument::fromJson(state->output).object().value(QStringLiteral("format")).toObject();
+        bool ok = false; const double duration = object.value(QStringLiteral("duration")).toString().toDouble(&ok);
+        if (code || status != QProcess::NormalExit || !ok || !std::isfinite(duration) || duration <= 0 || duration > 86400 * 7) {
+            finishTrim(tr("The media duration could not be read. This container or codec cannot be trimmed here.")); return;
+        }
+        const qint64 durationMs = qRound64(duration * 1000);
+        if (state->dialog) {
+            if (state->progress) { state->progress->disconnect(this); state->progress->close(); state->progress->deleteLater(); }
+            state->watchdog->deleteLater(); state->watchdog = nullptr;
+            m_trimState.reset(); updateNativeActions();
+            auto *dialog = new QDialog(window());
+            m_trimDialog = dialog;
+            dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName(QStringLiteral("previewTrimDialog"));
+            dialog->setWindowTitle(tr("Trim %1 as Copy").arg(state->source.fileName()));
+            auto *layout = new QVBoxLayout(dialog);
+            auto *form = new QFormLayout;
+            auto *start = new QDoubleSpinBox(dialog), *end = new QDoubleSpinBox(dialog);
+            start->setObjectName(QStringLiteral("previewTrimStart")); end->setObjectName(QStringLiteral("previewTrimEnd"));
+            for (auto *spin : {start, end}) { spin->setDecimals(3); spin->setRange(0, duration); spin->setSuffix(tr(" s")); }
+            end->setValue(std::min(duration, 3600.));
+            form->addRow(tr("Start"), start); form->addRow(tr("End"), end); layout->addLayout(form);
+            auto *explanation = new QLabel(tr("Save an encoded copy with the selected range. The original is preserved. Available encoders determine export support."), dialog);
+            explanation->setWordWrap(true); layout->addWidget(explanation);
+            auto *preview = button(tr("Preview Range"), QStringLiteral("previewTrimRange"), dialog);
+            layout->addWidget(preview);
+            auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, dialog);
+            layout->addWidget(buttons);
+            auto update = [start, end, buttons] { buttons->button(QDialogButtonBox::Save)->setEnabled(end->value() > start->value() && end->value() - start->value() <= 3600); };
+            connect(start, &QDoubleSpinBox::valueChanged, dialog, update); connect(end, &QDoubleSpinBox::valueChanged, dialog, update);
+            connect(preview, &QPushButton::clicked, this, [this, source = state->source, start, end, dialog] {
+                if (source != currentUrl() || end->value() <= start->value()) return;
+                for (auto *old : dialog->findChildren<QTimer *>(QStringLiteral("previewTrimRangeGuard"))) delete old;
+                if (!m_player) toggleMedia();
+                if (!m_player) return;
+                auto *timer = new QTimer(dialog); timer->setSingleShot(true);
+                timer->setObjectName(QStringLiteral("previewTrimRangeGuard"));
+                // Seek after the public backend reports readiness, then stop at
+                // the range end using its actual position (no playback polling).
+                const qint64 begin = qRound64(start->value() * 1000), finish = qRound64(end->value() * 1000);
+                if (m_player->isSeekable()) { m_player->setPosition(begin); m_player->play(); }
+                else {
+                    connect(m_player, &QMediaPlayer::seekableChanged, timer, [this, begin](bool seekable) {
+                        if (seekable) { m_player->setPosition(begin); m_player->play(); }
+                    });
+                    m_player->play();
+                }
+                connect(m_player, &QMediaPlayer::positionChanged, timer, [this, timer, finish](qint64 position) {
+                    if (position >= finish) { m_player->pause(); timer->deleteLater(); }
+                });
+                timer->start(3600000); connect(timer, &QTimer::timeout, timer, &QObject::deleteLater);
+            });
+            connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+            connect(this, &PreviewPane::currentUrlChanged, dialog, [dialog, source = state->source](const QUrl &url) { if (url != source) dialog->reject(); });
+            connect(dialog, &QDialog::finished, this, [this, dialog] {
+                if (m_player) m_player->pause();
+                for (auto *guard : dialog->findChildren<QTimer *>(QStringLiteral("previewTrimRangeGuard"))) delete guard;
+                if (m_trimDialog == dialog) m_trimDialog = nullptr;
+                updateNativeActions();
+            });
+            connect(buttons, &QDialogButtonBox::accepted, this, [this, source = state->source, start, end, dialog] {
+                if (source != currentUrl()) { dialog->reject(); return; }
+                const QFileInfo info(source.toLocalFile());
+                const QString suggested = info.dir().filePath(info.completeBaseName() + tr("-trimmed.") + info.suffix());
+                const QString destination = QFileDialog::getSaveFileName(dialog, tr("Save Trimmed Copy"), suggested,
+                    tr("Media (*.%1)").arg(info.suffix()), nullptr, QFileDialog::DontConfirmOverwrite);
+                if (destination.isEmpty()) return;
+                const auto begin = qRound64(start->value() * 1000), finish = qRound64(end->value() * 1000);
+                dialog->accept(); exportTrimCopy(begin, finish, QUrl::fromLocalFile(destination));
+            });
+            dialog->open(); updateNativeActions(); return;
+        }
+        if (state->end > durationMs + 20) { finishTrim(tr("The trim range extends beyond the media duration.")); return; }
+        state->temporary = std::make_shared<QTemporaryDir>();
+        if (!state->temporary->isValid()) { finishTrim(tr("Could not create private trim staging.")); return; }
+        state->staged = state->temporary->filePath(QStringLiteral("trim.") + QFileInfo(state->destination.toLocalFile()).suffix());
+        state->output.clear();
+        auto *encoder = new QProcess; state->process = encoder;
+        state->watchdog->start(120000);
+        QStringList args{QStringLiteral("-nostdin"), QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-i"), state->source.toLocalFile(),
+            QStringLiteral("-ss"), QString::number(state->start / 1000., 'f', 3), QStringLiteral("-t"), QString::number((state->end - state->start) / 1000., 'f', 3),
+            QStringLiteral("-map"), QStringLiteral("0:v:0?"), QStringLiteral("-map"), QStringLiteral("0:a:0?"), QStringLiteral("-map_metadata"), QStringLiteral("0"),
+            QStringLiteral("-threads"), QStringLiteral("2"), QStringLiteral("-filter_threads"), QStringLiteral("2")};
+        if (state->format == QStringLiteral("webm")) args << QStringLiteral("-c:v") << QStringLiteral("libvpx-vp9") << QStringLiteral("-c:a") << QStringLiteral("libopus");
+        else if (state->format == QStringLiteral("mp4") || state->format == QStringLiteral("mov") || state->format == QStringLiteral("matroska"))
+            args << QStringLiteral("-c:v") << QStringLiteral("libx264") << QStringLiteral("-preset") << QStringLiteral("veryfast") << QStringLiteral("-c:a") << QStringLiteral("aac");
+        else {
+            args << QStringLiteral("-vn") << QStringLiteral("-c:a");
+            if (state->format == QStringLiteral("wav")) args << QStringLiteral("pcm_s16le");
+            else if (state->format == QStringLiteral("mp3")) args << QStringLiteral("libmp3lame");
+            else if (state->format == QStringLiteral("flac")) args << QStringLiteral("flac");
+            else if (state->format == QStringLiteral("ogg")) args << QStringLiteral("libvorbis");
+            else if (state->format == QStringLiteral("opus")) args << QStringLiteral("libopus");
+            else args << QStringLiteral("aac");
+        }
+        args << QStringLiteral("-fs") << QStringLiteral("536870912") << QStringLiteral("-progress") << QStringLiteral("pipe:1")
+             << QStringLiteral("-f") << state->format << QStringLiteral("-y") << state->staged;
+        if (state->progress) state->progress->setLabelText(tr("Encoding trimmed copy…"));
+        connect(encoder, &QProcess::readyReadStandardError, this, [state] {
+            if (state->process) { state->diagnostics += state->process->readAllStandardError(); state->diagnostics = state->diagnostics.right(4096); }
+        });
+        connect(encoder, &QProcess::readyReadStandardOutput, this, [this, state] {
+            if (m_trimState != state || !state->process) return;
+            state->output += state->process->readAllStandardOutput();
+            int newline;
+            while ((newline = state->output.indexOf('\n')) >= 0) {
+                const QByteArray line = state->output.left(newline); state->output.remove(0, newline + 1);
+                if (line.startsWith("out_time_us=")) {
+                    const int percent = std::clamp(int(line.mid(12).toLongLong() / 10 / (state->end - state->start)), 0, 95);
+                    if (state->progress) state->progress->setValue(percent);
+                    emit trimProgressChanged(percent);
+                }
+            }
+            if (state->output.size() > 65536) state->output.clear();
+        });
+        connect(encoder, &QProcess::errorOccurred, this, [this, state](QProcess::ProcessError error) {
+            if (m_trimState == state && error == QProcess::FailedToStart) finishTrim(tr("The ffmpeg backend could not start."));
+        });
+        // The process owns a staging reference until exit, including cancel or
+        // pane destruction. kill() never waits on the GUI thread.
+        connect(encoder, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), encoder, [state, encoder] { encoder->deleteLater(); });
+        connect(encoder, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [this, state, encoder](int code, QProcess::ExitStatus status) {
+            if (m_trimState != state) return;
+            state->diagnostics += encoder->readAllStandardError(); state->process = nullptr; state->watchdog->stop();
+            const QFileInfo source(state->source.toLocalFile()), result(state->staged);
+            if (code || status != QProcess::NormalExit || result.size() <= 0 || result.size() >= 536870912) {
+                finishTrim(tr("Media export failed or reached its 512 MiB limit: %1").arg(QString::fromUtf8(state->diagnostics.right(4096)))); return;
+            }
+            if (!source.isFile() || source.size() != state->sourceSize || source.lastModified() != state->sourceModified) {
+                finishTrim(tr("The source changed during export. The trimmed copy was not published.")); return;
+            }
+            if (state->progress) { state->progress->setLabelText(tr("Saving copy…")); state->progress->setValue(95); }
+            auto *job = KIO::copyAs(QUrl::fromLocalFile(state->staged), state->destination, KIO::HideProgressInfo);
+            state->job = job;
+            job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+            KIO::FileUndoManager::self()->recordCopyJob(job);
+            connect(job, &KIO::CopyJob::copyingDone, this, [state](KIO::Job *, const QUrl &, const QUrl &to, const QDateTime &, bool, bool) { state->actual = to; });
+            connect(job, &KJob::result, job, [temporary = state->temporary] { Q_UNUSED(temporary); });
+            connect(job, &KJob::result, this, [this, state](KJob *result) {
+                if (m_trimState != state) return;
+                state->job = nullptr;
+                QString error;
+                if (result->error() == KJob::KilledJobError) error = tr("Media trim was cancelled.");
+                else if (result->error()) error = result->errorText().isEmpty() ? tr("The trimmed copy could not be saved.") : result->errorText();
+                else if (state->actual.isEmpty()) error = tr("No trimmed copy was saved.");
+                finishTrim(error);
+            });
+        });
+        encoder->start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), args);
+    });
+    process->start(QStandardPaths::findExecutable(QStringLiteral("ffprobe")), {QStringLiteral("-v"), QStringLiteral("error"),
+        QStringLiteral("-show_entries"), QStringLiteral("format=duration"), QStringLiteral("-of"), QStringLiteral("json"), state->source.toLocalFile()});
+}
+
+void PreviewPane::finishTrim(const QString &error)
+{
+    if (!m_trimState) return;
+    const auto state = std::move(m_trimState);
+    if (state->process) {
+        auto *process = state->process.data();
+        process->disconnect(this);
+        if (process->state() == QProcess::NotRunning) process->deleteLater(); else process->kill();
+    }
+    if (state->job) { state->job->disconnect(this); state->job->kill(KJob::Quietly); }
+    if (state->watchdog) { state->watchdog->stop(); state->watchdog->deleteLater(); }
+    if (state->progress) { state->progress->disconnect(this); state->progress->close(); state->progress->deleteLater(); }
+    updateNativeActions();
+    if (error.isEmpty()) emit trimProgressChanged(100); else emit actionError(state->source, error);
+    emit trimFinished(state->source, state->actual, error);
+}
+
+void PreviewPane::cancelTrim()
+{
+    if (m_trimDialog) m_trimDialog->reject();
+    finishTrim(tr("Media trim was cancelled."));
 }
 
 void PreviewPane::stopMedia()
@@ -1964,6 +2673,8 @@ void PreviewPane::changeEvent(QEvent *event)
 
 void PreviewPane::hideEvent(QHideEvent *event)
 {
+    resetPdf();
+    cancelTrim();
     finishPrint(tr("Printing was cancelled."));
     cancelNativePreview();
     m_renderWork->cancel();
@@ -1999,12 +2710,17 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
         setContactSheet(!m_contactSheet);
         event->accept();
     } else if (command && (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal || event->key() == Qt::Key_Minus)
-               && !m_image.isNull() && !m_contactSheet && m_content->currentWidget() == m_picture) {
+               && !m_contactSheet && ((!m_image.isNull() && m_content->currentWidget() == m_picture)
+                   || (m_pageCount > 0 && m_content->currentWidget() == m_pdfView))) {
         setZoomFactor(m_zoom * (event->key() == Qt::Key_Minus ? 1 / 1.2 : 1.2));
         event->accept();
-    } else if (command && event->key() == Qt::Key_0 && m_content->currentWidget() == m_picture) {
+    } else if (command && event->key() == Qt::Key_0 && (m_content->currentWidget() == m_picture || m_content->currentWidget() == m_pdfView)) {
         resetZoom();
         event->accept();
+    } else if (command && event->key() == Qt::Key_F && m_content->currentWidget() == m_pdfView) {
+        m_pdfSearch->setFocus(); m_pdfSearch->selectAll(); event->accept();
+    } else if (command && event->key() == Qt::Key_C && m_content->currentWidget() == m_pdfView) {
+        QGuiApplication::clipboard()->setText(m_pdfSelectedText); event->accept();
     } else if (!m_compact && !m_gallery && command && event->key() == Qt::Key_F) {
         setFullScreen(!isFullScreen());
         event->accept();
