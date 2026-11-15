@@ -761,14 +761,18 @@ public:
         if (pendingSelection.isEmpty()) return;
         QItemSelection selected;
         QModelIndex current;
+        bool complete = true;
         for (const auto &url : pendingSelection) {
             const auto index = proxy->mapFromSource(model->indexForUrl(url));
-            if (!index.isValid()) continue;
+            if (!index.isValid()) { complete = false; continue; }
             selected.select(index, index);
             if (!current.isValid()) current = index;
         }
         if (!current.isValid()) return;
-        pendingSelection.clear();
+        // KDirLister can announce copied siblings in separate batches. Keep
+        // the complete request until every URL arrives; clearing it after the
+        // first index silently drops the other files from a paste selection.
+        if (complete) pendingSelection.clear();
         activeSelection()->select(selected, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         activeSelection()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
         q->activeView()->scrollTo(current);
