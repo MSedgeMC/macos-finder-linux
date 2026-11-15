@@ -34,6 +34,7 @@
 #include <QPdfWriter>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QSlider>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
@@ -197,6 +198,11 @@ int main(int argc, char **argv)
         check(hosted->slideshowRunning() && slideshowAction->isChecked(), "hosted slideshow menu command");
         slideshowAction->trigger();
         check(!hosted->slideshowRunning(), "hosted slideshow pauses");
+        auto *fullScreenAction = actions->findChild<QAction *>("previewFullScreenAction");
+        fullScreenAction->trigger();
+        check(hosted->isFullScreen() && fullScreenAction->isChecked(), "hosted fullscreen menu controls the host");
+        fullScreenAction->trigger();
+        check(!hosted->isFullScreen(), "hosted fullscreen restores host state");
         if (argc > 1) check(host.grab().save(QString::fromLocal8Bit(argv[1]) + QStringLiteral(".hosted.png")), "isolated one-row hosted screenshot");
         hosted->setCompact(true);
         check(header->isHidden() && !indexAction->isEnabled(), "compact preview suppresses hosted window commands");
@@ -219,9 +225,32 @@ int main(int argc, char **argv)
         check(header->parentWidget() == hosted && toolbar->isVisible() && metadata->isVisible(), "disabling hosted mode restores embedded presentation");
         hosted->setHostedQuickLook(true);
         chromeLayout->addWidget(header, 1);
+        auto *pdfDocument = hosted->findChild<QAbstractScrollArea *>("previewPdf");
+        hosted->updateQuickLook({QUrl::fromLocalFile(pdfPath)});
+        check(waitFor([&] { return hosted->pdfPageCount() == 2; })
+            && hosted->findChild<QLineEdit *>("previewPdfSearch")->isVisible()
+            && toolbar->isHidden(), "hosted PDF retains page and search controls without generic toolbar");
+        hosted->setPdfPage(1);
+        check(hosted->pdfCurrentPage() == 1 && pdfDocument->isVisible(), "hosted PDF page navigation");
+        hosted->showNormal();
+        const auto mediaPath = files.filePath("hosted.wav");
+        { QFile media(mediaPath); check(media.open(QIODevice::WriteOnly), "hosted media fixture"); media.write("RIFF"); }
+        hosted->updateQuickLook({QUrl::fromLocalFile(mediaPath)});
+        check(hosted->findChild<QPushButton *>("previewPlay")->isVisible()
+            && hosted->findChild<QSlider *>("previewSeek")->isVisible()
+            && toolbar->isHidden(), "hosted media retains playback controls");
+        // Simulate a host that deletes its chrome before the content pane.
+        delete chrome;
+        check(header->parentWidget() == hosted && actions->menu(), "host chrome teardown reclaims the live header");
+        hosted->updateQuickLook({blueUrl});
+        check(waitFor([&] { return hosted->originalImageSize() == blue.size(); }), "reclaimed header retains asynchronous delivery safety");
+        auto *secondChrome = new QWidget(&host);
+        auto *secondLayout = new QHBoxLayout(secondChrome);
+        secondLayout->addWidget(header);
         QPointer<QWidget> lifetime(header);
         delete hosted;
         check(lifetime.isNull(), "pane destruction cleans a reparented header");
+        std::cout << "PASS: hosted 40px header, hidden clutter, view/info actions, PDF/media controls, embedding transitions and header teardown\n";
     }
     PreviewPane pane;
     pane.resize(640, 480);

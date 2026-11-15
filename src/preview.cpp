@@ -604,6 +604,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_headerWidget = new QWidget(this);
     m_headerWidget->setObjectName(QStringLiteral("previewQuickLookHeader"));
     m_headerWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_headerWidget->installEventFilter(this);
     auto *header = m_header = new QHBoxLayout(m_headerWidget.data());
     header->setContentsMargins(0, 0, 0, 0);
     m_close = button(QStringLiteral("×"), QStringLiteral("previewClose"), this);
@@ -2895,6 +2896,19 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
 
 bool PreviewPane::eventFilter(QObject *object, QEvent *event)
 {
+    if (object == m_headerWidget.data() && event->type() == QEvent::ParentChange) {
+        // Keep native actions and asynchronous completions pane-owned even if
+        // the host destroys its chrome before the pane during window teardown.
+        // Header widgets follow QObject ownership; reclaiming on the parent's
+        // destroyed signal happens before that parent deletes its children.
+        QWidget *parent = m_headerWidget->parentWidget();
+        if (parent && parent != this) {
+            connect(parent, &QObject::destroyed, this, [this, parent] {
+                if (m_headerWidget && m_headerWidget->parentWidget() == parent)
+                    m_headerWidget->setParent(this);
+            });
+        }
+    }
     if (object == m_picture && event->type() == QEvent::Resize) updateImageSize();
     if (object == window() && event->type() == QEvent::WindowStateChange) updatePreviewControls();
     // Reparented header keys no longer bubble through this pane. A key ignored
