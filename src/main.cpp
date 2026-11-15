@@ -861,7 +861,8 @@ public:
     searchPresentation->setModel(searchModel);
     searchGallery = attachPreview(searchPresentation->galleryHost()); searchGallery->setGallery(true);
     connect(searchPresentation, &SearchResults::selectionChanged, this, [this] {
-      searchGallery->setUrls(orderedPreviewUrls(searchSelection()));
+      const auto ordered = orderedPreviewUrls(searchSelection());
+      searchGallery->updateQuickLook(ordered, ordered.isEmpty() ? QUrl() : ordered.first());
       if (showingSearch() && quickWindow && quickWindow->isVisible() && !searchSelection().isEmpty()) {
         quickUrls = orderedPreviewUrls(searchSelection()); quickPane->updateQuickLook(quickUrls, quickUrls.first());
       }
