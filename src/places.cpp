@@ -502,7 +502,8 @@ public:
                  {QStandardPaths::MusicLocation, "Music"}, {QStandardPaths::PicturesLocation, "Pictures"},
                  {QStandardPaths::MoviesLocation, "Movies"}}) {
             const QUrl url = QUrl::fromLocalFile(QStandardPaths::writableLocation(place.first));
-            defaultPlace(place.second == "Movies" ? "videos" : place.second.toLower(), place.second, url, place.second.toLower());
+            defaultPlace(place.second == "Movies" ? "videos" : place.second.toLower(), place.second, url,
+                         place.second == "Movies" ? "videos" : place.second.toLower());
         }
         // Keep real local bookmarks and useful saved queries, in source order.
         // Presentation defaults do not reorder or write KDE's shared bookmarks.
