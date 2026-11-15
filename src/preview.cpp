@@ -60,6 +60,8 @@
 #include <QSlider>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QStyle>
+#include <QStyleOption>
 #include <QTextEdit>
 #include <QTextDocument>
 #include <QTimer>
@@ -2701,6 +2703,17 @@ void PreviewPane::resizeEvent(QResizeEvent *event)
     if (m_gallery) updateGalleryWidth();
     updateImageSize();
     if (m_contactSheet) m_contactTimer->start();
+}
+
+void PreviewPane::paintEvent(QPaintEvent *)
+{
+    // Stylesheets disable autoFillBackground. A custom QWidget must draw its
+    // styled primitive explicitly, including in a translucent Quick Look host.
+    // The host's palette/style still owns the color and material policy.
+    QStyleOption option;
+    option.initFrom(this);
+    QPainter painter(this);
+    style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
 }
 
 void PreviewPane::changeEvent(QEvent *event)

@@ -94,6 +94,17 @@ int main(int argc, char **argv)
         qputenv(entry.first.constData(), path.toLocal8Bit());
     }
     QApplication app(argc, argv);
+    {
+        PreviewPane styled;
+        styled.setAttribute(Qt::WA_TranslucentBackground);
+        styled.setStyleSheet(QStringLiteral("#finderPreviewPane{background:#18324c;}"));
+        styled.resize(480, 320);
+        styled.show();
+        QApplication::processEvents();
+        const QImage painted = styled.grab().toImage();
+        check(painted.pixelColor(1, 1) == QColor(QStringLiteral("#18324c")),
+            "preview paints its styled background in a translucent host");
+    }
     QTemporaryDir files;
     check(files.isValid(), "temporary files");
     const auto redPath = files.filePath("large.png");

@@ -151,6 +151,7 @@ signals:
     void trimFinished(const QUrl &source, const QUrl &destination, const QString &error);
 
 protected:
+    void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void changeEvent(QEvent *event) override;
     void hideEvent(QHideEvent *event) override;
