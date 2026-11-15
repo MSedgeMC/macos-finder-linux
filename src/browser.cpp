@@ -321,7 +321,7 @@ public:
         } else decoration.value<QIcon>().paint(painter, iconRect, Qt::AlignCenter, enabled ? QIcon::Normal : QIcon::Disabled);
 
         QFont font(option.font);
-        font.setPointSize(m_options->textSize);
+        font.setPixelSize(m_options->textSize);
         const auto entry = index.data(KDirModel::FileItemRole).value<KFileItem>();
         if (entry.isLink()) font.setItalic(true);
         const QFontMetrics metrics(font);
@@ -555,7 +555,7 @@ public:
     explicit Private(Browser *owner) : q(owner) {}
 
     void layoutIcons() {
-        QFont font = icons->font(); font.setPointSize(iconOptions.textSize);
+        QFont font = icons->font(); font.setPixelSize(iconOptions.textSize);
         const int lineHeight = QFontMetrics(font).height();
         const int size = icons->iconSize().width();
         const int width = iconOptions.label == LabelRight ? size + 144 + iconOptions.spacing : size + 40 + iconOptions.spacing;

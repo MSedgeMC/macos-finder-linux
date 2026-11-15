@@ -210,7 +210,12 @@ public:
         setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded); setMouseTracking(true);
         setAutoFillBackground(false); viewport()->setAutoFillBackground(false);
         viewport()->setAttribute(Qt::WA_OpaquePaintEvent, false);
-        setStyleSheet(QStringLiteral("QTreeView { background: transparent; border: 0; }"));
+        setStyleSheet(QStringLiteral(
+            "QTreeView { background: transparent; border: 0; }"
+            "QScrollBar:vertical { background: transparent; width: 10px; margin: 1px; }"
+            "QScrollBar::handle:vertical { background: rgba(220,220,225,80); border-radius: 4px; min-height: 28px; }"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical { background: transparent; }"));
         setDragEnabled(true); setAcceptDrops(true); setDropIndicatorShown(false);
         setDragDropMode(QAbstractItemView::DragDrop);
         m_hoverTimer.setSingleShot(true);
