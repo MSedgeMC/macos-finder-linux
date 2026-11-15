@@ -615,8 +615,10 @@ void QuickActions::cancel()
 {
     if (!busy()) return;
     if (m_state->cancelled) m_state->cancelled->store(true);
-    if (m_state->job) m_state->job->kill(KJob::EmitResult);
     emit statusChanged(tr("Cancelling Quick Action…"));
+    // kill(EmitResult) can complete synchronously; publish cancellation status
+    // before it so the final status cannot be replaced with "Cancelling".
+    if (m_state->job) m_state->job->kill(KJob::EmitResult);
 }
 
 void QuickActions::showProgress()

@@ -4,10 +4,13 @@
 
 #include <QColor>
 #include <QImage>
+#include <QList>
 #include <QObject>
 #include <QPainterPath>
 #include <QPointer>
 #include <QRect>
+#include <QStringList>
+#include <QTransform>
 #include <QUrl>
 #include <QWidget>
 #include <memory>
