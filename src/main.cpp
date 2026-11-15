@@ -3433,18 +3433,18 @@ public slots:
     if (auto *window = m->active(); window && !windows.contains(window)) windows.append(window);
     for (auto *w : windows)
       if (w->isVisible()) {
-        if (auto *b = w->findChild<QComboBox *>(name); b && b->isVisible()) {
+        if (auto *b = w->findChild<QComboBox *>(name)) {
           b->setCurrentIndex(value);
           return true;
         }
-        if (auto *b = w->findChild<QTabWidget *>(name); b && b->isVisible()) {
+        if (auto *b = w->findChild<QTabWidget *>(name)) {
           b->setCurrentIndex(value); return true;
         }
-        if (auto *b = w->findChild<QSpinBox *>(name); b && b->isVisible()) {
+        if (auto *b = w->findChild<QSpinBox *>(name)) {
           b->setValue(value);
           return true;
         }
-        if (auto *b = w->findChild<QCheckBox *>(name); b && b->isVisible()) {
+        if (auto *b = w->findChild<QCheckBox *>(name)) {
           b->setChecked(value);
           return true;
         }
