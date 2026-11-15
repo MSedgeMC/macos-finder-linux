@@ -1042,7 +1042,8 @@ public:
           writingTags = false;
           if (pane) pane->tagChangeFinished(url, error);
           for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
-          if (browser()) browser()->refreshTags(); updateTags();
+          if (browser()) browser()->refreshTags();
+          updateTags();
         });
         connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
       });
