@@ -45,8 +45,11 @@
 #include <KCategorizedView>
 #include <KCategoryDrawer>
 #include <KFileItemDelegate>
+#include <KFileItemActions>
+#include <KFileItemListProperties>
 #include <KFilePreviewGenerator>
 #include <KPropertiesDialog>
+#include <KProtocolManager>
 #include <KJobWidgets>
 #include <KIO/CopyJob>
 #include <KIO/DropJob>
@@ -810,10 +813,17 @@ public:
         } else if (!index.isValid()) {
             selected->clearSelection();
         }
-        const bool hasSelection = !q->selectedUrls().isEmpty();
+        const auto contextItems = q->selectedItems();
+        const bool hasSelection = !contextItems.isEmpty();
         QMenu menu(q);
         auto *open = menu.addAction(QStringLiteral("Open"), [this] { activate(activeSelection()->currentIndex()); });
         open->setEnabled(hasSelection);
+        KFileItemActions nativeActions;
+        nativeActions.setParentWidget(q->window());
+        if (hasSelection) {
+            nativeActions.setItemListProperties(KFileItemListProperties(contextItems));
+            nativeActions.insertOpenWithActionsTo(nullptr, &menu, {});
+        }
         auto *look = menu.addAction(QStringLiteral("Quick Look"), [this] {
             const auto urls = q->selectedUrls();
             if (!urls.isEmpty()) emit q->quickLookRequested(urls);
@@ -821,6 +831,8 @@ public:
         look->setEnabled(hasSelection);
         menu.addSeparator();
         menu.addAction(QStringLiteral("New Folder"), q, &Browser::newFolder);
+        menu.addAction(QStringLiteral("New Folder with Selection"), q, &Browser::newFolderWithSelection)
+            ->setEnabled(q->canNewFolderWithSelection());
         auto *rename = menu.addAction(QStringLiteral("Rename"), q, &Browser::renameSelected);
         rename->setEnabled(q->selectedUrls().size() == 1);
         menu.addSeparator();
@@ -992,6 +1004,17 @@ bool Browser::canCompressSelection() const {
     return !urls.isEmpty() && !QStandardPaths::findExecutable(QStringLiteral("ark")).isEmpty() &&
         std::all_of(urls.cbegin(), urls.cend(), [](const QUrl &url) { return url.isLocalFile(); });
 }
+bool Browser::canNewFolderWithSelection() const {
+    const auto items = selectedItems();
+    if (items.isEmpty()) return false;
+    const auto parent = parentUrl(items.first().url());
+    // Capability queries stay in memory. Permission/conflict decisions belong
+    // to the actual KIO jobs rather than synchronous parent-directory stats.
+    return parent.isValid() && std::all_of(items.cbegin(), items.cend(), [&parent](const KFileItem &item) {
+        return parentUrl(item.url()) == parent && KProtocolManager::supportsMoving(item.url()) &&
+            KProtocolManager::supportsDeleting(item.url());
+    });
+}
 int Browser::sortColumn() const { return d->proxy->sortColumn(); }
 bool Browser::sortAscending() const { return d->proxy->sortOrder() == Qt::AscendingOrder; }
 QWidget *Browser::galleryPreviewHost() const { return d->galleryHost; }
@@ -1125,6 +1148,32 @@ void Browser::newFolder() {
     d->job(job, "Creating folder…");
     connect(job, &KJob::result, this, [this, destination](KJob *job) { if (!job->error()) selectUrls({destination}); });
 }
+void Browser::newFolderWithSelection() {
+    if (!canNewFolderWithSelection()) return;
+    const auto sources = selectedUrls();
+    // In Columns mode url() can be the selected directory itself. Always
+    // create alongside the captured sources, never inside a selected folder.
+    const auto parent = parentUrl(sources.first());
+    bool ok = false;
+    const auto name = QInputDialog::getText(window(), "New Folder with Selection", "Name:", QLineEdit::Normal, "New Folder With Items", &ok);
+    if (!ok) return;
+    if (!validName(name)) { emit errorOccurred("Enter a valid folder name without a slash."); return; }
+    const auto destination = childUrl(parent, name);
+    auto *create = KIO::mkdir(destination);
+    KIO::FileUndoManager::self()->recordJob(KIO::FileUndoManager::Mkdir, {}, destination, create);
+    d->job(create, "Creating folder…");
+    connect(create, &KJob::result, this, [this, sources, destination, parent](KJob *finished) {
+        if (finished->error()) return; // Never merge into an existing folder.
+        auto *move = KIO::move(sources, destination);
+        d->copyJob(move, "Moving selection into folder…");
+        connect(move, &KJob::result, this, [this, destination, parent](KJob *finished) {
+            // KIO records actual completed moves even on partial failure.
+            // Keep the new folder and let native Undo reverse the move, then
+            // the mkdir; deleting it as rollback could delete moved files.
+            if (!finished->error() && url() == parent) selectUrls({destination});
+        });
+    });
+}
 void Browser::copySelected(bool cut) {
     const auto urls = selectedUrls(); if (urls.isEmpty()) return;
     auto *mime = new QMimeData; mime->setUrls(urls);
@@ -1145,7 +1194,16 @@ void Browser::paste(bool move) {
 }
 void Browser::trashSelected() { const auto urls = selectedUrls(); if (!urls.isEmpty()) d->copyJob(KIO::trash(urls), "Moving to Trash…"); }
 void Browser::duplicateSelected() {
-    for (const auto &source : selectedUrls()) {
+    const auto sources = selectedUrls();
+    QSet<QUrl> occupied;
+    QSet<QUrl> parents;
+    for (const auto &source : sources) {
+        const auto parent = parentUrl(source);
+        if (parents.contains(parent)) continue;
+        parents.insert(parent);
+        for (const auto &entry : d->model->dirLister()->itemsForDir(parent, KDirLister::AllItems)) occupied.insert(entry.url());
+    }
+    for (const auto &source : sources) {
         const QFileInfo info(source.fileName());
         const auto entry = d->model->dirLister()->findByUrl(source);
         QString suffix = entry.isDir() || info.suffix().isEmpty() ? QString() : "." + info.suffix();
@@ -1153,8 +1211,13 @@ void Browser::duplicateSelected() {
         const auto parent = parentUrl(source);
         QUrl destination = childUrl(parent, stem + " copy" + suffix);
         int index = 2;
-        while (destination.isLocalFile() && QFileInfo::exists(destination.toLocalFile())) destination = childUrl(parent, stem + " copy " + QString::number(index++) + suffix);
-        d->copyJob(KIO::copyAs(source, destination), "Duplicating…");
+        while (occupied.contains(destination)) destination = childUrl(parent, stem + " copy " + QString::number(index++) + suffix);
+        occupied.insert(destination);
+        auto *copy = KIO::copyAs(source, destination);
+        // The lister snapshot avoids GUI-thread stats, but another client may
+        // create this name meanwhile. Native auto-rename preserves both files.
+        copy->setAutoRename(true);
+        d->copyJob(copy, "Duplicating…");
     }
 }
 void Browser::compressSelected() {

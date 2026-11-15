@@ -35,6 +35,7 @@ public:
     bool iconPreviewsShown() const;
     bool previewShown() const;
     bool canCompressSelection() const;
+    bool canNewFolderWithSelection() const;
     int sortColumn() const;
     bool sortAscending() const;
     QWidget *galleryPreviewHost() const;
@@ -60,6 +61,7 @@ public slots:
     void selectUrls(const QList<QUrl> &urls);
     void renameSelected();
     void newFolder();
+    void newFolderWithSelection();
     void copySelected(bool cut = false);
     void paste(bool move = false);
     void trashSelected();
