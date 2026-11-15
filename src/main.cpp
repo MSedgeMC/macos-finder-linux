@@ -948,6 +948,7 @@ public:
     for (int i = 0; i < tabs->count(); ++i)
       if (only < 0 || only == i) moving << qobject_cast<Browser *>(tabs->widget(i));
     saveView();
+    if (auto *panel = findChild<QDialog *>("finderViewOptions")) panel->close();
     {
       QSignalBlocker sourceSignals(tabs), destinationSignals(destination->tabs);
       for (auto *b : moving) {
@@ -2065,15 +2066,16 @@ private:
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     const QUrl targetUrl = browser()->url();
-    auto apply = [this, dialog, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, targetUrl] {
-      if (!browser() || browser()->url() != targetUrl) { dialog->close(); return; }
-      setMode(mode->currentIndex());
+    QPointer<Browser> target(browser());
+    auto apply = [this, dialog, target, size, spacing, textSize, labels, previews, group, sort, reverse, columns, targetUrl] {
+      if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return false; }
       browser()->setIconSize(size->value()); browser()->setGridSpacing(spacing->value()); browser()->setTextSize(textSize->value());
       browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex())); browser()->setIconPreviewsShown(previews->isChecked());
       browser()->setGroup(Browser::Group(group->currentIndex())); browser()->setSort(sort->currentData().toInt(), !reverse->isChecked());
       auto *tree = browser()->findChild<QTreeView *>("finderListView");
       for (auto [column, box] : columns) tree->setColumnHidden(column, !box->isChecked());
       saveView(); refresh();
+      return true;
     };
     auto updateControls = [form, mode, size, spacing, labels, defaults, columns] {
       const auto selected = mode->currentIndex();
@@ -2083,15 +2085,32 @@ private:
       form->setRowVisible(size, selected != Browser::Columns);
       for (auto [column, box] : columns) { Q_UNUSED(column); form->setRowVisible(box, selected == Browser::List); }
       form->setRowVisible(defaults, selected != Browser::Columns);
+      defaults->setEnabled(selected != Browser::Columns);
     };
-    connect(mode, &QComboBox::currentIndexChanged, dialog, [apply, updateControls] { updateControls(); apply(); });
+    auto reload = [this, dialog, target, targetUrl, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, updateControls] {
+      if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return; }
+      const QSignalBlocker b0(mode), b1(size), b2(spacing), b3(textSize), b4(labels), b5(previews), b6(group), b7(sort), b8(reverse);
+      mode->setCurrentIndex(int(target->mode())); updateControls();
+      size->setValue(target->iconSize()); spacing->setValue(target->gridSpacing()); textSize->setValue(target->textSize());
+      labels->setCurrentIndex(int(target->labelPosition())); previews->setChecked(target->iconPreviewsShown());
+      group->setCurrentIndex(int(target->group())); sort->setCurrentIndex(sort->findData(target->sortColumn())); reverse->setChecked(!target->sortAscending());
+      auto *tree = target->findChild<QTreeView *>("finderListView");
+      for (auto [column, box] : columns) { const QSignalBlocker block(box); box->setChecked(!tree->isColumnHidden(column)); }
+    };
+    connect(mode, &QComboBox::currentIndexChanged, dialog, [this, dialog, target, targetUrl, mode, reload] {
+      if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return; }
+      setMode(mode->currentIndex()); reload();
+    });
+    connect(tabs, &QTabWidget::currentChanged, dialog, [this, dialog, target] { if (target != browser()) dialog->close(); });
+    connect(target, &Browser::urlChanged, dialog, [dialog, targetUrl](const QUrl &url) { if (url != targetUrl) dialog->close(); });
+    connect(modeActions, &QActionGroup::triggered, dialog, [reload] { reload(); });
     for (auto *control : {spacing, size, textSize}) connect(control, &QSpinBox::valueChanged, dialog, apply);
     for (auto *control : {labels, group, sort}) connect(control, &QComboBox::currentIndexChanged, dialog, apply);
     for (auto *control : {previews, reverse}) connect(control, &QCheckBox::toggled, dialog, apply);
     for (auto [column, box] : columns) { Q_UNUSED(column); connect(box, &QCheckBox::toggled, dialog, apply); }
     updateControls();
     connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, apply, defaults] {
-      apply();
+      if (!apply()) return;
       if (defaults->isChecked() && browser()->mode() != Browser::Columns) {
         auto state = QJsonDocument::fromJson(browser()->saveViewState()).object();
         auto modes = state.value("modes").toArray();
