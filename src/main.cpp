@@ -13,6 +13,14 @@
 #include <KFilePlacesView>
 #include <KIO/ApplicationLauncherJob>
 #include <KIO/CopyJob>
+#include <KIO/DeleteJob>
+#include <KIO/RestoreJob>
+#include <KIO/RenameFileDialog>
+#include <KProtocolInfo>
+#include <KRecentDocument>
+#include <KProtocolManager>
+#include <KUrlCompletion>
+#include <QCompleter>
 #include <KIO/EmptyTrashJob>
 #include <KIO/FileUndoManager>
 #include <KIO/JobUiDelegateFactory>
@@ -30,6 +38,11 @@
 #include <QCloseEvent>
 #include <QColumnView>
 #include <QComboBox>
+#include <QDateEdit>
+#include <QDateTime>
+#include <QSaveFile>
+#include <QSet>
+#include <QFileDialog>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDialogButtonBox>
@@ -49,6 +62,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -64,6 +78,8 @@
 #include <QRegion>
 #include <QSettings>
 #include <QShortcut>
+#include <QStringListModel>
+#include <KCompletion>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -352,6 +368,7 @@ protected:
       emit available(url, storage.bytesAvailable());
   }
 };
+static std::mutex tagWrites;
 class TagsJob : public QThread {
   Q_OBJECT
 public:
@@ -363,8 +380,7 @@ signals:
 
 protected:
   void run() override {
-    static std::mutex writes;
-    std::unique_lock<std::mutex> lock(writes);
+    std::unique_lock<std::mutex> lock(tagWrites);
     QStringList errors, result;
     for (auto u : urls) {
       QString error;
@@ -448,6 +464,8 @@ public:
     connect(forward, &QToolButton::clicked, this, [this] { history(1); });
     folderTitle = new QLabel;
     folderTitle->setObjectName("finderFolderTitle");
+    folderTitle->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(folderTitle, &QWidget::customContextMenuRequested, this, [this](const QPoint &point) { ancestorMenu(folderTitle->mapToGlobal(point)); });
     folderTitle->setTextFormat(Qt::PlainText);
     folderTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     folderTitle->setMinimumWidth(50);
@@ -628,6 +646,17 @@ public:
     location->setObjectName("finderLocation");
     location->setPlaceholderText("Go to folder");
     location->hide();
+    auto *urlCompletion = new KUrlCompletion(KUrlCompletion::DirCompletion);
+    auto *completion = new QCompleter(location); completion->setCaseSensitivity(Qt::CaseInsensitive);
+    location->setCompleter(completion);
+    connect(location, &QLineEdit::textEdited, location, [urlCompletion, completion](const QString &text) {
+      urlCompletion->makeCompletion(text);
+      auto *old = completion->model(); completion->setModel(new QStringListModel(urlCompletion->allMatches(), completion)); if (old) old->deleteLater();
+    });
+    connect(urlCompletion, &KCompletion::matches, location, [completion](const QStringList &matches) {
+      auto *old = completion->model(); completion->setModel(new QStringListModel(matches, completion)); if (old) old->deleteLater();
+    });
+    connect(location, &QObject::destroyed, this, [urlCompletion] { delete urlCompletion; });
     outer->addWidget(location);
     connect(location, &QLineEdit::returnPressed, this, [this] {
       navigate(QUrl::fromUserInput(location->text(), QDir::homePath(),
@@ -683,6 +712,10 @@ public:
     tabs->setTabsClosable(true);
     tabs->setMovable(true);
     tabs->tabBar()->setAutoHide(true);
+    auto *newTab = button("plus", "New Tab", tabs);
+    newTab->setText("+"); newTab->setToolButtonStyle(Qt::ToolButtonTextOnly); newTab->setObjectName("finderNewTabButton");
+    tabs->setCornerWidget(newTab, Qt::TopRightCorner);
+    connect(newTab, &QToolButton::clicked, this, [this] { addTab(browser()->url(), true); });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) {
       if (fileSearch)
         stopSearch();
@@ -734,6 +767,23 @@ public:
     searchSummary = new QLabel;
     searchSummary->setContentsMargins(14, 8, 14, 8);
     resultsLayout->addWidget(searchSummary);
+    auto *criteria = new QHBoxLayout;
+    searchScope = new QComboBox; searchScope->setObjectName("finderSearchScope");
+    searchScope->addItem("This Computer", "computer"); searchScope->addItem("Current Folder", "current");
+    searchScope->setCurrentIndex(FinderPreferences::initialSearchScope() == "current" ? 1 : 0);
+    searchKind = new QComboBox; searchKind->setObjectName("finderSearchKind");
+    for (const auto &entry : QList<QPair<QString, QString>>{{"Any", ""}, {"Document", "text"}, {"Folder", "folder"}, {"Image", "image"}, {"PDF", "pdf"}, {"Music", "audio"}, {"Movie", "video"}, {"Archive", "archive"}})
+      searchKind->addItem(entry.first, entry.second);
+    searchContent = new QLineEdit; searchContent->setObjectName("finderSearchContent"); searchContent->setPlaceholderText("Contents contain (text files)");
+    auto *advancedSearch = new QPushButton("+", searchPage); advancedSearch->setObjectName("finderAddSearchCriteria"); advancedSearch->setAccessibleName("Add Search Criteria");
+    auto *saveSearch = new QPushButton("Save", searchPage); saveSearch->setObjectName("finderSaveSearch");
+    criteria->addWidget(searchScope); criteria->addWidget(new QLabel("Kind")); criteria->addWidget(searchKind); criteria->addWidget(searchContent, 1); criteria->addWidget(advancedSearch); criteria->addWidget(saveSearch);
+    resultsLayout->addLayout(criteria);
+    connect(searchScope, &QComboBox::currentIndexChanged, this, [this] { FinderPreferences::rememberSearchScope(searchScope->currentData().toString()); beginSearch(); });
+    connect(searchKind, &QComboBox::currentIndexChanged, this, [this] { beginSearch(); });
+    connect(searchContent, &QLineEdit::textChanged, this, [this] { if (searchTimer) searchTimer->start(); });
+    connect(advancedSearch, &QPushButton::clicked, this, [this] { searchCriteriaDialog(); });
+    connect(saveSearch, &QPushButton::clicked, this, [this] { saveSmartFolder(); });
     searchResults = new QTreeView;
     searchResults->setObjectName("finderSearchResults");
     searchResults->setRootIsDecorated(false);
@@ -766,26 +816,14 @@ public:
     searchResults->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(searchResults, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &p) {
-              QMenu menu;
-              menu.addAction("Open", this, [this] {
-                for (auto u : searchSelection())
-                  openUrl(u);
-              });
-              menu.addAction("Quick Look", this,
-                             [this] { quickLook(searchSelection()); });
+              refresh();
+              QMenu menu(this);
+              for (auto name : {"open", "openWith", "quickLook", "rename", "copy", "copyPath", "duplicate", "makeAlias", "showOriginal", "trash", "deleteImmediately", "putBack", "info"})
+                if (namedActions.contains(name) && namedActions[name]->isVisible()) menu.addAction(namedActions[name]);
+              menu.addMenu(tagMenu); menu.addMenu(share->menu());
               menu.addAction("Show in Enclosing Folder", this, [this] {
-                const auto u = searchSelection();
-                if (!u.isEmpty())
-                  showItems({u.first()});
-              });
-              menu.addAction("Get Info", this, [this] {
-                const auto u = searchSelection();
-                if (!u.isEmpty()) {
-                  auto *d = new KPropertiesDialog(u.first(), this);
-                  d->setAttribute(Qt::WA_DeleteOnClose);
-                  d->show();
-                }
-              });
+                const auto urls = searchSelection(); if (!urls.isEmpty()) showItems({urls.first()});
+              })->setEnabled(!searchSelection().isEmpty());
               menu.exec(searchResults->viewport()->mapToGlobal(p));
             });
     fileSearch = new LocalFileSearch(this);
@@ -795,6 +833,7 @@ public:
     connect(searchTimer, &QTimer::timeout, this, [this] { beginSearch(); });
     connect(fileSearch, &LocalFileSearch::filesFound, this,
             [this](quint64, const QList<QUrl> &urls) {
+              discoverTags(urls);
               for (auto u : urls) {
                 auto mime = QMimeDatabase().mimeTypeForFile(
                     u.fileName(), QMimeDatabase::MatchExtension);
@@ -852,7 +891,7 @@ public:
     sr->addWidget(status, 1);
     auto *size = iconSlider = new QSlider(Qt::Horizontal);
     size->setObjectName("finderIconSize");
-    size->setRange(40, 160);
+    size->setRange(32, 256);
     size->setValue(64);
     size->setFixedWidth(100);
     size->setToolTip("Icon size");
@@ -890,9 +929,7 @@ public:
       FinderScroll::install(area, options);
     }
   }
-  QUrl configuredNewFolder() const {
-    return QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString());
-  }
+  QUrl configuredNewFolder() const { return FinderPreferences::newWindowUrl(); }
   void openLaunchFolder(const QUrl &url) {
     if (QSettings().value("General/openFoldersInTabs", true).toBool()) {
       showNormal(); show(); raise(); activateWindow(); addTab(url, true);
@@ -962,6 +999,72 @@ public:
     mime->setData("application/x-kde-cutselection", cut ? "1" : "0");
     QApplication::clipboard()->setMimeData(mime);
   }
+  bool trashSelection() const {
+    const auto urls = selectedUrls();
+    return !urls.isEmpty() && std::all_of(urls.cbegin(), urls.cend(), [](const QUrl &url) { return url.scheme() == "trash"; });
+  }
+  bool writableDestination() const {
+    if (!browser() || showingSearch() || browser()->url().scheme() == "trash") return false;
+    const auto url = browser()->url();
+    if (!KProtocolManager::supportsWriting(url) || !KProtocolManager::supportsMakeDir(url)) return false;
+    const auto root = browser()->directoryModel()->dirLister()->rootItem();
+    return root.isNull() ? !url.isLocalFile() || QFileInfo(url.toLocalFile()).isWritable() : root.isWritable();
+  }
+  void renameSelection() {
+    const auto urls = selectedUrls();
+    if (urls.isEmpty() || trashSelection()) return;
+    if (urls.size() == 1) { selectedOperation("rename"); return; }
+    KFileItemList items;
+    if (!showingSearch()) items = browser()->selectedItems();
+    else for (const auto &url : urls) items << KFileItem(url);
+    auto *dialog = new KIO::RenameFileDialog(items, this);
+    connect(dialog, &KIO::RenameFileDialog::renamingFinished, this, [this](const QList<QUrl> &renamed) {
+      if (showingSearch()) beginSearch(); else browser()->selectUrls(renamed);
+    });
+    connect(dialog, &KIO::RenameFileDialog::error, this, [this](KJob *job) { status->setText(job->errorText()); });
+    dialog->open();
+  }
+  void makeAliases() {
+    for (const auto &url : selectedUrls()) {
+      auto destination = url.adjusted(QUrl::RemoveFilename);
+      destination.setPath(destination.path() + url.fileName() + " alias");
+      runCopyJob(KIO::linkAs(url, destination));
+    }
+  }
+  void showOriginal() {
+    for (const auto &url : selectedUrls()) {
+      if (!url.isLocalFile()) continue;
+      const QFileInfo info(url.toLocalFile());
+      if (info.isSymbolicLink()) {
+        const auto target = QUrl::fromLocalFile(info.symLinkTarget());
+        if (QFileInfo::exists(target.toLocalFile())) showItems({target});
+        else status->setText("The original file is unavailable.");
+        return;
+      }
+    }
+  }
+  void restoreSelection() {
+    if (!trashSelection()) return;
+    auto *job = KIO::restoreFromTrash(selectedUrls());
+    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+    connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Items put back"); });
+  }
+  void deleteImmediately() {
+    const auto urls = selectedUrls();
+    if (urls.isEmpty()) return;
+    auto *warning = new QMessageBox(QMessageBox::Warning, "Delete Immediately", "Permanently delete the selected items? This cannot be undone.",
+      QMessageBox::Cancel | QMessageBox::Yes, this);
+    warning->setAttribute(Qt::WA_DeleteOnClose);
+    warning->setDefaultButton(QMessageBox::Cancel);
+    warning->button(QMessageBox::Yes)->setText("Delete");
+    connect(warning, &QMessageBox::finished, this, [this, urls](int result) {
+      if (result != QMessageBox::Yes) return;
+      auto *job = KIO::del(urls);
+      job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+      connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Items deleted"); if (showingSearch()) beginSearch(); });
+    });
+    warning->open();
+  }
   void selectedOperation(const QString &operation) {
     if (!showingSearch()) {
       if (operation == "rename")
@@ -990,6 +1093,8 @@ public:
         status->setText("Enter a valid filename without a slash.");
         return;
       }
+      name = Browser::confirmedRenameName(KFileItem(urls.first()), name, this);
+      if (name.isEmpty()) return;
       auto dest = urls.first();
       dest.setPath(dest.path().left(dest.path().lastIndexOf('/') + 1) + name);
       job = KIO::moveAs(urls.first(), dest);
@@ -1023,6 +1128,7 @@ public:
     });
   }
   void navigate(const QUrl &u) {
+    if (openSmartFolder(u)) return;
     if (browser()) {
       stopSearch();
       saveView();
@@ -1037,26 +1143,28 @@ public:
     navigate(urls.first().adjusted(QUrl::RemoveFilename));
     browser()->selectUrls(urls);
   }
-  void quickLook(const QList<QUrl> &urls) {
-    if (urls.isEmpty())
-      return;
-    auto *w = new QMainWindow(this, Qt::Window);
-    w->setAttribute(Qt::WA_DeleteOnClose);
-    w->setWindowTitle("Quick Look");
-    w->resize(840, 620);
-    auto *p = new PreviewPane(w);
+  QList<QUrl> orderedPreviewUrls(const QList<QUrl> &urls) const {
     QList<QUrl> ordered = urls;
-    const auto current = browser()->activeView()->currentIndex();
-    const auto item = current.data(KDirModel::FileItemRole).value<KFileItem>();
-    if (ordered.removeOne(item.url()))
-      ordered.prepend(item.url());
-    p->setUrls(ordered);
-    w->setCentralWidget(p);
-    connect(p, &PreviewPane::openRequested, w,
-            [this](const QUrl &u) { openUrl(u); });
-    connect(p, &PreviewPane::closeRequested, w, &QWidget::close);
-    w->show();
-    p->setFocus();
+    QUrl current;
+    if (showingSearch()) current = searchResults->currentIndex().siblingAtColumn(0).data(Qt::UserRole).toUrl();
+    else current = browser()->activeView()->currentIndex().data(KDirModel::FileItemRole).value<KFileItem>().url();
+    if (ordered.removeOne(current)) ordered.prepend(current);
+    return ordered;
+  }
+  void quickLook(const QList<QUrl> &urls) {
+    if (urls.isEmpty()) return;
+    const auto ordered = orderedPreviewUrls(urls);
+    if (quickWindow && quickWindow->isVisible() && quickUrls == ordered) { quickWindow->hide(); return; }
+    if (!quickWindow) {
+      auto *window = new QMainWindow(this, Qt::Window);
+      window->setObjectName("finderQuickLookWindow");
+      window->setWindowTitle("Quick Look"); window->resize(840, 620);
+      auto *pane = new PreviewPane(window); quickWindow = window; quickPane = pane;
+      window->setCentralWidget(pane); wirePreview(pane);
+      connect(pane, &PreviewPane::closeRequested, window, &QWidget::hide);
+    }
+    quickUrls = ordered; quickPane->updateQuickLook(ordered, ordered.first());
+    installScrolling(quickWindow); quickPane->show(); quickWindow->show(); quickWindow->raise(); quickWindow->activateWindow(); quickPane->setFocus();
   }
   void setMode(int m) {
     if (!browser())
@@ -1119,7 +1227,7 @@ public:
         auto *job = new TagsJob; job->urls = {url}; job->tag = tag; job->operation = operation;
         QPointer<PreviewPane> pane(p);
         connect(job, &TagsJob::done, this, [this, pane, url](QString error, QStringList) {
-          writingTags = false;
+          writingTags = false; discoverTags({url}, true);
           if (pane) pane->tagChangeFinished(url, error);
           for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
           if (browser()) browser()->refreshTags();
@@ -1168,10 +1276,20 @@ public:
               if (b->mode() == Browser::Gallery) s.gallery->setUrls(urls);
               if (b->mode() == Browser::Columns) s.column->setUrls(urls);
               if (b->previewShown()) s.preview->setUrls(urls);
-              if (b == browser())
+              if (b == browser()) {
+                if (quickWindow && quickWindow->isVisible() && !urls.isEmpty()) { quickUrls = orderedPreviewUrls(urls); quickPane->updateQuickLook(quickUrls, quickUrls.first()); }
                 refresh();
+              }
             });
     connect(b, &Browser::quickLookRequested, this, &FinderWindow::quickLook);
+    connect(b, &Browser::folderOpenRequested, this, [this](const QUrl &url, Qt::KeyboardModifiers modifiers) {
+      if (modifiers.testFlag(Qt::MetaModifier)) {
+        if (QSettings().value("General/openFoldersInTabs", true).toBool()) addTab(url, true);
+        else emit newWindowRequested(url);
+      } else if (modifiers.testFlag(Qt::AltModifier)) { emit newWindowRequested(url); close(); }
+      else if (!header->isVisible()) emit newWindowRequested(url);
+      else navigate(url);
+    });
     connect(b, &Browser::openRequested, this,
             [this](const QUrl &url) { openUrl(url); });
     connect(b, &Browser::countChanged, this, [this, b](int) {
@@ -1286,6 +1404,62 @@ public:
   QAction *action(const QString &name) const {
     return namedActions.value(name);
   }
+  void tabOverview() {
+    if (auto *existing = findChild<QDialog *>("finderTabOverview")) { existing->close(); return; }
+    auto *dialog = new QDialog(this); dialog->setObjectName("finderTabOverview"); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("All Tabs"); dialog->resize(620, 420);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *view = new QListWidget(dialog); view->setObjectName("finderTabOverviewList"); layout->addWidget(view);
+    for (int i = 0; i < tabs->count(); ++i) {
+      auto *b = qobject_cast<Browser *>(tabs->widget(i));
+      auto *item = new QListWidgetItem(QIcon::fromTheme("folder"), tabs->tabText(i) + "\n" + b->url().toDisplayString(QUrl::PreferLocalFile), view);
+      item->setData(Qt::UserRole, i); item->setSizeHint(QSize(0, 64));
+    }
+    view->setCurrentRow(tabs->currentIndex());
+    connect(view, &QListWidget::itemActivated, dialog, [this, dialog](QListWidgetItem *item) { tabs->setCurrentIndex(item->data(Qt::UserRole).toInt()); dialog->accept(); });
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject); dialog->open(); installScrolling(dialog);
+  }
+  void connectToServer() {
+    if (auto *existing = findChild<QDialog *>("finderConnectServer")) { existing->show(); existing->raise(); return; }
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("finderConnectServer"); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("Connect to Server");
+    auto *layout = new QVBoxLayout(dialog);
+    layout->addWidget(new QLabel("Server Address", dialog));
+    auto *address = new QComboBox(dialog); address->setEditable(true); address->setObjectName("finderServerAddress");
+    address->addItems(QSettings().value("History/servers").toStringList()); layout->addWidget(address);
+    auto *error = new QLabel(dialog); error->setWordWrap(true); layout->addWidget(error);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Open, dialog);
+    buttons->button(QDialogButtonBox::Open)->setText("Connect"); layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, address, error] {
+      const QUrl url(address->currentText().trimmed());
+      if (!url.isValid() || url.scheme().isEmpty() || url.isLocalFile() || !KProtocolInfo::isKnownProtocol(url)) {
+        error->setText("Enter a supported server URL, such as smb://server/share or sftp://server/path."); return;
+      }
+      auto recent = QSettings().value("History/servers").toStringList();
+      recent.removeAll(url.toString(QUrl::RemovePassword)); recent.prepend(url.toString(QUrl::RemovePassword));
+      while (recent.size() > 15) recent.removeLast();
+      QSettings().setValue("History/servers", recent);
+      navigate(url); dialog->accept();
+    });
+    dialog->open(); address->setFocus();
+  }
+  void ancestorMenu(const QPoint &globalPosition) {
+    QMenu menu(this);
+    auto url = browser()->url();
+    for (int depth = 0; depth < 128; ++depth) {
+      auto *entry = menu.addAction(title(url), this, [this, url] { navigate(url); });
+      entry->setToolTip(url.toDisplayString(QUrl::PreferLocalFile));
+      if (url.path().isEmpty() || url.path() == "/") break;
+      auto path = url.path(); if (path.endsWith('/')) path.chop(1);
+      url.setPath(path.left(path.lastIndexOf('/') + 1));
+    }
+    menu.addSeparator();
+    menu.addAction("Copy Pathname", this, [this] { QApplication::clipboard()->setText(browser()->url().toDisplayString(QUrl::PreferLocalFile)); });
+    menu.exec(globalPosition);
+  }
   void revealLocation() {
     location->setText(browser()->url().toDisplayString(QUrl::PreferLocalFile));
     location->show();
@@ -1293,6 +1467,7 @@ public:
     location->selectAll();
   }
   void openUrl(const QUrl &url) {
+    if (openSmartFolder(url)) return;
     if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()) {
       navigate(url);
       return;
@@ -1321,6 +1496,7 @@ public:
 signals:
   void newWindowRequested(const QUrl &url);
   void quitRequested();
+  void windowListRequested(QMenu *menu);
   void closeAllRequested();
   void minimizeAllRequested();
   void hideRequested();
@@ -1390,8 +1566,9 @@ protected:
           browser()->activeView()->setFocus();
           return true;
         }
+        if (o == searchResults && k->modifiers() == Qt::NoModifier && (k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter)) { renameSelection(); return true; }
         if (o == searchResults && k->modifiers() == Qt::NoModifier &&
-            (k->key() == Qt::Key_Space || k->key() == Qt::Key_Return)) {
+            k->key() == Qt::Key_Space) {
           quickLook(searchSelection());
           return true;
         }
@@ -1413,7 +1590,13 @@ private:
   QTimer *searchTimer = nullptr;
   QLabel *searchSummary;
   QUrl searchRoot;
+  QComboBox *searchScope, *searchKind;
+  QLineEdit *searchContent;
+  qint64 searchMinimumSize = -1, searchMaximumSize = -1, searchModifiedAfter = -1;
   QString selectedTag;
+  QPointer<QMainWindow> quickWindow;
+  QPointer<PreviewPane> quickPane;
+  QList<QUrl> quickUrls;
   QUrl capacityUrl;
   QString capacityText;
   QWidget *bottom, *crumbs, *statusRow, *modeBox, *headerSidebar;
@@ -1432,6 +1615,7 @@ private:
   QHash<Browser *, TabState> states;
   QHash<QString, QAction *> namedActions;
   bool restoring = false, explicitNavigation = false;
+  bool wasMaximizedBeforeFullscreen = false;
   bool writingTags = false;
   quint64 tagGeneration = 0;
   void changeTags(QString tag, int operation) {
@@ -1446,7 +1630,8 @@ private:
     job->urls = urls;
     job->tag = tag;
     job->operation = operation;
-    connect(job, &TagsJob::done, this, [this](QString error, QStringList) {
+    connect(job, &TagsJob::done, this, [this, urls](QString error, QStringList) {
+      discoverTags(urls, true);
       writingTags = false;
       status->setText(error.isEmpty() ? "Tags updated" : error);
       updateTags(true);
@@ -1456,12 +1641,58 @@ private:
     connect(job, &QThread::finished, job, &QObject::deleteLater);
     job->start();
   }
+  QSet<QUrl> knownTagUrls;
+  QHash<QUrl, QStringList> knownTagValues;
+  QList<QUrl> pendingTagDiscovery;
+  QPointer<QThread> tagDiscovery;
+  void discoverTags(const QList<QUrl> &urls, bool force = false) {
+    for (const auto &url : urls) if (url.isLocalFile() && (force || !knownTagUrls.contains(url)) && knownTagUrls.size() < 10000) {
+      knownTagUrls.insert(url); if (!pendingTagDiscovery.contains(url)) pendingTagDiscovery << url;
+    }
+    runTagDiscovery();
+  }
+  void runTagDiscovery() {
+    if (tagDiscovery || pendingTagDiscovery.isEmpty()) return;
+    const auto pending = pendingTagDiscovery.mid(0, 256);
+    pendingTagDiscovery.remove(0, pending.size());
+    auto values = std::make_shared<QStringList>();
+    auto metadata = std::make_shared<QHash<QUrl, QStringList>>();
+    auto *worker = QThread::create([pending, values, metadata] {
+      *metadata = FileTags::tagsForUrls(pending);
+      for (const auto &list : *metadata) for (const auto &tag : list) if (!values->contains(tag)) *values << tag;
+    });
+    tagDiscovery = worker;
+    connect(worker, &QThread::finished, this, [this, values, metadata] {
+      for (auto it = metadata->cbegin(); it != metadata->cend(); ++it) knownTagValues[it.key()] = it.value();
+      tagDiscovery = nullptr;
+      if (FinderPreferences::registerObservedTags(*values)) {
+        places->refreshPreferences(); rebuildTagMenu();
+        for (auto *top : QApplication::topLevelWidgets()) if (auto *dialog = qobject_cast<FinderSettings *>(top)) dialog->reloadPreferences();
+      }
+      runTagDiscovery();
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
+  }
+  void rebuildTagMenu() {
+    for (auto *action : tagActions) { tagMenu->removeAction(action); namedActions.remove(action->objectName()); action->deleteLater(); }
+    tagActions.clear();
+    auto *before = tagMenu->actions().isEmpty() ? nullptr : tagMenu->actions().first();
+    for (const auto &tag : FinderPreferences::favoriteTags()) {
+      if (tag.isEmpty()) continue;
+      auto *action = new QAction(tag, tagMenu); action->setObjectName("tag" + tag); action->setCheckable(true);
+      QPixmap pixmap(20, 20); pixmap.fill(Qt::transparent); QPainter painter(&pixmap); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen); painter.setBrush(FileTags::tagColor(tag)); painter.drawEllipse(QRectF(4,4,12,12)); painter.end();
+      action->setIcon(QIcon(pixmap)); tagMenu->insertAction(before, action); tagActions << action; namedActions["tag" + tag] = action;
+      connect(action, &QAction::triggered, this, [this, tag](bool checked) { changeTags(tag, checked ? 1 : 2); });
+    }
+    updateTags(true);
+  }
   QList<QUrl> lastTagUrls;
   void updateTags(bool force = false) {
     auto urls = selectedUrls();
     if (!force && urls == lastTagUrls) return;
     lastTagUrls = urls;
     const auto generation = ++tagGeneration;
+    discoverTags(urls);
     for (auto a : tagMenu->actions())
       a->setEnabled(false);
     for (auto a : tagActions)
@@ -1512,18 +1743,20 @@ private:
     selectedTag.clear();
     if (!browser())
       return;
-    if (search->text().trimmed().isEmpty()) {
+    if (search->text().trimmed().isEmpty() && searchContent->text().isEmpty() && searchKind->currentData().toString().isEmpty() && searchMinimumSize < 0 && searchMaximumSize < 0 && searchModifiedAfter < 0) {
       fileSearch->cancel();
       contentStack->setCurrentWidget(tabs);
       return;
     }
-    searchRoot = QSettings().value("Search/currentFolder", true).toBool()
-                     ? browser()->url() : QUrl::fromLocalFile(QDir::homePath());
+    searchRoot = searchScope->currentData().toString() == "current" ? browser()->url() : QUrl::fromLocalFile("/");
     searchModel->removeRows(0, searchModel->rowCount());
     contentStack->setCurrentWidget(searchPage);
     searchSummary->setText("Searching " + title(searchRoot) + "…");
     LocalFileSearch::Options options;
     options.showHidden = namedActions["hidden"]->isChecked();
+    options.preferredPath = browser()->url().isLocalFile() ? browser()->url().toLocalFile() : QDir::homePath();
+    options.kind = searchKind->currentData().toString(); options.contentText = searchContent->text();
+    options.minimumSize = searchMinimumSize; options.maximumSize = searchMaximumSize; options.modifiedAfter = searchModifiedAfter;
     fileSearch->start(searchRoot, search->text().trimmed(), options);
     refresh();
   }
@@ -1581,6 +1814,7 @@ private:
     settings.beginGroup(
         "Folders/" + QString::fromLatin1(browser()->url().toEncoded().toBase64(
                          QByteArray::Base64UrlEncoding)));
+    settings.setValue("viewState", browser()->saveViewState());
     settings.setValue("mode", int(browser()->mode()));
     settings.setValue("sortColumn", browser()->sortColumn());
     settings.setValue("sortAscending", browser()->sortAscending());
@@ -1602,6 +1836,13 @@ private:
     settings.beginGroup(
         "Folders/" + QString::fromLatin1(browser()->url().toEncoded().toBase64(
                          QByteArray::Base64UrlEncoding)));
+    auto savedState = settings.value("viewState").toByteArray();
+    if (savedState.isEmpty()) savedState = QSettings().value("View/defaultState").toByteArray();
+    if (!savedState.isEmpty()) {
+      browser()->restoreViewState(savedState);
+      browser()->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
+      restoring = false; return;
+    }
     int mode = settings.value("mode", QSettings().value("View/defaultMode", 0))
                    .toInt();
     browser()->setMode(Browser::Mode(qBound(0, mode, 3)));
@@ -1629,34 +1870,111 @@ private:
     browser()->setIconPreviewsShown(settings.value("iconPreviews", true).toBool());
     restoring = false;
   }
+  void searchCriteriaDialog() {
+    auto *dialog = new QDialog(this); dialog->setWindowTitle("Search Criteria"); dialog->setObjectName("finderSearchCriteria"); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QFormLayout(dialog);
+    auto *minimum = new QSpinBox(dialog); minimum->setRange(0, 2000000000); minimum->setSpecialValueText("Any"); minimum->setValue(qMax(qint64(0), searchMinimumSize)); minimum->setObjectName("finderSearchMinimumSize"); layout->addRow("Minimum bytes", minimum);
+    auto *maximum = new QSpinBox(dialog); maximum->setRange(0, 2000000000); maximum->setSpecialValueText("Any"); maximum->setValue(qMax(qint64(0), searchMaximumSize)); maximum->setObjectName("finderSearchMaximumSize"); layout->addRow("Maximum bytes", maximum);
+    auto *dateEnabled = new QCheckBox("Modified after", dialog); dateEnabled->setChecked(searchModifiedAfter >= 0); layout->addRow(dateEnabled);
+    auto *date = new QDateEdit(dialog); date->setCalendarPopup(true); date->setDate(searchModifiedAfter >= 0 ? QDateTime::fromSecsSinceEpoch(searchModifiedAfter).date() : QDate::currentDate().addMonths(-1)); layout->addRow(date);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog); layout->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, minimum, maximum, date, dateEnabled] {
+      searchMinimumSize = minimum->value() ? minimum->value() : -1; searchMaximumSize = maximum->value() ? maximum->value() : -1;
+      searchModifiedAfter = dateEnabled->isChecked() ? date->date().startOfDay().toSecsSinceEpoch() : -1;
+      beginSearch(); dialog->accept();
+    }); dialog->open();
+  }
+  QJsonObject searchDefinition() const {
+    return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
+      {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
+      {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter}};
+  }
+  void saveSmartFolder() {
+    auto *dialog = new QFileDialog(this, "Save Smart Folder", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), "Finder Smart Folder (*.finder-search)");
+    dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setAcceptMode(QFileDialog::AcceptSave); dialog->setDefaultSuffix("finder-search");
+    const auto definition = searchDefinition();
+    connect(dialog, &QFileDialog::fileSelected, this, [this, definition](const QString &path) {
+      QSaveFile file(path);
+      if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(definition).toJson()) < 0 || !file.commit()) { status->setText("Could not save the Smart Folder."); return; }
+      auto *model = qobject_cast<KFilePlacesModel *>(places->model());
+      if (model) model->addPlace(QFileInfo(path).completeBaseName(), QUrl::fromLocalFile(path), "folder-saved-search");
+      status->setText("Smart Folder saved");
+    }); dialog->open();
+  }
+  bool openingSmartFolder = false;
+  bool openSmartFolder(const QUrl &url) {
+    if (openingSmartFolder) return false;
+    if (!url.isLocalFile() || !url.fileName().endsWith(".finder-search")) return false;
+    QFile file(url.toLocalFile()); if (!file.open(QIODevice::ReadOnly) || file.size() > 65536) return false;
+    const auto definition = QJsonDocument::fromJson(file.readAll()).object();
+    if (definition.value("format").toString() != "macos-finder-linux-smart-folder" || definition.value("version").toInt() != 1) return false;
+    const QUrl root(definition.value("root").toString());
+    if (!root.isValid() || root.scheme().isEmpty() || root == url || (root.isLocalFile() && !QFileInfo(root.toLocalFile()).isDir())) return false;
+    openingSmartFolder = true; navigate(root); openingSmartFolder = false;
+    { QSignalBlocker scope(searchScope), kind(searchKind), content(searchContent), name(search);
+      search->setText(definition.value("name").toString()); searchContent->setText(definition.value("content").toString());
+      searchScope->setCurrentIndex(qMax(0, searchScope->findData(definition.value("scope").toString()))); searchKind->setCurrentIndex(qMax(0, searchKind->findData(definition.value("kind").toString())));
+      searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
+    }
+    search->show(); search->setFocus(); layoutHeader(); beginSearch(); return true;
+  }
   void showSearch() {
+    if (!showingSearch()) {
+      QSignalBlocker block(searchScope); searchScope->setCurrentIndex(FinderPreferences::initialSearchScope() == "current" ? 1 : 0);
+    }
     search->show();
     search->setFocus();
     search->selectAll();
     layoutHeader();
   }
   void settingsDialog() {
-    if (auto *existing = findChild<FinderSettings *>()) {
-      existing->show(); existing->raise(); existing->activateWindow(); return;
-    }
+    for (auto *top : QApplication::topLevelWidgets())
+      if (auto *existing = qobject_cast<FinderSettings *>(top)) { existing->show(); existing->raise(); existing->activateWindow(); return; }
     auto *dialog = new FinderSettings(this);
     connect(dialog, &FinderSettings::preferencesChanged, this, [this] {
       for (auto *window : QApplication::topLevelWidgets()) {
         auto *finder = qobject_cast<FinderWindow *>(window);
         if (!finder) continue;
-        finder->places->refreshPreferences();
+        finder->places->refreshPreferences(); finder->rebuildTagMenu();
         finder->installScrolling(finder);
+        if (finder->quickWindow) finder->installScrolling(finder->quickWindow);
         for (auto *b : finder->states.keys())
           b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
         finder->refresh();
       }
     });
+    connect(dialog, &FinderSettings::tagMetadataChangeRequested, this,
+      [this, dialog](const QString &requestId, const QString &, const QString &oldName, const QString &newName) {
+        if (writingTags) { dialog->completeTagMetadataChange(requestId, "A tag update is already running."); return; }
+        writingTags = true;
+        QSet<QUrl> urls;
+        for (auto *window : QApplication::topLevelWidgets()) if (auto *finder = qobject_cast<FinderWindow *>(window))
+          for (auto it = finder->knownTagValues.cbegin(); it != finder->knownTagValues.cend(); ++it) if (it.value().contains(oldName)) urls.insert(it.key());
+        auto error = std::make_shared<QString>();
+        auto *worker = QThread::create([urls, oldName, newName, error] {
+          std::unique_lock<std::mutex> lock(tagWrites);
+          QHash<QUrl, QString> readErrors;
+          const auto existing = FileTags::tagsForUrls(urls.values(), &readErrors); int changed = 0; QStringList errors;
+          for (auto it = readErrors.cbegin(); it != readErrors.cend(); ++it) errors << it.key().fileName() + ": " + it.value();
+          for (auto it = existing.cbegin(); it != existing.cend(); ++it) {
+            auto tags = it.value(); if (!tags.contains(oldName)) continue;
+            tags.removeAll(oldName); if (!newName.isEmpty() && !tags.contains(newName)) tags << newName;
+            const auto result = FileTags::setTags(it.key(), tags);
+            if (result.isEmpty()) ++changed; else errors << it.key().fileName() + ": " + result;
+          }
+          if (!errors.isEmpty()) *error = QString("%1 known files updated; remaining errors:\n%2").arg(changed).arg(errors.join('\n'));
+        });
+        QPointer<FinderSettings> settings(dialog);
+        connect(worker, &QThread::finished, this, [this, settings, requestId, error, urls] { writingTags = false; discoverTags(urls.values(), true); if (settings) settings->completeTagMetadataChange(requestId, *error); if (browser()) browser()->refreshTags(); updateTags(true); });
+        connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
+      });
     dialog->open();
     installScrolling(dialog);
   }
   void viewOptions() {
     auto *existing = findChild<QDialog *>("finderViewOptions");
-    if (existing) { existing->show(); existing->raise(); existing->activateWindow(); return; }
+    if (existing) { existing->close(); return; }
     auto *dialog = new QDialog(this);
     dialog->setObjectName("finderViewOptions");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -1671,7 +1989,7 @@ private:
     form->addRow("View", mode);
     auto *size = new QSpinBox;
     size->setObjectName("viewOptionIconSize");
-    size->setRange(40, 160);
+    size->setRange(32, 256);
     size->setValue(browser()->iconSize());
     form->addRow("Icon size", size);
     auto *spacing = new QSpinBox;
@@ -1716,34 +2034,45 @@ private:
     defaults->setEnabled(browser()->mode() != Browser::Columns);
     form->addRow(defaults);
     auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save);
+        new QDialogButtonBox(QDialogButtonBox::Close | QDialogButtonBox::Save);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, dialog,
-            [this, dialog, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, defaults] {
-              setMode(mode->currentIndex());
-              browser()->setIconSize(size->value());
-              browser()->setGridSpacing(spacing->value());
-              browser()->setTextSize(textSize->value());
-              browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex()));
-              browser()->setIconPreviewsShown(previews->isChecked());
-              browser()->setGroup(Browser::Group(group->currentIndex()));
-              browser()->setSort(sort->currentData().toInt(),
-                                 !reverse->isChecked());
-              auto *tree = browser()->findChild<QTreeView *>("finderListView");
-              for (auto [c, box] : columns)
-                tree->setColumnHidden(c, !box->isChecked());
-              saveView();
-              if (defaults->isChecked()) {
-                QSettings s;
-                s.setValue("View/defaultMode", mode->currentIndex());
-                s.setValue("View/defaultIconSize", size->value());
-                s.setValue("View/defaultSort", sort->currentData().toInt());
-                s.setValue("View/defaultAscending", !reverse->isChecked());
-              }
-              refresh();
-              dialog->accept();
-            });
+    const QUrl targetUrl = browser()->url();
+    auto apply = [this, dialog, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, targetUrl] {
+      if (!browser() || browser()->url() != targetUrl) { dialog->close(); return; }
+      setMode(mode->currentIndex());
+      browser()->setIconSize(size->value()); browser()->setGridSpacing(spacing->value()); browser()->setTextSize(textSize->value());
+      browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex())); browser()->setIconPreviewsShown(previews->isChecked());
+      browser()->setGroup(Browser::Group(group->currentIndex())); browser()->setSort(sort->currentData().toInt(), !reverse->isChecked());
+      auto *tree = browser()->findChild<QTreeView *>("finderListView");
+      for (auto [column, box] : columns) tree->setColumnHidden(column, !box->isChecked());
+      saveView(); refresh();
+    };
+    auto updateControls = [form, mode, size, spacing, labels, defaults, columns] {
+      const auto selected = mode->currentIndex();
+      form->setRowVisible(spacing, selected == Browser::Icons);
+      form->setRowVisible(labels, selected == Browser::Icons);
+      form->setRowVisible(size, selected != Browser::Columns);
+      for (auto [column, box] : columns) { Q_UNUSED(column); form->setRowVisible(box, selected == Browser::List); }
+      form->setRowVisible(defaults, selected != Browser::Columns);
+    };
+    connect(mode, &QComboBox::currentIndexChanged, dialog, [apply, updateControls] { updateControls(); apply(); });
+    for (auto *control : {spacing, size, textSize}) connect(control, &QSpinBox::valueChanged, dialog, apply);
+    for (auto *control : {labels, group, sort}) connect(control, &QComboBox::currentIndexChanged, dialog, apply);
+    for (auto *control : {previews, reverse}) connect(control, &QCheckBox::toggled, dialog, apply);
+    for (auto [column, box] : columns) { Q_UNUSED(column); connect(box, &QCheckBox::toggled, dialog, apply); }
+    updateControls();
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, apply, defaults] {
+      apply();
+      if (defaults->isChecked() && browser()->mode() != Browser::Columns) {
+        auto state = QJsonDocument::fromJson(browser()->saveViewState()).object();
+        auto modes = state.value("modes").toArray();
+        for (int i = 0; i < modes.size(); ++i) { auto value = modes[i].toObject(); value["horizontal"] = 0; value["vertical"] = 0; modes[i] = value; }
+        state["modes"] = modes;
+        QSettings().setValue("View/defaultState", QJsonDocument(state).toJson(QJsonDocument::Compact));
+      }
+      dialog->accept();
+    });
     dialog->open();
   }
   void refresh() {
@@ -1769,6 +2098,7 @@ private:
     }
     folderTitle->setText(title(u));
     folderTitle->setToolTip(u.toDisplayString());
+    setWindowTitle(title(u) + " — Finder");
     if (!selectedTag.isEmpty() && showingSearch()) places->setTag(selectedTag);
     else places->setUrl(u);
     auto &s = states[browser()];
@@ -1782,6 +2112,7 @@ private:
     if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(previewUrls);
     if (browser()->mode() == Browser::Columns) state.column->setUrls(previewUrls);
     if (browser()->previewShown()) state.preview->setUrls(previewUrls);
+    if (namedActions.contains("sidebar")) { QSignalBlocker blocker(namedActions["sidebar"]); namedActions["sidebar"]->setChecked(sidebar->isVisible()); }
     if (namedActions.contains("preview")) {
       QSignalBlocker block(namedActions["preview"]);
       namedActions["preview"]->setChecked(browser()->previewShown());
@@ -1811,9 +2142,19 @@ private:
     tagButton->setEnabled(!selectedUrls().isEmpty());
     for (auto name : {"newFolder", "paste", "moveHere"})
       if (namedActions.contains(name))
-        namedActions[name]->setEnabled(!showingSearch());
-    if (namedActions.contains("rename"))
-      namedActions["rename"]->setEnabled(selectedUrls().size() == 1);
+        namedActions[name]->setEnabled(writableDestination() && (QString(name) == "newFolder" || QApplication::clipboard()->mimeData()->hasUrls()));
+    const bool inTrash = trashSelection();
+    for (const auto &name : {"rename", "duplicate", "makeAlias"})
+      if (namedActions.contains(name)) namedActions[name]->setEnabled(!selectedUrls().isEmpty() && !inTrash);
+    if (namedActions.contains("putBack")) { namedActions["putBack"]->setEnabled(inTrash); namedActions["putBack"]->setVisible(inTrash); }
+    if (namedActions.contains("trash")) {
+      namedActions["trash"]->setEnabled(!selectedUrls().isEmpty()); namedActions["trash"]->setText(inTrash ? "Put Back" : "Move to Trash");
+    }
+    if (namedActions.contains("deleteImmediately")) namedActions["deleteImmediately"]->setEnabled(!selectedUrls().isEmpty());
+    if (namedActions.contains("showOriginal")) {
+      const auto urls = selectedUrls();
+      namedActions["showOriginal"]->setEnabled(urls.size() == 1 && urls.first().isLocalFile() && QFileInfo(urls.first().toLocalFile()).isSymbolicLink());
+    }
     const int selected = selectedUrls().size();
     QString text = selected ? QString("%1 of %2 selected")
                                   .arg(selected)
@@ -1857,7 +2198,7 @@ private:
       return;
     const bool supported = KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
     const bool available = supported && !property("finderDisableBlur").toBool();
-    header->blur = sidebar->blur = supported;
+    header->blur = sidebar->blur = available;
     header->update();
     sidebar->update();
     QRegion region(QRect(0, 0, header->sidebarWidth, header->height()));
@@ -1942,8 +2283,9 @@ private:
     addAction(finder, "quit", "Quit Finder", {"Ctrl+Q", "Meta+Q"}, [this] { emit quitRequested(); });
     addAction(file, "newWindow", "New Finder Window", {"Ctrl+N", "Meta+N"},
               [this] {
-                emit newWindowRequested(QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString()));
+                emit newWindowRequested(configuredNewFolder());
               });
+    addAction(file, "newSmartFolder", "New Smart Folder", {"Meta+Alt+N"}, [this] { showSearch(); searchCriteriaDialog(); });
     addAction(file, "newTab", "New Tab", {"Ctrl+T", "Meta+T"},
               [this] { addTab(browser()->url(), true); });
     addAction(file, "newFolder", "New Folder", {"Ctrl+Shift+N", "Meta+Shift+N"},
@@ -1957,26 +2299,37 @@ private:
     addAction(file, "openWith", "Open With…", {}, [this] {
       for (const auto &url : selectedUrls()) openWith(url);
     });
-    addAction(file, "open", "Open", {"Meta+Down"}, [this] {
+    addAction(file, "open", "Open", {"Meta+Down", "Meta+O"}, [this] {
       for (auto u : selectedUrls())
         openUrl(u);
     });
-    addAction(file, "quickLook", "Quick Look", {},
+    addAction(file, "quickLook", "Quick Look", {"Meta+Y"},
               [this] { quickLook(selectedUrls()); });
     addAction(file, "rename", "Rename", {"F2"},
-              [this] { selectedOperation("rename"); });
+              [this] { renameSelection(); });
     addAction(file, "duplicate", "Duplicate", {"Ctrl+D", "Meta+D"},
               [this] { selectedOperation("duplicate"); });
+    addAction(file, "makeAlias", "Make Alias", {"Meta+Ctrl+A"}, [this] { makeAliases(); });
+    addAction(file, "showOriginal", "Show Original", {"Meta+R"}, [this] { showOriginal(); });
+    addAction(file, "putBack", "Put Back", {}, [this] { restoreSelection(); });
+    addAction(file, "deleteImmediately", "Delete Immediately…", {"Meta+Alt+Backspace"}, [this] { deleteImmediately(); });
     addAction(file, "compress", "Compress", {}, [this] {
       if (!showingSearch()) browser()->compressSelected();
     });
     addAction(file, "trash", "Move to Trash",
               {"Delete", "Meta+Backspace", "Ctrl+Backspace"},
-              [this] { selectedOperation("trash"); });
+              [this] { if (trashSelection()) restoreSelection(); else selectedOperation("trash"); });
     addAction(file, "info", "Get Info", {"Ctrl+I", "Meta+I"}, [this] {
       auto urls = selectedUrls();
-      auto *d = new KPropertiesDialog(
-          urls.isEmpty() ? browser()->url() : urls.first(), this);
+      if (urls.isEmpty()) urls << browser()->url();
+      for (const auto &url : urls) {
+        auto *d = new KPropertiesDialog(url, this);
+        d->setAttribute(Qt::WA_DeleteOnClose); d->show();
+      }
+    });
+    addAction(file, "summaryInfo", "Summary Info", {"Meta+Ctrl+I"}, [this] {
+      auto urls = selectedUrls(); if (urls.isEmpty()) urls << browser()->url();
+      auto *d = new KPropertiesDialog(urls, this);
       d->setAttribute(Qt::WA_DeleteOnClose);
       d->show();
     });
@@ -2016,6 +2369,18 @@ private:
     });
     addAction(view, "search", "Find", {"Ctrl+F", "Meta+F"},
               [this] { showSearch(); });
+    auto *sidebarAction = addAction(view, "sidebar", "Show Sidebar", {"Meta+Ctrl+S"}, [this] {
+      sidebar->setVisible(namedActions["sidebar"]->isChecked()); layoutHeader(); updateMaterial();
+    }); sidebarAction->setCheckable(true); sidebarAction->setChecked(true);
+    auto *toolbarAction = addAction(view, "toolbar", "Show Toolbar", {"Meta+Alt+T"}, [this] {
+      header->setVisible(namedActions["toolbar"]->isChecked());
+      sidebar->setVisible(namedActions["toolbar"]->isChecked() && namedActions["sidebar"]->isChecked()); updateMaterial();
+    }); toolbarAction->setCheckable(true); toolbarAction->setChecked(true);
+    auto *tabsAction = addAction(view, "tabBar", "Show Tab Bar", {"Meta+Shift+T"}, [this] {
+      tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
+      tabs->tabBar()->setVisible(namedActions["tabBar"]->isChecked() || tabs->count() > 1);
+    }); tabsAction->setCheckable(true);
+    addAction(view, "allTabs", "Show All Tabs", {"Meta+Shift+\\"}, [this] { tabOverview(); });
     addAction(view, "viewOptions", "Show View Options", {"Ctrl+J", "Meta+J"},
               [this] { viewOptions(); });
     auto *hidden = addAction(
@@ -2069,10 +2434,14 @@ private:
     });
     addAction(go, "location", "Go to Folder…", {"Ctrl+L", "Meta+Shift+G"},
               [this] { revealLocation(); });
+    addAction(go, "connectServer", "Connect to Server…", {"Meta+K"}, [this] { connectToServer(); });
     addAction(go, "applications", "Applications", {"Meta+Shift+A"}, [this] { navigate(QUrl::fromLocalFile("/usr/share/applications")); });
     addAction(go, "computer", "Computer", {"Meta+Shift+C"}, [this] { navigate(QUrl::fromLocalFile("/")); });
     addAction(go, "network", "Network", {"Meta+Shift+K"}, [this] { navigate(QUrl("remote:/")); });
-    addAction(go, "recentFiles", "Recents", {"Meta+Shift+F"}, [this] { places->setUrl(QUrl("recentlyused:/files")); navigate(QUrl("recentlyused:/files")); });
+    addAction(go, "recentFiles", "Recents", {"Meta+Shift+F"}, [this] {
+      if (KProtocolInfo::isKnownProtocol(QStringLiteral("recentlyused"))) navigate(QUrl("recentlyused:/files"));
+      else navigate(QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/RecentDocuments"));
+    });
     auto *recentMenu = go->addMenu("Recent Folders");
     connect(recentMenu, &QMenu::aboutToShow, this, [this, recentMenu] {
       recentMenu->clear();
@@ -2111,7 +2480,9 @@ private:
     addAction(window, "minimize", "Minimize", {"Meta+M"}, [this] { showMinimized(); });
     addAction(window, "zoom", "Zoom", {}, [this] { isMaximized() ? showNormal() : showMaximized(); });
     auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
-      isFullScreen() ? showNormal() : showFullScreen(); updateMaterial();
+      if (isFullScreen()) { if (wasMaximizedBeforeFullscreen) showMaximized(); else showNormal(); }
+      else { wasMaximizedBeforeFullscreen = isMaximized(); showFullScreen(); }
+      updateMaterial();
     });
     fullscreen->setCheckable(true);
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
@@ -2122,6 +2493,9 @@ private:
       for (int i = tabs->count() - 1; i >= 0; --i)
         if (tabs->widget(i) != keep) tabs->tabCloseRequested(i);
     });
+    window->addSeparator();
+    auto *windowList = window->addMenu("Finder Windows");
+    connect(windowList, &QMenu::aboutToShow, this, [this, windowList] { emit windowListRequested(windowList); });
     connect(window, &QMenu::aboutToShow, this, [this] {
       namedActions["detachTab"]->setEnabled(tabs->count() > 1);
       namedActions["closeOtherTabs"]->setEnabled(tabs->count() > 1);
@@ -2137,9 +2511,13 @@ private:
     actionsMenu->addAction(namedActions["statusBar"]);
     actionsMenu->addAction(namedActions["preview"]);
     actionsMenu->addAction(namedActions["viewOptions"]);
+    actionsMenu->addMenu(arrange->menu())->setText("Sort and Group");
+    actionsMenu->addMenu(share->menu())->setText("Share");
+    actionsMenu->addMenu(tagMenu)->setText("Tags");
     actionsMenu->addSeparator();
     for (auto menu : {finder, file, edit, view, go, window, help})
       actionsMenu->addMenu(menu);
+    connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] { refresh(); });
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable,
             namedActions["undo"], &QAction::setEnabled);
     connect(KIO::FileUndoManager::self(),
@@ -2160,6 +2538,14 @@ public:
   FinderWindow *create(QUrl u) {
     auto *w = new FinderWindow(u);
     windows << w;
+    connect(w, &FinderWindow::windowListRequested, this, [this, w](QMenu *menu) {
+      menu->clear();
+      for (const auto &window : windows) if (window) {
+        const QPointer<FinderWindow> target = window;
+        auto *entry = menu->addAction(window->windowTitle(), this, [target] { if (target) { target->showNormal(); target->raise(); target->activateWindow(); } });
+        entry->setCheckable(true); entry->setChecked(window == w);
+      }
+    });
     connect(w, &FinderWindow::newWindowRequested, this,
             [this](const QUrl &url) { create(url); });
     connect(w, &FinderWindow::quitRequested, this, [this] {
@@ -2272,6 +2658,11 @@ public:
   Manager *m;
   explicit TestAPI(Manager *manager) : QObject(manager), m(manager) {}
 public slots:
+  QString actionState(const QString &name) {
+    auto *action = m->active() ? m->active()->action(name) : nullptr;
+    if (!action) return "{}";
+    return QString::fromUtf8(QJsonDocument(QJsonObject{{"enabled", action->isEnabled()}, {"visible", action->isVisible()}, {"text", action->text()}, {"checked", action->isChecked()}}).toJson(QJsonDocument::Compact));
+  }
   QString diagnostics() {
     if (!m->active())
       return "{}";
@@ -2300,8 +2691,7 @@ public slots:
       for (int row = 0; row < tree->model()->rowCount(); ++row) {
         auto index = tree->model()->index(row, 0);
         if (urls.contains(index.data(Qt::UserRole).toUrl()))
-          tree->selectionModel()->select(index, QItemSelectionModel::Select |
-                                                    QItemSelectionModel::Rows);
+          { tree->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows); tree->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate); }
       }
       tree->setFocus();
       return true;
@@ -2626,7 +3016,7 @@ int main(int argc, char **argv) {
         : select ? "showItems"
                  : "openFolders");
     if (paths.isEmpty() && !manager.daemon)
-      paths << QDir::homePath();
+      paths << FinderPreferences::newWindowUrl().toString();
     if (!paths.isEmpty()) {
       msg << paths;
       auto reply = bus.call(msg);
@@ -2647,7 +3037,7 @@ int main(int argc, char **argv) {
     bus.registerObject("/Test", &test, QDBusConnection::ExportAllSlots);
   }
   if (paths.isEmpty() && !manager.daemon)
-    paths << QDir::homePath();
+    paths << FinderPreferences::newWindowUrl().toString();
   if (quick)
     manager.quickLook(paths);
   else if (select)
