@@ -27,6 +27,9 @@ class QVBoxLayout;
 class QLineEdit;
 class QToolButton;
 class QAction;
+class QListWidget;
+class QTimer;
+class QFileSystemWatcher;
 namespace KIO { class PreviewJob; }
 struct PreviewRaster;
 struct PreviewWorkQueue;
@@ -50,6 +53,25 @@ public:
     // Geometry of the auto-oriented original, never the bounded display raster.
     // rotateCopyRequested continues to identify the original source file.
     QSize originalImageSize() const;
+    // Reusable Quick Look host: retain its window/pane, connect closeRequested
+    // to hide (not delete), and forward active selection to updateQuickLook.
+    // toggleQuickLook returns true when opened, false when toggled closed.
+    // primary is the actual last-selected URL, including search selections.
+    bool toggleQuickLook(const QList<QUrl> &urls, const QUrl &primary = QUrl());
+    void updateQuickLook(const QList<QUrl> &urls, const QUrl &primary = QUrl());
+    QList<QUrl> urls() const;
+    // Raster zoom is relative to fit-to-window (.25–16); decoding stays bounded.
+    void setZoomFactor(qreal factor);
+    qreal zoomFactor() const;
+    void resetZoom();
+    void setFullScreen(bool fullScreen);
+    bool isFullScreen() const;
+    void setContactSheet(bool enabled);
+    bool contactSheet() const;
+    // Starts a looping selection slideshow; interval is bounded to .5–60s.
+    // Stops on close/hide or contact sheet, and never auto-starts media.
+    void setSlideshow(bool running, int intervalMs = 4000);
+    bool slideshowRunning() const;
     // Call for every tagChangeRequested completion, including rejected/busy
     // requests. Errors are displayed without optimistically changing tag chips.
     void tagChangeFinished(const QUrl &url, const QString &error = QString());
@@ -63,6 +85,9 @@ signals:
     void rotateCopyRequested(const QUrl &url);
     // operation matches the application's TagsJob: 1 = add, 2 = remove.
     void tagChangeRequested(const QUrl &url, const QString &tag, int operation);
+    // Navigation only; hosts may reflect the primary item in their selection.
+    // updateQuickLook already updates the pane, so avoid echo update loops.
+    void currentUrlChanged(const QUrl &url);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -94,6 +119,11 @@ private:
     void cancelNativePreview();
     void requestRaster(bool pdf, int page = 0);
     void applyRaster(const PreviewRaster &raster, bool pdf);
+    void updateSourceWatch();
+    void requestClose();
+    void updatePreviewControls();
+    void populateContactSheet();
+    void loadContactThumbnails();
 
     QList<QUrl> m_urls;
     int m_index = -1;
@@ -119,6 +149,24 @@ private:
     QSize m_originalImageSize;
     std::shared_ptr<PreviewWorkQueue> m_renderWork;
     std::shared_ptr<PreviewWorkQueue> m_tagWork;
+    std::shared_ptr<PreviewWorkQueue> m_contactWork;
+    bool m_compact = false;
+    bool m_contactSheet = false;
+    qreal m_zoom = 1;
+    Qt::WindowStates m_beforeFullScreen;
+    quint64 m_contactGeneration = 0;
+    QListWidget *m_contactList;
+    QWidget *m_viewControls;
+    QPushButton *m_zoomOut;
+    QPushButton *m_zoomIn;
+    QPushButton *m_zoomReset;
+    QPushButton *m_fullScreen;
+    QPushButton *m_contactToggle;
+    QPushButton *m_slideshow;
+    QTimer *m_slideshowTimer;
+    QTimer *m_contactTimer;
+    QFileSystemWatcher *m_sourceWatcher;
+    QTimer *m_refreshTimer;
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;

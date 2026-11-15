@@ -9,6 +9,9 @@
 #include <QFile>
 #include <QImage>
 #include <QLabel>
+#include <QKeyEvent>
+#include <QListWidget>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPdfWriter>
 #include <QPushButton>
@@ -97,6 +100,56 @@ int main(int argc, char **argv)
     }
     pane.setUrls({});
     check(waitFor([&] { return content->currentWidget() != image; }), "clear selection resets preview");
+    pane.hide();
+    int changes = 0, closes = 0;
+    QObject::connect(&pane, &PreviewPane::currentUrlChanged, [&] { ++changes; });
+    QObject::connect(&pane, &PreviewPane::closeRequested, [&] { ++closes; });
+    check(pane.toggleQuickLook({redUrl, blueUrl}, blueUrl), "reusable Quick Look opens");
+    check(pane.currentUrl() == blueUrl && changes == 1, "host primary selection emits one change");
+    check(waitFor([&] { return pane.originalImageSize() == blue.size(); }), "primary selection renders");
+    pane.setZoomFactor(2);
+    check(pane.zoomFactor() == 2, "zoom API");
+    const QImage beforePan = image->grab().toImage();
+    const QPointF centre(image->rect().center());
+    QMouseEvent press(QEvent::MouseButtonPress, centre, centre, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, centre + QPointF(90, 20), centre + QPointF(90, 20), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, centre + QPointF(90, 20), centre + QPointF(90, 20), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(image, &press); QApplication::sendEvent(image, &move); QApplication::sendEvent(image, &release);
+    check(!beforePan.isNull() && !image->grab().isNull(), "zoom/pan paints without giant pixmap");
+    pane.setZoomFactor(100); check(pane.zoomFactor() == 16, "zoom bounded above");
+    pane.resetZoom(); check(pane.zoomFactor() == 1, "fit reset");
+    pane.setFocus();
+    QKeyEvent zoomKey(QEvent::KeyPress, Qt::Key_Plus, Qt::MetaModifier);
+    QApplication::sendEvent(&pane, &zoomKey);
+    check(pane.zoomFactor() > 1, "Command-plus zoom");
+    pane.setContactSheet(true);
+    auto *sheet = pane.findChild<QListWidget *>("previewContactSheet");
+    check(pane.contactSheet() && sheet->count() == 2 && content->currentWidget() == sheet, "contact sheet selection");
+    check(waitFor([&] { return !sheet->item(0)->data(Qt::UserRole + 1).toString().isEmpty()
+        && !sheet->item(1)->data(Qt::UserRole + 1).toString().isEmpty(); }), "contact thumbnails load off thread");
+    if (argc > 1) check(pane.grab().save(QString::fromLocal8Bit(argv[1])), "isolated screenshot artifact");
+    sheet->itemActivated(sheet->item(0));
+    check(!pane.contactSheet() && pane.currentUrl() == redUrl, "contact sheet activation opens item");
+    pane.setSlideshow(true, 500);
+    check(waitFor([&] { return pane.currentUrl() == blueUrl; }, 2500), "slideshow advances");
+    check(waitFor([&] { return pane.currentUrl() == redUrl; }, 2500), "slideshow wraps");
+    pane.setSlideshow(false); check(!pane.slideshowRunning(), "slideshow stops");
+    pane.showMaximized();
+    pane.setFullScreen(true); check(pane.isFullScreen(), "fullscreen enters");
+    pane.setFullScreen(false); check(pane.isMaximized(), "fullscreen restores maximized state");
+    pane.showNormal();
+    pane.setCompact(true); pane.setFullScreen(true);
+    check(!pane.isFullScreen(), "embedded previews cannot fullscreen host");
+    pane.setCompact(false);
+    check(!pane.toggleQuickLook({redUrl}), "reusable Quick Look toggles closed");
+    check(closes == 1 && !pane.isVisible(), "toggle emits close and hides pane");
+    check(pane.toggleQuickLook({blueUrl}), "reusable Quick Look reopens");
+    check(waitFor([&] { return pane.originalImageSize() == blue.size(); }), "reopened image");
+    QImage green(200, 120, QImage::Format_RGB32); green.fill(Qt::green);
+    check(green.save(bluePath), "external replacement fixture");
+    check(waitFor([&] { return pane.originalImageSize() == green.size(); }), "file watcher refreshes external edit");
+    pane.hide();
     std::cout << "PASS: async preview, stale cancellation, original geometry, PDF pages, hide/destruction\n";
+    std::cout << "PASS: reusable lifecycle, primary selection, zoom/pan, contact sheet, slideshow, fullscreen, file freshness\n";
     return 0;
 }

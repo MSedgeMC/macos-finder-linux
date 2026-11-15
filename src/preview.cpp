@@ -17,12 +17,15 @@
 #include <QHBoxLayout>
 #include <QHideEvent>
 #include <QImageReader>
+#include <QFileSystemWatcher>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QLocale>
 #include <QMediaPlayer>
+#include <QMouseEvent>
 #include <QMenu>
 #include <QMimeDatabase>
 #include <QPainter>
@@ -30,7 +33,9 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSlider>
+#include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextEdit>
 #include <QTimer>
@@ -40,12 +45,14 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVideoWidget>
+#include <QWheelEvent>
 #include <QGuiApplication>
 #include <QtEndian>
 #include <algorithm>
 #include <memory>
 #include <atomic>
 #include <functional>
+#include <cmath>
 
 struct PreviewRaster {
     QImage image;
@@ -75,6 +82,61 @@ class PreviewTask : public QObject {
     Q_OBJECT
 signals:
     void finished();
+};
+
+// Paint only the visible source through a transform. Zoom/pan does not allocate
+// huge scaled pixmaps or synchronously re-decode the full-resolution original.
+class PreviewImageLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+    QImage raster;
+    qreal zoom = 1;
+    QPointF pan;
+    std::function<void(qreal)> zoomRequested;
+    void constrainPan() {
+        const QSizeF size = fittedSize();
+        const qreal x = std::max<qreal>(0, (size.width() - width()) / 2);
+        const qreal y = std::max<qreal>(0, (size.height() - height()) / 2);
+        pan.setX(std::clamp(pan.x(), -x, x));
+        pan.setY(std::clamp(pan.y(), -y, y));
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        if (raster.isNull()) return;
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QSizeF size = fittedSize();
+        painter.drawImage(QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2) + pan, size), raster);
+    }
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && zoom > 1) {
+            dragging = true; last = event->position(); setCursor(Qt::ClosedHandCursor); event->accept();
+        } else QLabel::mousePressEvent(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if (dragging) {
+            pan += event->position() - last; last = event->position(); constrainPan(); update(); event->accept();
+        } else QLabel::mouseMoveEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (dragging && event->button() == Qt::LeftButton) {
+            dragging = false; unsetCursor(); event->accept();
+        } else QLabel::mouseReleaseEvent(event);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && zoomRequested) { zoomRequested(zoom > 1 ? 1 : 2); event->accept(); }
+        else QLabel::mouseDoubleClickEvent(event);
+    }
+    void wheelEvent(QWheelEvent *event) override {
+        if ((event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) && zoomRequested) {
+            const qreal delta = event->pixelDelta().isNull() ? event->angleDelta().y() / 120.0 : event->pixelDelta().y() / 40.0;
+            zoomRequested(zoom * std::pow(1.2, delta)); event->accept();
+        } else QLabel::wheelEvent(event);
+    }
+private:
+    QSizeF fittedSize() const { return QSizeF(raster.size()).scaled(QSizeF(size()), Qt::KeepAspectRatio) * zoom; }
+    bool dragging = false;
+    QPointF last;
 };
 
 namespace {
@@ -312,7 +374,8 @@ QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 }
 
 PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
-    m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>())
+    m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>()),
+    m_contactWork(std::make_shared<PreviewWorkQueue>())
 {
     setObjectName(QStringLiteral("finderPreviewPane"));
     setAutoFillBackground(true);
@@ -362,7 +425,8 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_fallback->setWordWrap(true);
     m_fallback->setTextFormat(Qt::PlainText);
     m_content->addWidget(m_fallback);
-    m_picture = new QLabel(this);
+    m_picture = new PreviewImageLabel(this);
+    static_cast<PreviewImageLabel *>(m_picture)->zoomRequested = [this](qreal zoom) { setZoomFactor(zoom); };
     m_picture->setObjectName(QStringLiteral("previewImage"));
     m_picture->setAlignment(Qt::AlignCenter);
     m_picture->setMinimumSize(1, 1);
@@ -384,7 +448,73 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     auto *videoLayout = new QVBoxLayout(m_videoPage);
     videoLayout->setContentsMargins(0, 0, 0, 0);
     m_content->addWidget(m_videoPage);
+    m_contactList = new QListWidget(this);
+    m_contactList->setObjectName(QStringLiteral("previewContactSheet"));
+    m_contactList->setAccessibleName(tr("Selection contact sheet"));
+    m_contactList->setViewMode(QListView::IconMode);
+    m_contactList->setResizeMode(QListView::Adjust);
+    m_contactList->setMovement(QListView::Static);
+    m_contactList->setIconSize(QSize(128, 96));
+    m_contactList->setGridSize(QSize(160, 136));
+    m_contactList->setWordWrap(true);
+    m_contactList->setSpacing(8);
+    m_contactList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_content->addWidget(m_contactList);
     previewLayout->addWidget(m_content, 1);
+
+    m_viewControls = new QWidget(this);
+    m_viewControls->setObjectName(QStringLiteral("previewViewControls"));
+    auto *viewControls = new QHBoxLayout(m_viewControls);
+    viewControls->setContentsMargins(0, 0, 0, 0);
+    m_zoomOut = button(QStringLiteral("−"), QStringLiteral("previewZoomOut"), this);
+    m_zoomOut->setAccessibleName(tr("Zoom out"));
+    m_zoomReset = button(tr("Fit"), QStringLiteral("previewZoomReset"), this);
+    m_zoomIn = button(QStringLiteral("+"), QStringLiteral("previewZoomIn"), this);
+    m_zoomIn->setAccessibleName(tr("Zoom in"));
+    m_contactToggle = button(tr("Index Sheet"), QStringLiteral("previewIndexSheet"), this);
+    m_contactToggle->setCheckable(true);
+    m_slideshow = button(tr("Slideshow"), QStringLiteral("previewSlideshow"), this);
+    m_slideshow->setCheckable(true);
+    m_fullScreen = button(tr("Full Screen"), QStringLiteral("previewFullScreen"), this);
+    m_fullScreen->setCheckable(true);
+    viewControls->addWidget(m_zoomOut);
+    viewControls->addWidget(m_zoomReset);
+    viewControls->addWidget(m_zoomIn);
+    viewControls->addStretch();
+    viewControls->addWidget(m_contactToggle);
+    viewControls->addWidget(m_slideshow);
+    viewControls->addWidget(m_fullScreen);
+    previewLayout->addWidget(m_viewControls);
+    m_slideshowTimer = new QTimer(this);
+    m_contactTimer = new QTimer(this);
+    m_contactTimer->setSingleShot(true);
+    m_contactTimer->setInterval(80);
+    m_sourceWatcher = new QFileSystemWatcher(this);
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(120);
+    connect(m_sourceWatcher, &QFileSystemWatcher::fileChanged, this, [this] { m_refreshTimer->start(); });
+    connect(m_sourceWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_refreshTimer->start(); });
+    connect(m_refreshTimer, &QTimer::timeout, this, &PreviewPane::refreshCurrent);
+    connect(m_contactTimer, &QTimer::timeout, this, &PreviewPane::loadContactThumbnails);
+    connect(m_contactList->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_contactTimer->start(); });
+    connect(m_contactList, &QListWidget::itemActivated, this, [this](QListWidgetItem *item) {
+        m_index = m_contactList->row(item);
+        setContactSheet(false);
+        showCurrent();
+        emit currentUrlChanged(currentUrl());
+    });
+    connect(m_zoomOut, &QPushButton::clicked, this, [this] { setZoomFactor(m_zoom / 1.2); });
+    connect(m_zoomIn, &QPushButton::clicked, this, [this] { setZoomFactor(m_zoom * 1.2); });
+    connect(m_zoomReset, &QPushButton::clicked, this, &PreviewPane::resetZoom);
+    connect(m_contactToggle, &QPushButton::clicked, this, &PreviewPane::setContactSheet);
+    connect(m_fullScreen, &QPushButton::clicked, this, &PreviewPane::setFullScreen);
+    connect(m_slideshow, &QPushButton::clicked, this, [this](bool enabled) { setSlideshow(enabled); });
+    connect(m_slideshowTimer, &QTimer::timeout, this, [this] {
+        if (m_urls.size() < 2 || !isVisible()) { setSlideshow(false); return; }
+        if (m_index + 1 == m_urls.size()) { m_index = 0; showCurrent(); emit currentUrlChanged(currentUrl()); }
+        else advance(1);
+    });
 
     m_pageControls = new QWidget(this);
     auto *pageLayout = new QHBoxLayout(m_pageControls);
@@ -426,7 +556,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_metadata->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(m_metadata);
 
-    connect(m_close, &QPushButton::clicked, this, &PreviewPane::closeRequested);
+    connect(m_close, &QPushButton::clicked, this, &PreviewPane::requestClose);
     connect(m_previous, &QPushButton::clicked, this, [this] { advance(-1); });
     connect(m_next, &QPushButton::clicked, this, [this] { advance(1); });
     connect(m_open, &QPushButton::clicked, this, [this] {
@@ -446,6 +576,7 @@ PreviewPane::~PreviewPane()
 {
     m_renderWork->cancel();
     m_tagWork->cancel();
+    m_contactWork->cancel();
     cancelNativePreview();
     stopMedia();
 }
@@ -457,6 +588,213 @@ void PreviewPane::refreshCurrent()
     m_images.clear();
     m_fingerprint.clear();
     showCurrent();
+    if (m_contactSheet) { ++m_contactGeneration; m_contactWork->cancel(); populateContactSheet(); }
+}
+
+QList<QUrl> PreviewPane::urls() const { return m_urls; }
+
+bool PreviewPane::toggleQuickLook(const QList<QUrl> &urls, const QUrl &primary)
+{
+    if (isVisible()) { requestClose(); return false; }
+    updateQuickLook(urls, primary);
+    if (m_urls.isEmpty()) return false;
+    show();
+    setFocus(Qt::ShortcutFocusReason);
+    return true;
+}
+
+void PreviewPane::updateQuickLook(const QList<QUrl> &urls, const QUrl &primary)
+{
+    const QUrl previous = currentUrl();
+    QSignalBlocker blocker(this);
+    setUrls(urls);
+    const int index = int(m_urls.indexOf(primary));
+    if (index >= 0 && index != m_index) {
+        m_index = index;
+        showCurrent();
+    }
+    blocker.unblock();
+    if (previous != currentUrl()) emit currentUrlChanged(currentUrl());
+    if (m_urls.isEmpty() && isVisible()) requestClose();
+}
+
+void PreviewPane::setZoomFactor(qreal factor)
+{
+    if (!std::isfinite(factor)) return;
+    m_zoom = std::clamp(factor, .25, 16.0);
+    updateImageSize();
+    updatePreviewControls();
+}
+
+qreal PreviewPane::zoomFactor() const { return m_zoom; }
+void PreviewPane::resetZoom()
+{
+    static_cast<PreviewImageLabel *>(m_picture)->pan = {};
+    setZoomFactor(1);
+}
+
+void PreviewPane::setFullScreen(bool enabled)
+{
+    // Embedded Gallery/column previews must not fullscreen their Finder host.
+    if (m_compact || m_gallery || enabled == isFullScreen()) return;
+    QWidget *host = window();
+    if (enabled) {
+        m_beforeFullScreen = host->windowState();
+        host->showFullScreen();
+    } else {
+        host->setWindowState(m_beforeFullScreen & ~Qt::WindowFullScreen);
+        host->show();
+    }
+    updatePreviewControls();
+}
+
+bool PreviewPane::isFullScreen() const { return window()->windowState().testFlag(Qt::WindowFullScreen); }
+bool PreviewPane::contactSheet() const { return m_contactSheet; }
+bool PreviewPane::slideshowRunning() const { return m_slideshowTimer->isActive(); }
+
+void PreviewPane::setContactSheet(bool enabled)
+{
+    enabled = enabled && m_urls.size() > 1 && !m_compact && !m_gallery;
+    if (enabled == m_contactSheet) return;
+    m_contactSheet = enabled;
+    ++m_contactGeneration;
+    m_contactWork->cancel();
+    if (enabled) {
+        setSlideshow(false);
+        stopMedia();
+        m_renderWork->cancel();
+        ++m_previewGeneration;
+        cancelNativePreview();
+        populateContactSheet();
+        m_content->setCurrentWidget(m_contactList);
+        m_contactList->setFocus(Qt::ShortcutFocusReason);
+    } else {
+        m_contactTimer->stop();
+        m_fingerprint.clear();
+        showCurrent();
+        setFocus(Qt::ShortcutFocusReason);
+    }
+    updatePreviewControls();
+}
+
+void PreviewPane::setSlideshow(bool running, int intervalMs)
+{
+    running = running && m_urls.size() > 1 && !m_compact && !m_gallery;
+    if (running) {
+        setContactSheet(false);
+        m_slideshowTimer->start(std::clamp(intervalMs, 500, 60000));
+    } else m_slideshowTimer->stop();
+    updatePreviewControls();
+}
+
+void PreviewPane::requestClose()
+{
+    setSlideshow(false);
+    if (!m_compact && !m_gallery && isFullScreen()) setFullScreen(false);
+    hide();
+    emit closeRequested();
+}
+
+void PreviewPane::updatePreviewControls()
+{
+    m_viewControls->setVisible(!m_compact && !m_gallery);
+    const bool raster = !m_image.isNull() && !m_contactSheet && m_content->currentWidget() == m_picture;
+    m_zoomIn->setEnabled(raster && m_zoom < 16);
+    m_zoomOut->setEnabled(raster && m_zoom > .25);
+    m_zoomReset->setEnabled(raster);
+    m_zoomReset->setText(qFuzzyCompare(m_zoom, 1) ? tr("Fit") : tr("%1% of Fit").arg(qRound(m_zoom * 100)));
+    m_contactToggle->setEnabled(m_urls.size() > 1);
+    m_contactToggle->setChecked(m_contactSheet);
+    m_slideshow->setEnabled(m_urls.size() > 1);
+    m_slideshow->setChecked(slideshowRunning());
+    m_slideshow->setText(slideshowRunning() ? tr("Pause Slideshow") : tr("Slideshow"));
+    m_fullScreen->setChecked(isFullScreen());
+    m_fullScreen->setText(isFullScreen() ? tr("Exit Full Screen") : tr("Full Screen"));
+    if (m_contactSheet) { m_pageControls->hide(); m_mediaControls->hide(); }
+}
+
+void PreviewPane::updateSourceWatch()
+{
+    const auto files = m_sourceWatcher->files();
+    const auto directories = m_sourceWatcher->directories();
+    if (!files.isEmpty()) m_sourceWatcher->removePaths(files);
+    if (!directories.isEmpty()) m_sourceWatcher->removePaths(directories);
+    if (!isVisible() || !currentUrl().isLocalFile()) return;
+    const QFileInfo info(currentUrl().toLocalFile());
+    // Watch parent as well: atomic replace removes an inode watch.
+    if (info.isFile()) m_sourceWatcher->addPath(info.absoluteFilePath());
+    if (info.dir().exists()) m_sourceWatcher->addPath(info.absolutePath());
+}
+
+void PreviewPane::populateContactSheet()
+{
+    m_contactList->clear();
+    for (const QUrl &url : m_urls) {
+        const QString icon = url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()
+            ? QStringLiteral("folder") : QMimeDatabase().mimeTypeForUrl(url).iconName();
+        auto *item = new QListWidgetItem(QIcon::fromTheme(icon, QIcon::fromTheme(QStringLiteral("text-x-generic"))),
+            url.fileName().isEmpty() ? url.toDisplayString(QUrl::RemovePassword) : url.fileName(), m_contactList);
+        item->setToolTip(url.toDisplayString(QUrl::RemovePassword));
+        item->setData(Qt::UserRole, url);
+    }
+    m_contactList->setCurrentRow(m_index);
+    m_contactTimer->start();
+}
+
+void PreviewPane::loadContactThumbnails()
+{
+    if (!m_contactSheet || !isVisible()) return;
+    const quint64 generation = ++m_contactGeneration;
+    struct Request { int row; QString path; QString key; bool pdf; };
+    struct Thumbnail { int row; QString key; PreviewRaster raster; };
+    QList<Request> requests;
+    const QRect visible = m_contactList->viewport()->rect().adjusted(0, -136, 0, 136);
+    // Load only visible items plus one row, in a batch of at most 24; no eager
+    // full-selection decode. The 32 MiB cache includes all thumbnail rasters.
+    for (int row = 0; row < m_contactList->count() && requests.size() < 24; ++row) {
+        auto *item = m_contactList->item(row);
+        if (!m_contactList->visualItemRect(item).intersects(visible)) continue;
+        const QUrl url = item->data(Qt::UserRole).toUrl();
+        if (!url.isLocalFile()) continue;
+        const QFileInfo info(url.toLocalFile());
+        if (!info.isFile()) continue;
+        const QString key = url.toString() + QLatin1Char('|') + QString::number(info.size()) + QLatin1Char('|')
+            + QString::number(info.lastModified().toMSecsSinceEpoch()) + QStringLiteral("|contact");
+        if (item->data(Qt::UserRole + 1).toString() == key) continue;
+        if (const PreviewRaster *cached = m_images.object(key)) {
+            item->setIcon(QIcon(QPixmap::fromImage(cached->image)));
+            item->setData(Qt::UserRole + 1, key);
+            continue;
+        }
+        const QMimeType mime = QMimeDatabase().mimeTypeForFile(info, QMimeDatabase::MatchExtension);
+        const bool pdf = mime.inherits(QStringLiteral("application/pdf"));
+        if (mime.name().startsWith(QStringLiteral("image/")) || pdf)
+            requests.append({row, info.absoluteFilePath(), key, pdf});
+    }
+    if (requests.isEmpty()) return;
+    submitPreview(m_contactWork, this, [requests](const auto &cancelled) {
+        QList<Thumbnail> thumbnails;
+        for (const auto &request : requests) {
+            if (cancelled->load()) break;
+            thumbnails.append({request.row, request.key, readRaster(request.path, request.pdf, 0, QSize(256, 192), cancelled)});
+        }
+        return thumbnails;
+    }, [this, generation](const QList<Thumbnail> &thumbnails) {
+        if (!m_contactSheet || generation != m_contactGeneration) return;
+        for (const auto &thumbnail : thumbnails) {
+            auto *item = m_contactList->item(thumbnail.row);
+            if (!item) continue;
+            item->setData(Qt::UserRole + 1, thumbnail.key);
+            if (thumbnail.raster.image.isNull()) {
+                item->setToolTip(item->toolTip() + QLatin1Char('\n') + thumbnail.raster.error);
+            } else {
+                m_images.insert(thumbnail.key, new PreviewRaster(thumbnail.raster),
+                    std::max<qsizetype>(1, (thumbnail.raster.image.sizeInBytes() + 1023) / 1024));
+                item->setIcon(QIcon(QPixmap::fromImage(thumbnail.raster.image)));
+            }
+        }
+        m_contactTimer->start();
+    });
 }
 
 void PreviewPane::setUrls(const QList<QUrl> &urls)
@@ -465,9 +803,17 @@ void PreviewPane::setUrls(const QList<QUrl> &urls)
     QList<QUrl> valid;
     for (const QUrl &url : urls)
         if (url.isValid() && !url.isEmpty() && !valid.contains(url)) valid.append(url);
+    const bool changed = valid != m_urls;
     m_urls = valid;
     m_index = m_urls.isEmpty() ? -1 : std::max(0, int(m_urls.indexOf(previous)));
     showCurrent();
+    if (changed && m_contactSheet) {
+        if (m_urls.size() < 2) setContactSheet(false);
+        else { ++m_contactGeneration; m_contactWork->cancel(); populateContactSheet(); }
+    }
+    if (m_urls.size() < 2) setSlideshow(false);
+    updatePreviewControls();
+    if (previous != currentUrl()) emit currentUrlChanged(currentUrl());
 }
 
 QUrl PreviewPane::currentUrl() const
@@ -482,17 +828,23 @@ void PreviewPane::advance(int delta)
     if (next == m_index) return;
     m_index = next;
     showCurrent();
+    if (m_contactSheet) m_contactList->setCurrentRow(m_index);
+    emit currentUrlChanged(currentUrl());
 }
 
 void PreviewPane::setCompact(bool compact)
 {
+    if (compact) { setSlideshow(false); setContactSheet(false); }
+    m_compact = compact;
     m_close->setVisible(!compact);
     if (!m_gallery) layout()->setContentsMargins(compact ? 12 : 16, 12, compact ? 12 : 16, 12);
+    updatePreviewControls();
 }
 
 void PreviewPane::setGallery(bool gallery)
 {
     if (m_gallery == gallery) return;
+    if (gallery) { setSlideshow(false); setContactSheet(false); }
     m_gallery = gallery;
     m_layout->removeWidget(m_previewArea);
     m_layout->removeWidget(m_metadata);
@@ -539,6 +891,7 @@ void PreviewPane::setGallery(bool gallery)
     }
     setMetadata(m_metadataText);
     updateImageSize();
+    updatePreviewControls();
 }
 
 void PreviewPane::updateGalleryWidth()
@@ -960,6 +1313,12 @@ void PreviewPane::showCurrent()
     m_open->setEnabled(!url.isEmpty());
     m_name->setText(url.fileName());
     m_name->setToolTip(url.toDisplayString(QUrl::RemovePassword));
+    updateSourceWatch();
+    if (m_contactSheet && !url.isEmpty()) {
+        m_content->setCurrentWidget(m_contactList);
+        updatePreviewControls();
+        return;
+    }
     if (url.isEmpty()) {
         cancelNativePreview();
         m_renderWork->cancel();
@@ -1028,6 +1387,8 @@ void PreviewPane::showCurrent()
     m_originalImageSize = {};
     m_page = 0;
     m_image = QImage();
+    resetZoom();
+    static_cast<PreviewImageLabel *>(m_picture)->raster = {};
     m_picture->clear();
     m_text->clear();
     m_pageControls->hide();
@@ -1141,14 +1502,20 @@ void PreviewPane::showImage(const QImage &image)
     m_image = image;
     m_picture->clear();
     m_content->setCurrentWidget(m_picture);
+    static_cast<PreviewImageLabel *>(m_picture)->raster = image;
     updateThumbnail(image);
     updateImageSize();
+    updatePreviewControls();
     QTimer::singleShot(0, this, &PreviewPane::updateImageSize);
 }
 
 void PreviewPane::updateImageSize()
 {
     if (m_image.isNull()) return;
+    auto *picture = static_cast<PreviewImageLabel *>(m_picture);
+    picture->zoom = m_zoom;
+    picture->constrainPan();
+    picture->update();
     const QSize size = m_picture->contentsRect().size();
     if (size.width() < 1 || size.height() < 1) return;
     const qreal dpr = devicePixelRatioF();
@@ -1272,6 +1639,7 @@ void PreviewPane::showFallback(const QString &message)
 {
     m_fallback->setText(message);
     m_content->setCurrentWidget(m_fallback);
+    updatePreviewControls();
 }
 
 void PreviewPane::resizeEvent(QResizeEvent *event)
@@ -1279,12 +1647,14 @@ void PreviewPane::resizeEvent(QResizeEvent *event)
     QWidget::resizeEvent(event);
     if (m_gallery) updateGalleryWidth();
     updateImageSize();
+    if (m_contactSheet) m_contactTimer->start();
 }
 
 void PreviewPane::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
     if (event->type() == QEvent::PaletteChange) updateGalleryMetadata();
+    if (event->type() == QEvent::WindowStateChange) updatePreviewControls();
 }
 
 void PreviewPane::hideEvent(QHideEvent *event)
@@ -1292,6 +1662,12 @@ void PreviewPane::hideEvent(QHideEvent *event)
     cancelNativePreview();
     m_renderWork->cancel();
     m_tagWork->cancel();
+    m_contactWork->cancel();
+    ++m_contactGeneration;
+    m_contactTimer->stop();
+    m_refreshTimer->stop();
+    m_slideshowTimer->stop();
+    updateSourceWatch();
     ++m_previewGeneration;
     ++m_tagGeneration;
     m_fingerprint.clear();
@@ -1303,17 +1679,41 @@ void PreviewPane::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     showCurrent();
+    if (window() != this) window()->installEventFilter(this);
+    if (m_contactSheet) m_contactTimer->start();
 }
 
 void PreviewPane::keyPressEvent(QKeyEvent *event)
 {
-    if (!m_gallery && (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space)) {
-        emit closeRequested();
+    const bool command = event->modifiers().testFlag(Qt::MetaModifier) || event->modifiers().testFlag(Qt::ControlModifier);
+    QWidget *focused = QApplication::focusWidget();
+    const bool controlFocus = qobject_cast<QLineEdit *>(focused) || qobject_cast<QTextEdit *>(focused)
+        || qobject_cast<QAbstractButton *>(focused) || qobject_cast<QSlider *>(focused);
+    if (!m_compact && !m_gallery && command && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) {
+        setContactSheet(!m_contactSheet);
         event->accept();
-    } else if (event->key() == Qt::Key_Left && event->modifiers() == Qt::NoModifier) {
+    } else if (command && (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal || event->key() == Qt::Key_Minus)
+               && !m_image.isNull() && !m_contactSheet && m_content->currentWidget() == m_picture) {
+        setZoomFactor(m_zoom * (event->key() == Qt::Key_Minus ? 1 / 1.2 : 1.2));
+        event->accept();
+    } else if (command && event->key() == Qt::Key_0 && m_content->currentWidget() == m_picture) {
+        resetZoom();
+        event->accept();
+    } else if (!m_compact && !m_gallery && command && event->key() == Qt::Key_F) {
+        setFullScreen(!isFullScreen());
+        event->accept();
+    } else if (!m_compact && !m_gallery && event->key() == Qt::Key_Escape) {
+        if (isFullScreen()) { setSlideshow(false); setFullScreen(false); }
+        else if (m_contactSheet) setContactSheet(false);
+        else requestClose();
+        event->accept();
+    } else if (!m_compact && !m_gallery && event->key() == Qt::Key_Space && !controlFocus && event->modifiers() == Qt::NoModifier) {
+        requestClose();
+        event->accept();
+    } else if (!controlFocus && !m_contactSheet && event->key() == Qt::Key_Left && event->modifiers() == Qt::NoModifier) {
         advance(-1);
         event->accept();
-    } else if (event->key() == Qt::Key_Right && event->modifiers() == Qt::NoModifier) {
+    } else if (!controlFocus && !m_contactSheet && event->key() == Qt::Key_Right && event->modifiers() == Qt::NoModifier) {
         advance(1);
         event->accept();
     } else QWidget::keyPressEvent(event);
@@ -1322,6 +1722,7 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
 bool PreviewPane::eventFilter(QObject *object, QEvent *event)
 {
     if (object == m_picture && event->type() == QEvent::Resize) updateImageSize();
+    if (object == window() && event->type() == QEvent::WindowStateChange) updatePreviewControls();
     return QWidget::eventFilter(object, event);
 }
 
