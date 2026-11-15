@@ -43,6 +43,7 @@ public:
     QWidget *previewHost() const;
     KDirModel *directoryModel() const;
     QAbstractItemView *activeView() const;
+    static QString confirmedRenameName(const KFileItem &item, const QString &name, QWidget *parent);
 public slots:
     void navigate(const QUrl &url);
     void setMode(Mode mode);

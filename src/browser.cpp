@@ -21,6 +21,8 @@
 #include <QKeyEvent>
 #include <QListView>
 #include <QMenu>
+#include <QMessageBox>
+#include <QMimeDatabase>
 #include <QMimeData>
 #include <QMimeType>
 #include <QMouseEvent>
@@ -28,8 +30,10 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QProcess>
+#include <QPushButton>
 #include <QQueue>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
 #include <QStackedWidget>
@@ -59,6 +63,7 @@
 #include <KIO/MkdirJob>
 #include <KIO/PasteJob>
 #include <KIO/PreviewJob>
+#include <KIO/RenameFileDialog>
 #include <KIO/UDSEntry>
 
 #include <functional>
@@ -882,7 +887,9 @@ public:
         const auto entry = item(index);
         if (entry.isNull() || name == entry.name()) return;
         if (!validName(name)) { emit q->errorOccurred("Enter a valid filename without a slash."); return; }
-        const auto destination = childUrl(parentUrl(entry.url()), name);
+        const auto confirmed = Browser::confirmedRenameName(entry, name, q->window());
+        if (confirmed.isEmpty() || confirmed == entry.name()) return;
+        const auto destination = childUrl(parentUrl(entry.url()), confirmed);
         auto *operation = KIO::moveAs(entry.url(), destination);
         copyJob(operation, "Renaming…");
         QObject::connect(operation, &KJob::result, q, [this, destination](KJob *finished) {
@@ -921,7 +928,7 @@ public:
         menu.addAction(QStringLiteral("New Folder with Selection"), q, &Browser::newFolderWithSelection)
             ->setEnabled(q->canNewFolderWithSelection());
         auto *rename = menu.addAction(QStringLiteral("Rename"), q, &Browser::renameSelected);
-        rename->setEnabled(q->selectedUrls().size() == 1);
+        rename->setEnabled(hasSelection);
         menu.addSeparator();
         auto *copy = menu.addAction(QStringLiteral("Copy"), [this] { q->copySelected(false); });
         auto *cut = menu.addAction(QStringLiteral("Cut"), [this] { q->copySelected(true); });
@@ -1147,6 +1154,31 @@ KDirModel *Browser::directoryModel() const { return d->model; }
 QAbstractItemView *Browser::activeView() const {
     switch (d->currentMode) { case List: return d->list; case Columns: return d->columns; case Gallery: return d->strip; default: return d->icons; }
 }
+QString Browser::confirmedRenameName(const KFileItem &item, const QString &name, QWidget *parent) {
+    if (!validName(name)) return {};
+    if (item.isDir() || !QSettings().value("Advanced/warnExtensionChange", true).toBool()) return name;
+    const QMimeDatabase database;
+    const auto extension = [&database](const QString &filename) {
+        const auto known = database.suffixForFileName(filename);
+        return known.isEmpty() ? QFileInfo(filename).suffix() : known;
+    };
+    const auto oldExtension = extension(item.name());
+    const auto newExtension = extension(name);
+    if (oldExtension.compare(newExtension, Qt::CaseInsensitive) == 0) return name;
+    QMessageBox warning(QMessageBox::Warning, QStringLiteral("Change Filename Extension?"),
+        QStringLiteral("Changing the extension of “%1” may change which application opens it.").arg(item.name()),
+        QMessageBox::NoButton, parent);
+    warning.setObjectName(QStringLiteral("finderExtensionWarning"));
+    auto *keep = warning.addButton(QStringLiteral("Keep Original Extension"), QMessageBox::RejectRole);
+    auto *change = warning.addButton(QStringLiteral("Use New Extension"), QMessageBox::AcceptRole);
+    warning.addButton(QMessageBox::Cancel);
+    warning.setDefaultButton(keep);
+    warning.exec();
+    if (warning.clickedButton() == change) return name;
+    if (warning.clickedButton() != keep) return {};
+    const auto stem = newExtension.isEmpty() ? name : name.left(name.size() - newExtension.size() - 1);
+    return oldExtension.isEmpty() ? stem : stem + '.' + oldExtension;
+}
 KFileItemList Browser::selectedItems() const {
     KFileItemList result;
     for (const auto &index : d->selectedNames()) {
@@ -1252,7 +1284,17 @@ void Browser::refreshTags() { d->proxy->refreshTags(); }
 void Browser::setFoldersFirst(bool enabled) { d->proxy->setFoldersFirstPreference(enabled); }
 void Browser::selectUrls(const QList<QUrl> &urls) { d->pendingSelection = urls; if (urls.isEmpty()) d->activeSelection()->clearSelection(); else d->applySelection(); }
 void Browser::renameSelected() {
-    const auto rows = d->selectedNames(); if (rows.size() != 1) return;
+    const auto rows = d->selectedNames(); if (rows.isEmpty()) return;
+    if (rows.size() > 1) {
+        // RenameFileDialog exists since KF 5.67 and records native BatchRename
+        // Undo. KF 6.2 supports numbered templates; newer KF adds Replace/Add.
+        auto *dialog = new KIO::RenameFileDialog(selectedItems(), window());
+        dialog->setObjectName(QStringLiteral("finderBatchRename"));
+        connect(dialog, &KIO::RenameFileDialog::renamingFinished, this, [this](const QList<QUrl> &urls) { selectUrls(urls); });
+        connect(dialog, &KIO::RenameFileDialog::error, this, [this](KJob *job) { emit errorOccurred(job->errorString()); });
+        dialog->show();
+        return;
+    }
     const QModelIndex index = rows.first();
     QAbstractItemView *view = activeView();
     if (d->currentMode == Columns) {
