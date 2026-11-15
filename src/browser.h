@@ -51,7 +51,7 @@ public slots:
     void setIconSize(int size);
     void setGroup(Group group);
     void setGridSpacing(int spacing);
-    void setTextSize(int points);
+    void setTextSize(int pixels);
     void setLabelPosition(LabelPosition position);
     void setIconPreviewsShown(bool shown);
     void setPreviewShown(bool shown);

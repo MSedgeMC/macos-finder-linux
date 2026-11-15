@@ -371,7 +371,7 @@ public:
     }
 
     void updateEditorGeometry(QWidget *editor, const QStyleOptionViewItem &option, const QModelIndex &) const override {
-        QFont font(option.font); font.setPointSize(m_options->textSize);
+        QFont font(option.font); font.setPixelSize(m_options->textSize);
         const int height = qMax(24, 2 * QFontMetrics(font).height() + 6);
         const bool right = !m_gallery && m_options->label == Browser::LabelRight;
         editor->setGeometry(right ? option.rect.left() + m_view->iconSize().width() + 20 : option.rect.left() + 5,
@@ -961,9 +961,9 @@ void Browser::setGridSpacing(int spacing) {
     d->iconOptions.spacing = qBound(0, spacing, 128);
     d->layoutIcons();
 }
-void Browser::setTextSize(int points) {
-    d->iconOptions.textSize = qBound(9, points, 20);
-    QFont font = d->icons->font(); font.setPointSize(d->iconOptions.textSize);
+void Browser::setTextSize(int pixels) {
+    d->iconOptions.textSize = qBound(9, pixels, 20);
+    QFont font = d->icons->font(); font.setPixelSize(d->iconOptions.textSize);
     d->icons->setFont(font); d->strip->setFont(font);
     d->list->setFont(font); d->columns->setFont(font);
     d->layoutIcons(); d->list->doItemsLayout();
