@@ -1556,6 +1556,9 @@ public:
         {"blur", header->blur}};
   }
   void testMaterialBlur(bool enabled) {
+    // Private test holds the coating constant while toggling only compositor
+    // blur; an opaque fallback would hide the backdrop being measured.
+    setProperty("finderTestCoating", true);
     setProperty("finderDisableBlur", !enabled);
     updateMaterial();
   }
@@ -2606,7 +2609,7 @@ private:
       return;
     const bool supported = KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
     const bool available = supported && !property("finderDisableBlur").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast();
-    header->blur = sidebar->blur = available;
+    header->blur = sidebar->blur = available || (supported && property("finderTestCoating").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast());
     header->update();
     sidebar->update();
     QRegion region(QRect(0, 0, header->sidebarWidth, header->height()));
