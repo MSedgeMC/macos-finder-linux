@@ -123,8 +123,9 @@ int main(int argc, char **argv) {
         result = scan(search, url, QString(), tags);
         require(result.count == 1 && result.urls.first() == QUrl::fromLocalFile(tags.preferredPath + "/needle-photo.png"), "preferred folder scanned within entry budget");
         tags.maxEntries = 250000;
+        require(setxattr(QFile::encodeName(tags.preferredPath).constData(), "user.xdg.tags", "Blue", 4, 0) == 0, "preferred directory tag fixture");
         result = scan(search, url, QString(), tags);
-        require(result.count == 2, "preferred subtree results duplicated");
+        require(result.count == 3 && result.urls.contains(QUrl::fromLocalFile(tags.preferredPath)), "preferred directory missing or descendants duplicated");
         cases.append("preferred descendant is searched first without duplicate results or new budgets");
         auto bounded = hidden;
         bounded.maxResults = 2;

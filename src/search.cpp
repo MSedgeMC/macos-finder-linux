@@ -231,8 +231,6 @@ private:
             ++examined;
             if (!request.options.showHidden && name.startsWith('.')) continue;
             const QByteArray path = frame.path == "/" ? '/' + name : frame.path + '/' + name;
-            // This subtree was already scanned first. Do not duplicate results.
-            if (path == preferredPath) continue;
             // Do not even stat a remote or pseudo mount entry.
             if (!localPath(path, mounts)) { ++skipped; continue; }
             unsigned char type = entry->d_type;
@@ -275,7 +273,9 @@ private:
                 }
                 if (count >= request.options.maxResults) { limited = true; break; }
             }
-            if (type != DT_DIR || canceled()) continue;
+            // Keep the directory itself discoverable; only its descendants
+            // were already scanned first and must not be visited twice.
+            if (type != DT_DIR || canceled() || path == preferredPath) continue;
             if (stack.size() >= 128) { ++skipped; continue; }
             const int child = openat(dirfd(frame.directory.get()), name.constData(),
                                      O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
