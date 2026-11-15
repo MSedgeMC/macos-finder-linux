@@ -862,8 +862,7 @@ public:
     searchGallery = attachPreview(searchPresentation->galleryHost()); searchGallery->setGallery(true);
     connect(searchPresentation, &SearchResults::selectionChanged, this, [this] {
       const auto ordered = orderedPreviewUrls(searchSelection());
-      if (ordered.isEmpty()) searchGallery->setUrls({});
-      else { searchGallery->show(); searchGallery->updateQuickLook(ordered, ordered.first()); }
+      updatePreviewSelection(searchGallery, ordered, ordered.isEmpty() ? QUrl() : ordered.first());
       if (showingSearch() && quickWindow && quickWindow->isVisible() && !searchSelection().isEmpty()) {
         quickUrls = orderedPreviewUrls(searchSelection()); quickPane->updateQuickLook(quickUrls, quickUrls.first());
       }
@@ -1405,6 +1404,10 @@ public:
         connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
       });
   }
+  void updatePreviewSelection(PreviewPane *pane, const QList<QUrl> &urls, const QUrl &primary) {
+    if (urls.isEmpty()) pane->setUrls({});
+    else { pane->show(); pane->updateQuickLook(urls, primary); }
+  }
   PreviewPane *attachPreview(QWidget *host) {
     auto *layout = qobject_cast<QVBoxLayout *>(host->layout());
     if (!layout) layout = new QVBoxLayout(host);
@@ -1457,9 +1460,10 @@ public:
               for (auto i : items)
                 urls << i.url();
               auto &s = states[b];
-              if (b->mode() == Browser::Gallery) s.gallery->setUrls(urls);
-              if (b->mode() == Browser::Columns) s.column->setUrls(urls);
-              if (b->previewShown()) s.preview->setUrls(urls);
+              const auto primary = b->activeView()->currentIndex().data(KDirModel::FileItemRole).value<KFileItem>().url();
+              if (b->mode() == Browser::Gallery) updatePreviewSelection(s.gallery, urls, primary);
+              if (b->mode() == Browser::Columns) updatePreviewSelection(s.column, urls, primary);
+              if (b->previewShown()) updatePreviewSelection(s.preview, urls, primary);
               if (b == browser()) {
                 if (quickWindow && quickWindow->isVisible() && !urls.isEmpty()) { quickUrls = orderedPreviewUrls(urls); quickPane->updateQuickLook(quickUrls, quickUrls.first()); }
                 refresh();
@@ -2531,10 +2535,13 @@ private:
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns",
                                         "gallery"}[showingSearch() ? searchPresentation->mode() : int(browser()->mode())]));
     auto &state = states[browser()];
-    const auto previewUrls = browser()->selectedUrls();
-    if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(previewUrls);
-    if (browser()->mode() == Browser::Columns) state.column->setUrls(previewUrls);
-    if (browser()->previewShown()) state.preview->setUrls(previewUrls);
+    if (!showingSearch()) {
+      const auto previewUrls = orderedPreviewUrls(browser()->selectedUrls());
+      const auto primary = previewUrls.isEmpty() ? QUrl() : previewUrls.first();
+      if (browser()->mode() == Browser::Gallery) updatePreviewSelection(state.gallery, previewUrls, primary);
+      if (browser()->mode() == Browser::Columns) updatePreviewSelection(state.column, previewUrls, primary);
+      if (browser()->previewShown()) updatePreviewSelection(state.preview, previewUrls, primary);
+    }
     if (namedActions.contains("sidebar")) { QSignalBlocker blocker(namedActions["sidebar"]); namedActions["sidebar"]->setChecked(sidebar->isVisible()); }
     if (namedActions.contains("preview")) {
       QSignalBlocker block(namedActions["preview"]);
