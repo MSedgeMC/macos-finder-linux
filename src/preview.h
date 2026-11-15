@@ -105,6 +105,20 @@ public:
     // A separately decorated native Quick Look host owns close/minimize/zoom.
     // This only suppresses the embedded close button, never changes window flags.
     void setHostWindowControls(bool enabled);
+    // One-row Quick Look presentation. Enable before adding the returned
+    // header to the host's 40px chrome layout beside its window controls.
+    // The existing filename/Open/actions stay live; no second title is needed.
+    // Hosted mode suppresses embedded close, bottom view toolbar and metadata
+    // by default. Actions retains view commands and a Show Information toggle;
+    // PDF search/navigation and media playback remain inline and functional.
+    // The host owns its background, window controls, size and window flags.
+    void setHostedQuickLook(bool hosted);
+    bool hostedQuickLook() const;
+    // Reparent this widget, never copy its contents or delete it independently.
+    // Keep pane and header together for the host lifetime. On disabling hosted
+    // mode the pane reclaims the header; pane destruction deletes it if moved.
+    // Compact/Gallery temporarily suppress hosted chrome without losing it.
+    QWidget *quickLookHeaderWidget() const;
     // Zero-based PDF navigation. Search/selection are asynchronous and bounded;
     // image-only PDFs require an external OCR provider for searchable text.
     int pdfPageCount() const;
@@ -184,6 +198,7 @@ private:
     void updateSourceWatch();
     void requestClose();
     void updatePreviewControls();
+    void updatePresentation();
     void populateContactSheet();
     void loadContactThumbnails();
     QList<QUrl> actionUrls() const;
@@ -240,6 +255,7 @@ private:
     QFileSystemWatcher *m_sourceWatcher;
     QTimer *m_refreshTimer;
     QToolButton *m_nativeActions;
+    QMenu *m_shareMenu;
     QAction *m_openWithAction;
     QAction *m_printAction;
     QAction *m_shareAction;
@@ -251,6 +267,15 @@ private:
     bool m_printReady = false;
     bool m_textReady = false;
     bool m_hostWindowControls = false;
+    bool m_hostedQuickLook = false;
+    QAction *m_zoomOutAction;
+    QAction *m_zoomInAction;
+    QAction *m_zoomResetAction;
+    QAction *m_contactAction;
+    QAction *m_slideshowAction;
+    QAction *m_fullScreenAction;
+    QAction *m_informationAction;
+    QAction *m_getInfoAction;
     PreviewPdfView *m_pdfView;
     QLineEdit *m_pdfSearch;
     QLineEdit *m_pdfPageEntry;
@@ -276,7 +301,7 @@ private:
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;
-    QWidget *m_headerWidget;
+    QPointer<QWidget> m_headerWidget;
     QWidget *m_previewArea;
     QWidget *m_galleryArea = nullptr;
     QWidget *m_gallerySidebar = nullptr;

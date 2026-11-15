@@ -26,6 +26,9 @@
 #include <QLabel>
 #include <QKeyEvent>
 #include <QListWidget>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPdfWriter>
@@ -34,6 +37,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QPdfDocument>
@@ -128,6 +132,97 @@ int main(int argc, char **argv)
         painter.drawText(QPointF(60, 80), "Portable PDF needle two");
     }
     const auto redUrl = QUrl::fromLocalFile(redPath), blueUrl = QUrl::fromLocalFile(bluePath);
+    {
+        QWidget host;
+        host.setStyleSheet(QStringLiteral("#finderPreviewPane{background:#18324c;}"));
+        auto *hostLayout = new QVBoxLayout(&host);
+        hostLayout->setContentsMargins(0, 0, 0, 0);
+        hostLayout->setSpacing(0);
+        auto *chrome = new QWidget(&host);
+        chrome->setFixedHeight(40);
+        auto *chromeLayout = new QHBoxLayout(chrome);
+        chromeLayout->setContentsMargins(12, 4, 12, 4);
+        auto *windowControl = new QPushButton(QStringLiteral("×"), chrome);
+        windowControl->setFixedWidth(24);
+        chromeLayout->addWidget(windowControl);
+        hostLayout->addWidget(chrome);
+        auto *hosted = new PreviewPane(&host);
+        hosted->setHostedQuickLook(true);
+        QWidget *header = hosted->quickLookHeaderWidget();
+        chromeLayout->addWidget(header, 1);
+        hostLayout->addWidget(hosted, 1);
+        host.resize(480, 320);
+        host.show();
+        hosted->updateQuickLook({redUrl, blueUrl}, blueUrl);
+        auto *hostedImage = hosted->findChild<QLabel *>("previewImage");
+        check(waitFor([&] { return hosted->originalImageSize() == blue.size(); }), "hosted image loads");
+        check(hosted->hostedQuickLook() && hosted->quickLookHeaderWidget() == header
+            && header->parentWidget() == chrome, "host reuses the existing header");
+        check(header->findChild<QLabel *>("previewName")->text() == blueUrl.fileName()
+            && header->findChild<QPushButton *>("previewOpen")->text() == "Open", "one live filename and compact Open in chrome");
+        check(hostedImage->mapTo(&host, QPoint()).y() < 60 && header->height() <= 32
+            && header->width() >= header->minimumSizeHint().width(), "40px chrome leaves content free of a duplicate header");
+        auto *toolbar = hosted->findChild<QWidget *>("previewViewControls");
+        auto *metadata = hosted->findChild<QLabel *>("previewMetadata");
+        check(toolbar->isHidden() && metadata->isHidden()
+            && header->findChild<QPushButton *>("previewClose")->isHidden(), "hosted clutter and embedded close hidden by default");
+        auto *actions = header->findChild<QToolButton *>("previewNativeActions");
+        check(actions && actions->isVisible() && actions->menu(), "Actions stays accessible in the host header");
+        actions->menu()->popup(actions->mapToGlobal(QPoint(0, actions->height())));
+        QApplication::processEvents();
+        check(actions->menu()->isVisible(), "hosted Actions menu opens offscreen");
+        actions->menu()->hide();
+        auto *informationAction = actions->findChild<QAction *>("previewInformationAction");
+        informationAction->trigger();
+        check(metadata->isVisible() && !metadata->text().isEmpty(), "hidden metadata can be revealed");
+        informationAction->trigger();
+        check(metadata->isHidden(), "metadata toggle hides details again");
+        QUrl hostedOpened, hostedInfo;
+        QObject::connect(hosted, &PreviewPane::openRequested, [&](const QUrl &url) { hostedOpened = url; });
+        QObject::connect(hosted, &PreviewPane::getInfoRequested, [&](const QUrl &url) { hostedInfo = url; });
+        header->findChild<QPushButton *>("previewOpen")->click();
+        actions->findChild<QAction *>("previewGetInfoAction")->trigger();
+        check(hostedOpened == blueUrl && hostedInfo == blueUrl, "reused header retains host-owned native actions");
+        actions->findChild<QAction *>("previewZoomInAction")->trigger();
+        check(hosted->zoomFactor() > 1, "hidden zoom toolbar remains available through Actions");
+        actions->findChild<QAction *>("previewFitAction")->trigger();
+        check(hosted->zoomFactor() == 1, "menu Fit restores zoom");
+        auto *indexAction = actions->findChild<QAction *>("previewIndexSheetAction");
+        indexAction->trigger();
+        check(hosted->contactSheet() && indexAction->isChecked(), "hosted Index Sheet menu command");
+        indexAction->trigger();
+        check(!hosted->contactSheet(), "hosted Index Sheet returns to preview");
+        auto *slideshowAction = actions->findChild<QAction *>("previewSlideshowAction");
+        slideshowAction->trigger();
+        check(hosted->slideshowRunning() && slideshowAction->isChecked(), "hosted slideshow menu command");
+        slideshowAction->trigger();
+        check(!hosted->slideshowRunning(), "hosted slideshow pauses");
+        if (argc > 1) check(host.grab().save(QString::fromLocal8Bit(argv[1]) + QStringLiteral(".hosted.png")), "isolated one-row hosted screenshot");
+        hosted->setCompact(true);
+        check(header->isHidden() && !indexAction->isEnabled(), "compact preview suppresses hosted window commands");
+        hosted->setCompact(false);
+        check(header->isVisible() && toolbar->isHidden(), "hosted chrome survives compact transition");
+        hosted->setGallery(true);
+        check(header->isHidden() && metadata->isVisible()
+            && hosted->findChild<QPushButton *>("previewOpen")->isVisible(), "Gallery retains metadata and Open");
+        hosted->setGallery(false);
+        check(header->findChild<QPushButton *>("previewOpen")->isVisible()
+            && actions->parentWidget() == header && metadata->isHidden(), "Gallery transition restores hosted header and defaults");
+        int hostedCloses = 0;
+        QObject::connect(hosted, &PreviewPane::closeRequested, [&] { ++hostedCloses; });
+        header->findChild<QPushButton *>("previewOpen")->setFocus();
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(&host, &escape);
+        check(hostedCloses == 1 && !hosted->isVisible(), "header focus retains Quick Look Escape close");
+        hosted->show();
+        hosted->setHostedQuickLook(false);
+        check(header->parentWidget() == hosted && toolbar->isVisible() && metadata->isVisible(), "disabling hosted mode restores embedded presentation");
+        hosted->setHostedQuickLook(true);
+        chromeLayout->addWidget(header, 1);
+        QPointer<QWidget> lifetime(header);
+        delete hosted;
+        check(lifetime.isNull(), "pane destruction cleans a reparented header");
+    }
     PreviewPane pane;
     pane.resize(640, 480);
     pane.show();

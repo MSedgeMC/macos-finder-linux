@@ -602,7 +602,9 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(10);
     m_headerWidget = new QWidget(this);
-    auto *header = m_header = new QHBoxLayout(m_headerWidget);
+    m_headerWidget->setObjectName(QStringLiteral("previewQuickLookHeader"));
+    m_headerWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    auto *header = m_header = new QHBoxLayout(m_headerWidget.data());
     header->setContentsMargins(0, 0, 0, 0);
     m_close = button(QStringLiteral("×"), QStringLiteral("previewClose"), this);
     m_close->setAccessibleName(tr("Close Quick Look"));
@@ -628,7 +630,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     header->addWidget(m_name, 1);
     header->addWidget(m_count);
     header->addWidget(m_open);
-    layout->addWidget(m_headerWidget);
+    layout->addWidget(m_headerWidget.data());
 
     m_previewArea = new QWidget(this);
     auto *previewLayout = new QVBoxLayout(m_previewArea);
@@ -744,7 +746,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     connect(m_rotateCopy, &QAction::triggered, this, [this] {
         if (m_rotatableImage && !currentUrl().isEmpty()) emit rotateCopyRequested(currentUrl());
     });
-    auto *shareMenu = nativeMenu->addMenu(tr("Share"));
+    auto *shareMenu = m_shareMenu = nativeMenu->addMenu(tr("Share"));
     m_copyUrlsAction = shareMenu->addAction(tr("Copy File Locations"));
     connect(m_copyUrlsAction, &QAction::triggered, this, [this] {
         QStringList locations;
@@ -770,6 +772,41 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_shareAction->setObjectName(QStringLiteral("previewShare"));
     connect(m_shareAction, &QAction::triggered, this, &PreviewPane::shareCurrent);
     m_nativeActions->setMenu(nativeMenu);
+    auto *viewMenu = nativeMenu->addMenu(tr("View"));
+    m_zoomOutAction = viewMenu->addAction(tr("Zoom Out"));
+    m_zoomOutAction->setObjectName(QStringLiteral("previewZoomOutAction"));
+    m_zoomOutAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+-")));
+    m_zoomInAction = viewMenu->addAction(tr("Zoom In"));
+    m_zoomInAction->setObjectName(QStringLiteral("previewZoomInAction"));
+    m_zoomInAction->setShortcut(QKeySequence(QStringLiteral("Ctrl++")));
+    m_zoomResetAction = viewMenu->addAction(tr("Fit"));
+    m_zoomResetAction->setObjectName(QStringLiteral("previewFitAction"));
+    m_zoomResetAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    viewMenu->addSeparator();
+    m_contactAction = viewMenu->addAction(tr("Index Sheet"));
+    m_contactAction->setObjectName(QStringLiteral("previewIndexSheetAction"));
+    m_contactAction->setCheckable(true);
+    m_slideshowAction = viewMenu->addAction(tr("Slideshow"));
+    m_slideshowAction->setObjectName(QStringLiteral("previewSlideshowAction"));
+    m_slideshowAction->setCheckable(true);
+    m_fullScreenAction = viewMenu->addAction(tr("Full Screen"));
+    m_fullScreenAction->setObjectName(QStringLiteral("previewFullScreenAction"));
+    m_fullScreenAction->setCheckable(true);
+    m_informationAction = viewMenu->addAction(tr("Show Information"));
+    m_informationAction->setObjectName(QStringLiteral("previewInformationAction"));
+    m_informationAction->setCheckable(true);
+    m_getInfoAction = nativeMenu->addAction(tr("Get Info"));
+    m_getInfoAction->setObjectName(QStringLiteral("previewGetInfoAction"));
+    connect(m_zoomOutAction, &QAction::triggered, m_zoomOut, &QPushButton::click);
+    connect(m_zoomInAction, &QAction::triggered, m_zoomIn, &QPushButton::click);
+    connect(m_zoomResetAction, &QAction::triggered, m_zoomReset, &QPushButton::click);
+    connect(m_contactAction, &QAction::triggered, this, &PreviewPane::setContactSheet);
+    connect(m_slideshowAction, &QAction::triggered, this, [this](bool running) { setSlideshow(running); });
+    connect(m_fullScreenAction, &QAction::triggered, this, &PreviewPane::setFullScreen);
+    connect(m_informationAction, &QAction::triggered, this, &PreviewPane::updatePresentation);
+    connect(m_getInfoAction, &QAction::triggered, this, [this] {
+        if (!currentUrl().isEmpty()) emit getInfoRequested(currentUrl());
+    });
     viewControls->addWidget(m_nativeActions);
     previewLayout->addWidget(m_viewControls);
     m_slideshowTimer = new QTimer(this);
@@ -925,6 +962,9 @@ PreviewPane::~PreviewPane()
 #endif
     cancelNativePreview();
     stopMedia();
+    // The host may have reparented our reusable header into its chrome row.
+    // QPointer also permits the host to destroy its chrome before the pane.
+    if (m_headerWidget && m_headerWidget->parentWidget() != this) delete m_headerWidget.data();
 }
 
 QSize PreviewPane::originalImageSize() const { return m_originalImageSize; }
@@ -1074,6 +1114,7 @@ void PreviewPane::updateNativeActions()
     m_emailAction->setEnabled(localFiles && bool(emailHandler));
     m_emailAction->setToolTip(emailHandler ? QString() : tr("No native email application is configured."));
     m_printAction->setEnabled(canPrintCurrent());
+    m_getInfoAction->setEnabled(!currentUrl().isEmpty());
     const bool printReady = canPrintCurrent();
     if (m_printReady != printReady) { m_printReady = printReady; emit printReadinessChanged(printReady); }
     const bool media = m_mime.startsWith(QStringLiteral("audio/")) || m_mime.startsWith(QStringLiteral("video/"));
@@ -1090,7 +1131,9 @@ void PreviewPane::updateNativeActions()
     const QString mime = currentUrl().isLocalFile()
         ? QMimeDatabase().mimeTypeForFile(currentUrl().toLocalFile(), QMimeDatabase::MatchExtension).name() : m_mime;
     const auto handler = mime.isEmpty() ? KService::Ptr() : KApplicationTrader::preferredService(mime);
-    m_open->setText(handler ? tr("Open with %1").arg(handler->name()) : tr("Open"));
+    const QString openText = handler ? tr("Open with %1").arg(handler->name()) : tr("Open");
+    m_open->setText(m_hostedQuickLook && !m_compact && !m_gallery ? tr("Open") : openText);
+    m_open->setToolTip(openText);
 }
 
 void PreviewPane::printCurrent()
@@ -1267,7 +1310,7 @@ void PreviewPane::requestClose()
 
 void PreviewPane::updatePreviewControls()
 {
-    m_viewControls->setVisible(!m_compact && !m_gallery);
+    updatePresentation();
     const bool raster = !m_contactSheet && ((!m_image.isNull() && m_content->currentWidget() == m_picture)
         || (m_pageCount > 0 && m_content->currentWidget() == m_pdfView));
     m_zoomIn->setEnabled(raster && m_zoom < 16);
@@ -1281,8 +1324,44 @@ void PreviewPane::updatePreviewControls()
     m_slideshow->setText(slideshowRunning() ? tr("Pause Slideshow") : tr("Slideshow"));
     m_fullScreen->setChecked(isFullScreen());
     m_fullScreen->setText(isFullScreen() ? tr("Exit Full Screen") : tr("Full Screen"));
+    m_zoomOutAction->setEnabled(m_zoomOut->isEnabled());
+    m_zoomInAction->setEnabled(m_zoomIn->isEnabled());
+    m_zoomResetAction->setEnabled(raster);
+    m_zoomResetAction->setText(m_zoomReset->text());
+    const bool quickLook = !m_compact && !m_gallery;
+    m_contactAction->setEnabled(quickLook && m_urls.size() > 1);
+    m_contactAction->setChecked(m_contactSheet);
+    m_slideshowAction->setEnabled(quickLook && m_urls.size() > 1);
+    m_slideshowAction->setChecked(slideshowRunning());
+    m_slideshowAction->setText(m_slideshow->text());
+    m_fullScreenAction->setEnabled(quickLook);
+    m_fullScreenAction->setChecked(isFullScreen());
+    m_fullScreenAction->setText(m_fullScreen->text());
+    m_informationAction->setVisible(m_hostedQuickLook && quickLook);
     if (m_contactSheet) { m_pageControls->hide(); m_mediaControls->hide(); }
     updateNativeActions();
+}
+
+void PreviewPane::updatePresentation()
+{
+    const bool hosted = m_hostedQuickLook && !m_compact && !m_gallery;
+    auto *viewLayout = qobject_cast<QHBoxLayout *>(m_viewControls->layout());
+    if (hosted && m_nativeActions->parentWidget() != m_headerWidget.data()) {
+        viewLayout->removeWidget(m_nativeActions);
+        m_header->addWidget(m_nativeActions);
+    } else if (!hosted && m_nativeActions->parentWidget() != m_viewControls) {
+        m_header->removeWidget(m_nativeActions);
+        viewLayout->addWidget(m_nativeActions);
+    }
+    m_nativeActions->show();
+    m_viewControls->setVisible(!m_compact && !m_gallery && !hosted);
+    m_close->setVisible(!m_compact && !m_hostWindowControls && !hosted);
+    m_metadata->setVisible(m_gallery || !hosted || m_informationAction->isChecked());
+    if (m_headerWidget) m_headerWidget->setVisible(!m_gallery && !(m_hostedQuickLook && m_compact));
+    if (!m_gallery) {
+        m_layout->setContentsMargins(hosted ? 12 : m_compact ? 12 : 16, hosted ? 8 : 12,
+            hosted ? 12 : m_compact ? 12 : 16, hosted ? 8 : 12);
+    }
 }
 
 void PreviewPane::updateSourceWatch()
@@ -1410,8 +1489,6 @@ void PreviewPane::setCompact(bool compact)
 {
     if (compact) { setSlideshow(false); setContactSheet(false); }
     m_compact = compact;
-    m_close->setVisible(!compact && !m_hostWindowControls);
-    if (!m_gallery) layout()->setContentsMargins(compact ? 12 : 16, 12, compact ? 12 : 16, 12);
     updatePreviewControls();
 }
 
@@ -1452,7 +1529,7 @@ void PreviewPane::setGallery(bool gallery)
         m_layout->addWidget(m_metadata);
         m_header->insertWidget(3, m_name, 1);
         m_header->insertWidget(4, m_count);
-        m_header->addWidget(m_open);
+        m_header->insertWidget(5, m_open);
         m_headerWidget->show();
         m_layout->setContentsMargins(16, 12, 16, 12);
         m_layout->setSpacing(10);
@@ -1463,6 +1540,9 @@ void PreviewPane::setGallery(bool gallery)
         m_metadata->setAlignment(Qt::AlignCenter);
         m_metadata->setTextFormat(Qt::PlainText);
     }
+    // Reparenting into/out of Gallery hides a QWidget even when the pane is
+    // visible; reveal content immediately instead of waiting for layout show.
+    m_previewArea->show();
     setMetadata(m_metadataText);
     updateImageSize();
     updatePreviewControls();
@@ -1645,7 +1725,7 @@ void PreviewPane::createGallery()
     m_copyLocation = menu->addAction(tr("Copy Location"));
     menu->addAction(m_openWithAction);
     menu->addAction(m_printAction);
-    menu->addMenu(m_nativeActions->menu()->actions().last()->menu());
+    menu->addMenu(m_shareMenu);
     m_copyLocation->setObjectName(QStringLiteral("previewCopyLocation"));
     connect(m_copyLocation, &QAction::triggered, this, [this] {
         const QUrl url = currentUrl();
@@ -2197,8 +2277,27 @@ void PreviewPane::renderPage(int page)
 void PreviewPane::setHostWindowControls(bool enabled)
 {
     m_hostWindowControls = enabled;
-    m_close->setVisible(!m_compact && !enabled);
+    updatePresentation();
 }
+
+void PreviewPane::setHostedQuickLook(bool hosted)
+{
+    if (m_hostedQuickLook == hosted) return;
+    m_hostedQuickLook = hosted;
+    m_informationAction->setChecked(false);
+    if (!hosted && m_headerWidget) {
+        m_headerWidget->setParent(this);
+        m_layout->insertWidget(0, m_headerWidget.data());
+    } else if (m_headerWidget) {
+        // Leave it parented to the pane until the host adds it to its layout.
+        // Removing it now prevents a duplicate row even before reparenting.
+        m_layout->removeWidget(m_headerWidget.data());
+    }
+    updatePreviewControls();
+}
+
+bool PreviewPane::hostedQuickLook() const { return m_hostedQuickLook; }
+QWidget *PreviewPane::quickLookHeaderWidget() const { return m_headerWidget.data(); }
 
 int PreviewPane::pdfPageCount() const { return m_pageCount; }
 int PreviewPane::pdfCurrentPage() const { return m_page; }
@@ -2770,6 +2869,7 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
         resetZoom();
         event->accept();
     } else if (command && event->key() == Qt::Key_F && m_content->currentWidget() == m_pdfView) {
+        m_pageControls->show();
         m_pdfSearch->setFocus(); m_pdfSearch->selectAll(); event->accept();
     } else if (command && event->key() == Qt::Key_C && m_content->currentWidget() == m_pdfView) {
         QGuiApplication::clipboard()->setText(m_pdfSelectedText); event->accept();
@@ -2797,6 +2897,18 @@ bool PreviewPane::eventFilter(QObject *object, QEvent *event)
 {
     if (object == m_picture && event->type() == QEvent::Resize) updateImageSize();
     if (object == window() && event->type() == QEvent::WindowStateChange) updatePreviewControls();
+    // Reparented header keys no longer bubble through this pane. A key ignored
+    // by its focused control reaches the host; retain Quick Look Escape/zoom/
+    // navigation there without intercepting text-entry or button interaction.
+    if (m_hostedQuickLook && object == window() && event->type() == QEvent::KeyPress && isVisible()) {
+        QWidget *focused = QApplication::focusWidget();
+        if (m_headerWidget && focused && (focused == m_headerWidget.data() || m_headerWidget->isAncestorOf(focused))) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            key->ignore();
+            keyPressEvent(key);
+            if (key->isAccepted()) return true;
+        }
+    }
     return QWidget::eventFilter(object, event);
 }
 
