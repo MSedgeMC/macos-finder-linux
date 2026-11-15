@@ -26,6 +26,7 @@ find_package(KF6I18n 6.2 REQUIRED)
 find_package(KF6Service 6.2 REQUIRED)
 find_package(KF6Solid 6.2 REQUIRED)
 find_package(KF6FileMetaData 6.2 REQUIRED)
+find_package(KF6Archive 6.2 REQUIRED)
 
 add_executable(finder
     src/main.cpp
@@ -39,6 +40,7 @@ add_executable(finder
     src/scroll.cpp src/scroll.h
     src/quickactions.cpp src/quickactions.h
     src/smartfolder.cpp src/smartfolder.h
+    src/archives.cpp src/archives.h
 )
 target_link_libraries(finder PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Network
@@ -47,7 +49,7 @@ target_link_libraries(finder PRIVATE
     KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets
     KF6::CoreAddons KF6::ItemViews KF6::Bookmarks KF6::WidgetsAddons
     KF6::JobWidgets KF6::ConfigCore KF6::WindowSystem KF6::I18n
-    KF6::Service KF6::Solid KF6::FileMetaData
+    KF6::Service KF6::Solid KF6::FileMetaData KF6::Archive
 )
 target_compile_definitions(finder PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

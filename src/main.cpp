@@ -9,6 +9,7 @@
 #include "scroll.h"
 #include "quickactions.h"
 #include "smartfolder.h"
+#include "archives.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -875,7 +876,7 @@ public:
                 searchResults->selectionModel()->setCurrentIndex(hit, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
               refresh();
               QMenu menu(this);
-              for (auto name : {"open", "openWith", "quickLook", "rename", "copy", "copyPath", "duplicate", "makeAlias", "showOriginal", "trash", "deleteImmediately", "putBack", "info"})
+              for (auto name : {"open", "openWith", "quickLook", "rename", "copy", "copyPath", "duplicate", "compress", "extract", "makeAlias", "showOriginal", "trash", "deleteImmediately", "putBack", "info"})
                 if (namedActions.contains(name) && namedActions[name]->isVisible()) menu.addAction(namedActions[name]);
               menu.addMenu(tagMenu); menu.addMenu(share->menu());
               auto *quick = menu.addMenu("Quick Actions"); quickActions->populateMenu(quick, orderedPreviewUrls(searchSelection()));
@@ -1349,6 +1350,10 @@ public:
     connect(b, &Browser::springUrlChanged, this, [this, b](const QUrl &url) { if (b == browser()) { folderTitle->setText(title(url)); folderTitle->setToolTip(url.toDisplayString(QUrl::RemovePassword)); } });
     connect(b, &Browser::contextMenuRequested, this, [this](QMenu *menu, const KFileItemList &items) {
       refresh(); menu->addSeparator();
+      for (auto *action : menu->actions()) if (action->text() == QStringLiteral("Compress")) {
+        menu->insertAction(action, namedActions["compress"]); menu->removeAction(action); break;
+      }
+      menu->addAction(namedActions["extract"]);
       for (auto name : {"makeAlias", "showOriginal", "putBack", "deleteImmediately"})
         if (namedActions.contains(name) && namedActions[name]->isVisible()) menu->addAction(namedActions[name]);
       menu->addMenu(tagMenu)->setText("Tags"); menu->addMenu(share->menu())->setText("Share");
@@ -1581,6 +1586,10 @@ public:
       navigate(url);
       return;
     }
+    if (Archives::canExtract(url).enabled) {
+      archives->extract(url);
+      return;
+    }
     auto *job = new KIO::OpenUrlJob(url);
     job->setUiDelegate(KIO::createDefaultJobUiDelegate(
         KJobUiDelegate::AutoHandlingEnabled, this));
@@ -1722,6 +1731,7 @@ private:
   QAction *descending;
   QMenu *actionsMenu;
   QuickActions *quickActions = nullptr;
+  Archives *archives = nullptr;
   SmartFolderReader *smartFolderReader = nullptr;
   quint64 navigationGeneration = 0;
   QHash<QString, QWidget *> toolbarWidgets;
@@ -2408,7 +2418,15 @@ private:
       namedActions["fullscreen"]->setText(isFullScreen() ? "Exit Full Screen" : "Enter Full Screen");
     }
     for (auto *action : groupActions->actions()) action->setChecked(action->data().toInt() == int(browser()->group()));
-    if (namedActions.contains("compress")) namedActions["compress"]->setEnabled(!showingSearch() && browser()->canCompressSelection());
+    if (archives && namedActions.contains("compress")) {
+      const auto capability = Archives::canCompress(selectedUrls());
+      namedActions["compress"]->setEnabled(!archives->busy() && capability.enabled);
+      namedActions["compress"]->setToolTip(capability.explanation);
+      const auto urls = selectedUrls();
+      namedActions["compress"]->setText(urls.size() == 1 ? QString("Compress “%1”").arg(urls.first().fileName()) : urls.size() > 1 ? QString("Compress %1 Items").arg(urls.size()) : QString("Compress"));
+      namedActions["extract"]->setEnabled(!archives->busy() && urls.size() == 1 && Archives::canExtract(urls.first()).enabled);
+      namedActions["cancelArchive"]->setEnabled(archives->busy());
+    }
     if (namedActions.contains("sortNone")) namedActions["sortNone"]->setEnabled(browser()->mode() == Browser::Icons);
     if (namedActions.contains("snapToGrid")) {
       QSignalBlocker block(namedActions["snapToGrid"]); namedActions["snapToGrid"]->setChecked(browser()->snapToGrid()); namedActions["snapToGrid"]->setEnabled(browser()->mode() == Browser::Icons);
@@ -2539,6 +2557,17 @@ private:
   void makeActions() {
     smartFolderReader = new SmartFolderReader(this);
     quickActions = new QuickActions(this);
+    archives = new Archives(this);
+    connect(archives, &Archives::statusChanged, this, [this](const QString &message) { status->setText(message); });
+    connect(archives, &Archives::errorOccurred, this, [this](const QString &message) { status->setText(message); });
+    connect(archives, &Archives::busyChanged, this, [this](bool) { refresh(); });
+    connect(archives, &Archives::progressChanged, this, [this](qint64 done, qint64 total) {
+      status->setText(total > 0 ? QString("Archive: %1%").arg(done * 100 / total) : QString("Archive: %1 bytes").arg(done));
+    });
+    connect(archives, &Archives::outputsCreated, this, [this](const QList<QUrl> &urls) {
+      if (showingSearch()) beginSearch();
+      else if (!urls.isEmpty() && urls.first().adjusted(QUrl::RemoveFilename).adjusted(QUrl::StripTrailingSlash) == browser()->url().adjusted(QUrl::StripTrailingSlash)) browser()->selectUrls(urls);
+    });
     connect(quickActions, &QuickActions::statusChanged, this, [this](const QString &message) { status->setText(message); });
     connect(quickActions, &QuickActions::errorOccurred, this, [this](const QString &message) { status->setText(message); });
     connect(quickActions, &QuickActions::outputsCreated, this, [this](const QList<QUrl> &urls) {
@@ -2617,8 +2646,12 @@ private:
     addAction(file, "putBack", "Put Back", {}, [this] { restoreSelection(); });
     addAction(file, "deleteImmediately", "Delete Immediately…", {"Meta+Alt+Backspace"}, [this] { deleteImmediately(); });
     addAction(file, "compress", "Compress", {}, [this] {
-      if (!showingSearch()) browser()->compressSelected();
+      archives->compress(selectedUrls());
     });
+    addAction(file, "extract", "Extract Archive", {}, [this] {
+      const auto urls = selectedUrls(); if (urls.size() == 1) archives->extract(urls.first());
+    });
+    addAction(file, "cancelArchive", "Cancel Archive Operation", {}, [this] { archives->cancel(); });
     addAction(file, "trash", "Move to Trash",
               {"Delete", "Meta+Backspace", "Ctrl+Backspace"},
               [this] { if (trashSelection()) restoreSelection(); else selectedOperation("trash"); });
@@ -2827,7 +2860,7 @@ private:
     });
     auto *help = menuBar()->addMenu("Help");
     help->addAction("Finder Help", this, [this] { openUrl(QUrl("https://github.com/MSedgeMC/macos-finder-linux#readme")); });
-    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress",
+    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress", "extract", "cancelArchive",
                    "trash", "info"})
       actionsMenu->addAction(namedActions[n]);
     actionsMenu->addSeparator();

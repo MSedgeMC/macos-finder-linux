@@ -64,3 +64,9 @@ target_include_directories(finder-browser-arrangement-test PRIVATE "${PROJECT_SO
 target_link_libraries(finder-browser-arrangement-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
 add_test(NAME finder-browser-arrangement-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-arrangement-test>")
 set_tests_properties(finder-browser-arrangement-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")
+
+add_executable(finder-archives-test archives.cpp ../src/archives.cpp ../src/archives.h)
+target_include_directories(finder-archives-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-archives-test PRIVATE Qt6::Widgets Threads::Threads KF6::Archive KF6::KIOCore KF6::KIOGui KF6::KIOWidgets)
+add_test(NAME finder-archives-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-archives-test>")
+set_tests_properties(finder-archives-test PROPERTIES TIMEOUT 90 LABELS "unit;headless")

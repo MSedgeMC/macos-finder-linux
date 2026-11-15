@@ -10,7 +10,7 @@ and KDE Frameworks 6.2 or newer. The tested development environment uses Qt
 Install your distribution's development packages for Qt Core, Gui, Widgets,
 D-Bus, Network, XML, PDF and Multimedia/MultimediaWidgets; KDE KIO,
 CoreAddons, ItemViews, Bookmarks, WidgetsAddons, JobWidgets, Config,
-WindowSystem, I18n, Service, Solid and FileMetaData; and their dependencies.
+WindowSystem, I18n, Service, Solid, FileMetaData and Archive; and their dependencies.
 
 On a recent Ubuntu/Kubuntu release with Qt 6 and KDE Frameworks 6 available:
 
@@ -20,7 +20,7 @@ sudo apt install build-essential cmake ninja-build gettext \
     libkf6kio-dev libkf6coreaddons-dev libkf6itemviews-dev \
     libkf6bookmarks-dev libkf6widgetsaddons-dev libkf6jobwidgets-dev \
     libkf6config-dev libkf6windowsystem-dev libkf6i18n-dev \
-    libkf6service-dev libkf6solid-dev libkf6filemetadata-dev
+    libkf6service-dev libkf6solid-dev libkf6filemetadata-dev libkf6archive-dev
 ```
 
 Package names and available versions vary by distribution. The packages'
