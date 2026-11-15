@@ -447,7 +447,12 @@ protected:
         QTreeView::mousePressEvent(event);
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
-        if (onHeading(event->position().toPoint())) { event->accept(); return; }
+        if (onHeading(event->position().toPoint())) {
+            // A drag begun on a file may end over the heading. Finish the view
+            // gesture while keeping the non-file heading out of activation.
+            if (state() == DragSelectingState || state() == DraggingState) setState(NoState);
+            event->accept(); return;
+        }
         QTreeView::mouseReleaseEvent(event);
     }
     void mouseDoubleClickEvent(QMouseEvent *event) override {
