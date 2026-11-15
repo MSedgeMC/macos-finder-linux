@@ -4,6 +4,7 @@
 // src/preferences.cpp; AUTOMOC, C++20, Qt6::Widgets, Threads::Threads,
 // KF6::FileMetaData and KF6::KIOCore. Link with --wrap=open, --wrap=fstat,
 // --wrap=statx and --wrap=faccessat. Run via tests/run-headless.py.
+// Optional --screenshot <path> preserves the private rendering artifact.
 // Wrappers affect only this executable's calls, never Qt's fixture I/O.
 #include "inspector.h"
 
@@ -427,6 +428,11 @@ int main(int argc, char **argv)
         drain();
         const auto image = inspector.grab().toImage();
         require(!image.isNull() && image.width() >= 600, "private offscreen rendering");
+        const int screenshotArgument = app.arguments().indexOf(QStringLiteral("--screenshot"));
+        if (screenshotArgument >= 0) {
+            require(screenshotArgument + 1 < app.arguments().size(), "screenshot artifact path required");
+            require(image.save(app.arguments()[screenshotArgument + 1]), "save private screenshot artifact");
+        }
         require(probes() == beforePaint, "paint/model reads performed filesystem scans");
         inspector.hide();
         cases.append("10,000 captured URLs retain native actions; only 4,096 probes; rendering/model lookups perform no I/O");
