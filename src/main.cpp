@@ -3199,7 +3199,7 @@ public slots:
   int windowCount() {
     int n = 0;
     for (auto *w : QApplication::topLevelWidgets())
-      if (w->isVisible())
+      if (qobject_cast<FinderWindow *>(w) || w->isVisible())
         ++n;
     return n;
   }
