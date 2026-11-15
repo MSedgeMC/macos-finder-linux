@@ -96,6 +96,16 @@ public:
     ~FinderProxy() override { if (tagWorker) tagWorker->requestInterruption(); }
     Browser::Group grouping = Browser::GroupNone;
     QSet<QUrl> cutUrls;
+    bool foldersFirstPreference = false;
+
+    void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override {
+        setSortFoldersFirst(foldersFirstPreference && column == KDirModel::Name);
+        KDirSortFilterProxyModel::sort(column, order);
+    }
+    void setFoldersFirstPreference(bool enabled) {
+        foldersFirstPreference = enabled;
+        setSortFoldersFirst(enabled && sortColumn() == KDirModel::Name);
+    }
 
     void setGroup(Browser::Group value) {
         grouping = value;
@@ -1033,6 +1043,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     for (int column : {KDirModel::Permissions, KDirModel::Owner, KDirModel::Group}) d->list->hideColumn(column);
     d->list->header()->moveSection(d->list->header()->visualIndex(KDirModel::Type), 3);
     d->list->header()->setStretchLastSection(false);
+    d->list->header()->setSectionsMovable(true);
     d->list->header()->setSectionResizeMode(QHeaderView::Interactive);
     d->list->header()->setMinimumSectionSize(48);
     // Explicit fitting samples a bounded number of loaded rows. Qt's default
@@ -1238,7 +1249,7 @@ void Browser::setPreviewShown(bool shown) {
     d->selected();
 }
 void Browser::refreshTags() { d->proxy->refreshTags(); }
-void Browser::setFoldersFirst(bool enabled) { d->proxy->setSortFoldersFirst(enabled); }
+void Browser::setFoldersFirst(bool enabled) { d->proxy->setFoldersFirstPreference(enabled); }
 void Browser::selectUrls(const QList<QUrl> &urls) { d->pendingSelection = urls; if (urls.isEmpty()) d->activeSelection()->clearSelection(); else d->applySelection(); }
 void Browser::renameSelected() {
     const auto rows = d->selectedNames(); if (rows.size() != 1) return;
