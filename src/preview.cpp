@@ -811,12 +811,20 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     });
 
     m_pageControls = new QWidget(this);
-    auto *pageLayout = new QHBoxLayout(m_pageControls);
+    auto *pageBox = new QVBoxLayout(m_pageControls);
+    pageBox->setContentsMargins(0, 0, 0, 0);
+    pageBox->setSpacing(4);
+    auto *pageLayout = new QHBoxLayout;
+    auto *searchLayout = new QHBoxLayout;
+    pageBox->addLayout(pageLayout);
+    pageBox->addLayout(searchLayout);
     pageLayout->setContentsMargins(0, 0, 0, 0);
     m_pagePrevious = button(QStringLiteral("‹"), QStringLiteral("previewPreviousPage"), this);
     m_pagePrevious->setAccessibleName(tr("Previous PDF page"));
     m_pageNext = button(QStringLiteral("›"), QStringLiteral("previewNextPage"), this);
     m_pageNext->setAccessibleName(tr("Next PDF page"));
+    m_pagePrevious->setFixedWidth(32);
+    m_pageNext->setFixedWidth(32);
     m_pageLabel = new QLabel(this);
     m_pageLabel->setObjectName(QStringLiteral("previewPageCount"));
     pageLayout->addStretch();
@@ -833,16 +841,18 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_pdfSearch->setPlaceholderText(tr("Find in PDF"));
     m_pdfSearch->setAccessibleName(tr("Find text in PDF"));
     m_pdfSearch->setClearButtonEnabled(true);
-    pageLayout->addWidget(m_pdfSearch, 1);
+    searchLayout->addWidget(m_pdfSearch, 1);
     m_pdfSearchPrevious = button(QStringLiteral("↑"), QStringLiteral("previewPdfFindPrevious"), this);
     m_pdfSearchPrevious->setAccessibleName(tr("Previous match"));
     m_pdfSearchNext = button(QStringLiteral("↓"), QStringLiteral("previewPdfFindNext"), this);
     m_pdfSearchNext->setAccessibleName(tr("Next match"));
-    pageLayout->addWidget(m_pdfSearchPrevious);
-    pageLayout->addWidget(m_pdfSearchNext);
+    m_pdfSearchPrevious->setFixedWidth(32);
+    m_pdfSearchNext->setFixedWidth(32);
+    searchLayout->addWidget(m_pdfSearchPrevious);
+    searchLayout->addWidget(m_pdfSearchNext);
     m_pdfSearchStatus = new QLabel(this);
     m_pdfSearchStatus->setObjectName(QStringLiteral("previewPdfSearchStatus"));
-    pageLayout->addWidget(m_pdfSearchStatus);
+    searchLayout->addWidget(m_pdfSearchStatus);
     pageLayout->addStretch();
     previewLayout->addWidget(m_pageControls);
     connect(m_pdfPageEntry, &QLineEdit::returnPressed, this, [this] {
