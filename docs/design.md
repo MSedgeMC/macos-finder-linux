@@ -73,13 +73,20 @@ Gallery adds compact Information, Show More, a thumbnail/name/kind-size header,
 editable standard/custom tags, Open/Get Info and More actions. Rotate Left as
 Copy exports a bounded original-resolution PNG through KIO, choosing an unused
 name and recording native Undo; it does not overwrite the original. Compress
-uses Ark when present, and email sharing uses the installed xdg-email route.
+creates ZIP files natively; opening a local ZIP expands it beside the archive.
+Staging completes before native KIO publication, with naming, conflicts,
+cancellation and Undo. Email sharing uses the installed xdg-email route.
 
 Recursive filename search runs on a worker and ignores obsolete requests after
 cancellation. Its defaults are 2,000 results, 250,000 entries and 15 seconds;
 the UI reports a reached limit. Hidden entries are optional. Symlink recursion,
 virtual mounts and remote search roots are excluded. Search actions operate on
-the visible result selection. Search is not semantic or full-content indexing.
+the visible result selection. Nested All/Any/None conditions combine real name,
+kind, size, modified/created date, tag and bounded Unicode text predicates.
+Smart Folder JSON descriptors preserve those conditions. Existing Baloo indexes
+can supply content candidates; index coverage, exclusions and stale entries
+remain provider limitations, and the UI reports them. This Computer uses an
+existing index rather than starting a recursive disk scan.
 
 Colored and custom tags use KDE-compatible Linux `user.xdg.tags` metadata.
 Changes preserve custom tags and unrelated metadata. Metadata writes are
@@ -126,3 +133,32 @@ This repository does not bundle Apple fonts, Apple kit images or proprietary
 icon assets. Qt/KDE dependencies and any separately installed icon theme retain
 their own licenses and authorship. The screenshots show an existing desktop
 icon theme; the theme itself is not included.
+
+## Portable interaction additions
+
+Icons can save positions by file URL, return to them after sorting/grouping,
+snap to a grid and clean up by real metadata. Spring loading navigates temporary
+hovered folders and rolls back on Escape or drag cancellation; history and
+folder preferences change only after a committed drop. Pixel/momentum scroll
+input remains native; wheel easing is interruptible with reduced motion. No
+measurement establishes Apple's exact scroll physics.
+
+Quick Look adds PDF page navigation, bounded search/text selection and lazy
+multipage scrolling. Image actions operate at original resolution; image/PDF
+combination is a raster fallback, not structural PDF editing. FFmpeg trim
+exports same-container copies with validated duration, original bytes preserved,
+KIO conflicts and Undo. Installed encoders determine media support.
+
+Inspector follows the actual selection or pins it, displays asynchronous
+metadata for up to 4,096 entries and exposes native properties/reveal actions.
+It does not recurse through folder contents or substitute filesystem ctime for
+a missing creation date. Closed windows and explicit previous-session restoration
+preserve tabs, history, selection and view options within bounded records.
+
+Appearance defaults to dark and adds light/system modes, increased contrast and
+reduced transparency. The latter two use opaque material and disable native blur.
+Semantic palettes leave the chosen font and global desktop settings unchanged.
+
+OCR, structural PDF markup, background removal, Apple cloud/sharing services
+and proprietary Finder extension providers are still absent. Platform limitations
+and tested portable behavior do not establish literal 1:1 Finder parity.

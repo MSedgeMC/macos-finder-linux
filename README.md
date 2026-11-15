@@ -1,7 +1,7 @@
 # macos-finder-linux
 
 A native Qt 6/KDE file manager inspired by Finder, with Icons, List, real Miller
-Columns, Gallery, multi-file Quick Look, local tags, recursive filename search,
+Columns, Gallery, multi-file Quick Look, local tags, saved Boolean searches,
 and native KIO file operations.
 
 ![Icon view](screenshots/icons.png)
@@ -17,10 +17,19 @@ Implemented features include tabs/history, inline rename, native conflict
 handling, copy/move, Trash/Undo, file watching, device bookmarks/eject, saved
 folder views, all six grouping choices, optional side previews, Gallery
 Information/Show More, editable tag chips, image/PDF/text previews, and
-explicit-play audio/video. Compress uses Ark when available. Gallery can export
-an original-resolution rotated PNG copy with native conflict handling and Undo. Linux
-`user.xdg.tags` preserves custom tags. Local filename search runs on a bounded,
-cancelable worker without background indexing.
+explicit-play audio/video. Native ZIP creation and extraction use conflict handling,
+cancellation and Undo. Icons support persistent manual positions, Snap to Grid,
+Clean Up and spring-loaded folders. PDF previews support search, selection and
+multipage scrolling; media can export a trimmed copy through installed FFmpeg.
+Quick Actions provide image conversion/markup and image or rasterized PDF combination.
+
+Settings include a persistent tag registry and favorite slots, light/dark/system
+appearance, increased contrast and reduced transparency. Inspector follows the
+selection or pins its real metadata. Closed windows and explicitly saved sessions
+can restore their tabs and views. Linux `user.xdg.tags` preserves custom tags.
+Bounded local search supports names, dates, sizes, tags and Unicode text with
+nested Any/All/None criteria. Optional Baloo queries use an existing index and
+report its coverage; the app does not start an indexer.
 
 ![Gallery view](screenshots/gallery.png)
 

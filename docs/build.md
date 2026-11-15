@@ -8,7 +8,7 @@ and KDE Frameworks 6.2 or newer. The tested development environment uses Qt
 ## Dependencies
 
 Install your distribution's development packages for Qt Core, Gui, Widgets,
-D-Bus, Network, XML, PDF and Multimedia/MultimediaWidgets; KDE KIO,
+D-Bus, Network, XML, PDF, PrintSupport and Multimedia/MultimediaWidgets; KDE KIO,
 CoreAddons, ItemViews, Bookmarks, WidgetsAddons, JobWidgets, Config,
 WindowSystem, I18n, Service, Solid, FileMetaData and Archive; and their dependencies.
 
@@ -41,10 +41,11 @@ generates all Qt meta-object sources, including the `main.moc` and `search.moc`
 included by the implementation. Run `build/finder` after the build to open the
 file manager.
 
-`BUILD_TESTING` is on by default. The two CTest executables exercise recursive
-filename search and native file tags using temporary fixtures. They are
-QCoreApplication programs, and their launch strips display and session-bus
-variables so they open no GUI and do not connect to the working session. The
+`BUILD_TESTING` is on by default. CTest exercises search, native tags, scrolling,
+preview and editing outputs, ZIP operations, Smart Folders, browser metadata and
+arrangement, search editing, Inspector and appearance. Every executable uses
+temporary fixtures, private XDG directories and a private session bus. Widget
+tests use Qt offscreen and never connect to the working display. The
 tag fixture needs a local writable filesystem supporting `user.*` extended
 attributes. Use `-DBUILD_TESTING=OFF` when packaging without unit executables.
 
@@ -83,3 +84,8 @@ headers extracted from development packages is not a complete prefix: imported
 targets may also refer to runtime libraries and helper executables. Use a
 consistent Qt version for all modules and tools. No machine-specific prefix is
 stored in this repository.
+
+Optional media trim needs installed `ffmpeg`, `ffprobe` and compatible encoders.
+Indexed content search needs `baloosearch6` and an existing readable Baloo 6 index.
+These providers are detected at runtime; the app starts neither an indexer nor
+a background whole-disk scan.
