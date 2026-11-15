@@ -362,8 +362,11 @@ protected:
     QStringList errors, result;
     for (auto u : urls) {
       QString error;
-      if (operation == 0)
-        result = FileTags::tags(u, &error);
+      if (operation == 0) {
+        const auto tags = FileTags::tags(u, &error);
+        if (u == urls.first()) result = tags;
+        else result.removeIf([&tags](const QString &value) { return !tags.contains(value); });
+      }
       else if (operation == 1)
         error = FileTags::addTag(u, tag);
       else if (operation == 2)
@@ -988,7 +991,7 @@ public:
     saveView();
     refresh();
   }
-  void prepareTagMenu() { updateTags(); }
+  void prepareTagMenu() { updateTags(true); }
   void addTab(const QUrl &u, bool activate) {
     auto *b = new Browser;
     if (namedActions.contains("hidden"))
@@ -1051,7 +1054,7 @@ public:
           if (pane) pane->tagChangeFinished(url, error);
           for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
           if (browser()) browser()->refreshTags();
-          updateTags();
+          updateTags(true);
         });
         connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
       });
@@ -1335,15 +1338,18 @@ private:
     connect(job, &TagsJob::done, this, [this](QString error, QStringList) {
       writingTags = false;
       status->setText(error.isEmpty() ? "Tags updated" : error);
-      updateTags();
+      updateTags(true);
       if (browser()) browser()->refreshTags();
       for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
     });
     connect(job, &QThread::finished, job, &QObject::deleteLater);
     job->start();
   }
-  void updateTags() {
+  QList<QUrl> lastTagUrls;
+  void updateTags(bool force = false) {
     auto urls = selectedUrls();
+    if (!force && urls == lastTagUrls) return;
+    lastTagUrls = urls;
     const auto generation = ++tagGeneration;
     for (auto a : tagMenu->actions())
       a->setEnabled(false);
@@ -1352,7 +1358,7 @@ private:
     if (urls.isEmpty() || writingTags)
       return;
     auto *job = new TagsJob;
-    job->urls = {urls.first()};
+    job->urls = urls;
     connect(job, &TagsJob::done, this,
             [this, urls, generation](QString error, QStringList tags) {
               if (selectedUrls() != urls || generation != tagGeneration ||
