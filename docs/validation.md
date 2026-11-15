@@ -2,8 +2,8 @@
 
 The originating Kubuntu desktop build passed the following checks on
 2026-11-15. These results establish tested Linux behavior, not macOS platform or
-pixel parity. They preceded extraction into this standalone repository; a
-different dependency set or desktop should run the available checks again.
+pixel parity. The complete rebuild was verified from this standalone repository. A different
+dependency set or desktop should run the available checks again.
 
 ## Isolated native integration
 
@@ -52,11 +52,12 @@ and should not be described as a single count of unique behaviors.
 | Icon/Gallery delegate | 16 | Native listing/selection, rounded icon and two-line filename selection, thumbnail pixels, inline rename placement, real rename/Undo, List delegate retained |
 | Browser | 28 | Separate selection models, nested columns/arrow navigation, one open per double click, view transitions, rename/Undo, invalid-name rejection and conflict cancellation |
 | Places sidebar | 7 | Native model, compact row/header hit geometry, fixed icon size, accessibility and actual row activation |
-| Recursive search | 11 | Hidden behavior, result/entry/time bounds, canceled generations, replacement/destruction and UI responsiveness |
+| Recursive search | 13 | Hidden behavior, result/entry/time bounds, canceled generations, replacement/destruction and UI responsiveness |
 | Linux tags | 9 | Existing metadata, custom/Unicode tags, unrelated xattrs, invalid inputs, idempotent removal and storage/path errors |
-| Installer | 13 | Offline prepare/apply/restore recovery cases using fake external commands and a fake session bus; no production writes in these cases |
+| Installer | 14 | Offline prepare/apply/restore recovery cases using fake external commands and a fake session bus; no production writes in these cases |
 
-The 11 search checks also passed under sanitizers. The private global-menu
+The earlier 11-case search suite also passed under sanitizers; the current
+13-case suite adds real tag filtering and preferred-subtree bounds. The private global-menu
 registrar check confirmed native File/Edit/View/Go/Window menu export through
 `com.canonical.dbusmenu`, including navigation, view modes and file actions.
 
@@ -70,12 +71,34 @@ not a claim that installation changes are exercised against every distribution.
 
 The exported Qt/KDE-target CMake configuration and complete Release build of
 this standalone repository passed on 2026-11-15. Both CTest programs passed:
-11 recursive-search cases and 9 tag cases. A binary-only staged installation
+13 recursive-search cases and 9 tag cases. A binary-only staged installation
 contained exactly `bin/finder`. Matching development dependencies were supplied
 through a private extracted prefix; these checks installed no system packages,
-opened no GUI windows and changed no production desktop files. The installed
-desktop executable remains the separately verified integration build described
-above.
+opened no GUI windows and changed no production desktop files. The staged binary has no private development-prefix RPATH and passed its own
+isolated boundary and Gallery action tests before deployment.
+
+## Actual blur and Gallery actions
+
+A private compositor capture compared the same patterned backdrop with native
+KWin blur enabled and disabled. Sidebar high-frequency detail fell from 70.87
+to 8.73 (ratio 0.123); changing the live backdrop changed its visible sidebar
+color by 28.71. The opaque file pane was identical between blur states. This
+verifies genuine compositor backdrop blur, not a wallpaper replacement, an
+alpha flag alone or Apple's proprietary refraction. The material harness is
+[tests/verify-material.py](../tests/verify-material.py) and requires private
+KWin, PyQt6 QtQuick, KDE layer-shell, Spectacle, python-dbus and Pillow.
+
+Eleven focused native Gallery checks passed on the final staged executable:
+Show More metadata expansion/collapse; standard and custom tag add/remove;
+invalid input, permission errors and retry; symlink mutation disabled; full
+original-resolution rotation with occupied destination names; color-profile
+and DPI-axis preservation; and two native Undo cycles. Source file hashes,
+existing tags and unrelated metadata remained unchanged. These checks used
+only disposable files and a private Wayland session.
+
+The complete operation harness is
+[tests/verify-integration.py](../tests/verify-integration.py). It uses the same
+private screen isolation and accepts `--binary` and `--output-dir`.
 
 ## Repeating GUI checks safely
 
@@ -83,10 +106,11 @@ above.
 
 On 2026-11-15, the original capture contained a fully transparent pixel column
 at x256 across all 620 body rows. The corrected layout eliminates this strip
-and keeps the content-side boundary opaque. Fourteen isolated native Wayland
+and keeps the content-side boundary opaque. Twenty-two isolated native Wayland
 captures passed at both 1× and 1.5× scaling: all four views, wider/narrower
 sidebar drags, minimum/restored window sizes, sidebar hide/show, a visible tab
-bar, search results, and maximize/restore. Native resize events changed the
+bar, search results, all six grouping choices, side Preview, actual tag
+results with fixture selection and Escape, and maximize/restore. Native resize events changed the
 sidebar width while preserving adjoining panes. The final screenshots also
 measured the 73×36 navigation and 142×36 view capsules; no working-desktop input
 or GUI previews were used.
@@ -95,8 +119,8 @@ These are boundary and geometry checks, not proof of complete macOS parity.
 The generic-kit comparison and remaining differences are described in
 [design and platform scope](design.md).
 
-The installed corrected executable subsequently passed the same 14 boundary
-captures and nine view/navigation smoke checks on isolated screens. All 14
+The previous installed boundary fix passed 14 captures and nine smoke checks.
+The latest staged update passed all 22 boundary captures. All 14
 offline installer cases passed, including preservation of existing MIME-file
 permissions. Deployment changed only the executable and restarted only the
 windowless file-manager daemon; staged hashes, folder-default and FileManager1

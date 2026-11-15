@@ -56,8 +56,8 @@ presents true 32px sidebar rows and 18px nonselectable headers, while
 KFilePlacesModel and the original view retain bookmark/device menus, native
 mount/eject and deferred file drops. Recents and Shared precede Favorites;
 Locations and seven tag colors follow. Tag selection searches actual local
-metadata under the home folder, including hidden folders, within the search
-budgets below. Linux routes use the available KIO workers. Material rendering is
+metadata under the home folder, including hidden folders, with the current folder scanned first within the
+same search budgets below. Linux routes use the available KIO workers. Material rendering is
 separate from these actions. Tabs and history keep independent folder state;
 folder settings retain view, sorting, grouping, spacing, label position, preview
 visibility, icon size and List column visibility. Six grouping choices operate

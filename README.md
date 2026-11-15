@@ -37,7 +37,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 The native implementation passed **32 isolated Wayland integration checks**.
-The sidebar also passed 22 boundary/geometry captures at 1× scale, including
+The sidebar also passed 22 boundary/geometry captures at both 1× and 1.5× scale, including
 actual tag activation and native resize input. A compositor capture measured
 real backdrop blur while the file pane stayed unchanged.
 See [validation](docs/validation.md) and [design and platform limits](docs/design.md).
