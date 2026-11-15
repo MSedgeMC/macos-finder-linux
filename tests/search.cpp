@@ -16,6 +16,7 @@
 #include <QTimer>
 #include <cstdio>
 #include <stdexcept>
+#include <sys/xattr.h>
 
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
@@ -104,6 +105,16 @@ int main(int argc, char **argv) {
         result = scan(search, url, "needle", hidden);
         require(result.error.isEmpty() && result.count == 6 && result.urls.size() == 6, "hidden files or hidden recursion missing");
         cases.append("hidden files and hidden directories included when requested");
+        const QByteArray tagged = QFile::encodeName(root + "/Needle.txt");
+        require(setxattr(tagged.constData(), "user.xdg.tags", "Blue,Project", 12, 0) == 0, "tag fixture xattr");
+        LocalFileSearch::Options tags;
+        tags.requiredTag = "Blue";
+        result = scan(search, url, QString(), tags);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(root + "/Needle.txt"), "real tagged results");
+        tags.requiredTag = "Blu";
+        result = scan(search, url, QString(), tags);
+        require(result.count == 0, "tags use full values rather than substring matching");
+        cases.append("tag results read real xattrs without following symlinks or matching partial tags");
         auto bounded = hidden;
         bounded.maxResults = 2;
         result = scan(search, url, "needle", bounded);

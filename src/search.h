@@ -18,6 +18,7 @@ public:
         int maxResults = 2000;
         int maxEntries = 250000;
         int maxElapsedMs = 15000;
+        QString requiredTag;
     };
 
     explicit LocalFileSearch(QObject *parent = nullptr);

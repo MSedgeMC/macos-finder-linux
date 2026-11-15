@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 #include <vector>
 
@@ -163,7 +164,7 @@ private:
             emit complete(request.generation, count, limited, skipped, failure, canceled());
         };
         if (canceled()) { finish(); return; }
-        if (request.query.isEmpty()) { finish(); return; }
+        if (request.query.isEmpty() && request.options.requiredTag.isEmpty()) { finish(); return; }
         if (!request.root.isLocalFile() || (!request.root.host().isEmpty() && request.root.host() != "localhost")) {
             failure = QStringLiteral("Recursive filename search is available for local folders.");
             finish();
@@ -227,7 +228,27 @@ private:
                 }
                 type = S_ISDIR(status.st_mode) ? DT_DIR : S_ISLNK(status.st_mode) ? DT_LNK : S_ISREG(status.st_mode) ? DT_REG : DT_UNKNOWN;
             }
-            if ((type == DT_DIR || type == DT_REG || type == DT_LNK) &&
+            bool tagMatches = request.options.requiredTag.isEmpty();
+            if (!tagMatches && (type == DT_DIR || type == DT_REG)) {
+                // Read metadata from the inode reached by this safe directory
+                // walk. Never follow a changed symlink or read file contents.
+                const int tagged = openat(dirfd(frame.directory.get()), name.constData(),
+                                          O_PATH | O_NOFOLLOW | O_CLOEXEC);
+                if (tagged >= 0) {
+                    struct stat metadata;
+                    if (fstat(tagged, &metadata) == 0 &&
+                        (S_ISREG(metadata.st_mode) || S_ISDIR(metadata.st_mode))) {
+                        const QByteArray pinned = "/proc/self/fd/" + QByteArray::number(tagged);
+                        char value[65536];
+                        const auto length = getxattr(pinned.constData(), "user.xdg.tags", value, sizeof(value));
+                        if (length >= 0)
+                            tagMatches = QString::fromUtf8(value, length).split(',')
+                                .contains(request.options.requiredTag, Qt::CaseInsensitive);
+                    }
+                    close(tagged);
+                }
+            }
+            if (tagMatches && (type == DT_DIR || type == DT_REG || type == DT_LNK) &&
                     QFile::decodeName(name).contains(request.query, Qt::CaseInsensitive)) {
                 batch.append(QUrl::fromLocalFile(QFile::decodeName(path)));
                 ++count;
