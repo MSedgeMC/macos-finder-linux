@@ -58,13 +58,14 @@ QString systemError(int code) {
     return QStringLiteral("Could not access file tags: %1").arg(QString::fromLocal8Bit(std::strerror(code)));
 }
 
-QString openFile(const QUrl &url, Handle &handle) {
+QString openFile(const QUrl &url, Handle &handle, const QList<Mount> *snapshot = nullptr) {
     if (!url.isLocalFile() || (!url.host().isEmpty() && url.host() != "localhost"))
         return QStringLiteral("Tags are available for local files; this remote location is unsupported.");
     const auto path = QDir::cleanPath(url.toLocalFile());
     if (!QDir::isAbsolutePath(path)) return QStringLiteral("Choose an absolute local file path for tags.");
     QList<Mount> mounts;
-    if (!readMounts(mounts)) return QStringLiteral("Cannot verify the local filesystem for file tags.");
+    if (snapshot) mounts = *snapshot;
+    else if (!readMounts(mounts)) return QStringLiteral("Cannot verify the local filesystem for file tags.");
     if (!isLocal("/", mounts)) return QStringLiteral("Tags are unavailable on network or virtual mounts.");
     handle.descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (handle.descriptor < 0) return systemError(errno);
@@ -144,6 +145,21 @@ QStringList FileTags::tags(const QUrl &url, QString *error) {
     QStringList result;
     if (failure.isEmpty()) result = readTags(handle, failure);
     if (error) *error = failure;
+    return result;
+}
+
+QHash<QUrl, QStringList> FileTags::tagsForUrls(const QList<QUrl> &urls, QHash<QUrl, QString> *errors) {
+    QList<Mount> mounts;
+    const bool available = readMounts(mounts);
+    QHash<QUrl, QStringList> result;
+    if (errors) errors->clear();
+    for (const auto &url : urls) {
+        Handle handle;
+        QString failure = available ? openFile(url, handle, &mounts)
+                                    : QStringLiteral("Cannot verify the local filesystem for file tags.");
+        result.insert(url, failure.isEmpty() ? readTags(handle, failure) : QStringList());
+        if (errors && !failure.isEmpty()) errors->insert(url, failure);
+    }
     return result;
 }
 

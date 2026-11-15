@@ -85,6 +85,14 @@ int main(int argc, char **argv) {
         require(!FileTags::setTags(QUrl::fromLocalFile("/proc/self/status"), {"Red"}).isEmpty(), "virtual mount write allowed");
         require(!FileTags::setTags(QUrl::fromLocalFile(temporary.path() + "/missing"), {"Red"}).isEmpty(), "missing file write allowed");
         cases.append("symlinks, remote/virtual storage and missing files report errors");
+        QHash<QUrl, QString> batchErrors;
+        const auto folderUrl = QUrl::fromLocalFile(folder);
+        const auto linkUrl = QUrl::fromLocalFile(link);
+        const auto remoteUrl = QUrl("smb://server/share/fixture");
+        const auto batch = FileTags::tagsForUrls({url, folderUrl, linkUrl, remoteUrl}, &batchErrors);
+        require(batch.value(url) == FileTags::tags(url) && batch.value(folderUrl) == QStringList{"Green"}, "batch metadata differs from native tags");
+        require(batchErrors.size() == 2 && batchErrors.contains(linkUrl) && batchErrors.contains(remoteUrl), "batch storage errors lost");
+        cases.append("bounded batch reads retain native tag values and per-file storage errors");
         require(FileTags::standardTags().size() == 7 && FileTags::tagColor("RED") == QColor("#ff3b30"), "color mapping");
         require(FileTags::tagColor("custom") == FileTags::tagColor("Gray"), "custom color fallback");
         cases.append("seven standard colors and neutral custom-tag fallback");
