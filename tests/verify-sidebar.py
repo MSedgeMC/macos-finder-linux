@@ -144,6 +144,7 @@ try:
             wait_for(lambda: status()['tabs'] == 2, 'new tab')
             capture('tab-bar')
             assert api.trigger('search', timeout=3)
+            assert api.setControl('finderSearchScope', 1, timeout=3)
             assert api.setText('finderSearch', 'Notes', timeout=3)
             wait_for(lambda: status()['searchVisible'] and not status()['searchRunning']
                      and status()['searchResults'] == 1, 'search completion')

@@ -225,7 +225,7 @@ def idle_cpu(name):
 
 
 def close_preview():
-    assert api.clickTopLevel("Quick Look", "previewClose", timeout=3)
+    assert api.clickTopLevel("Quick Look", "window-close", timeout=3)
     until(lambda: not visible_preview(), "close Quick Look")
 
 
@@ -353,6 +353,7 @@ try:
 
         select(source)
         trigger("search")
+        assert api.setControl("finderSearchScope", 1, timeout=3)
         assert api.setText("finderSearch", "Inside", timeout=3)
         until(lambda: status()["searchVisible"] and not status()["searchRunning"]
               and status()["searchResults"] == 1, "recursive nested search")
@@ -406,23 +407,23 @@ try:
             options_title = "View Options — Documents"
             until(lambda: any(w["title"] == options_title for w in top_levels()), "native View Options")
             assert api.setControl("viewOptionMode", 1, timeout=3)
-            assert api.setControl("viewOptionIconSize", 112, timeout=3)
+            assert api.setControl("viewOptionIconSize", 32, timeout=3)
             assert api.setControl("viewOptionSort", 2, timeout=3)
             assert api.setControl("viewOptionReverse", 1, timeout=3)
             assert api.setControl("viewOptionColumn1", 0, timeout=3)
             capture("finder-view-options", options_title)
             assert api.dialogButton("Save", timeout=3)
-            until(lambda: status()["mode"] == 1 and status()["iconSize"] == 112 and not status()["sortAscending"], "View Options Save")
+            until(lambda: status()["mode"] == 1 and status()["iconSize"] == 32 and not status()["sortAscending"], "View Options Save")
             saved_sort = status()["sortColumn"]
             navigate(artwork)
             navigate(fixtures)
-            until(lambda: status()["mode"] == 1 and status()["iconSize"] == 112
+            until(lambda: status()["mode"] == 1 and status()["iconSize"] == 32
                   and status()["sortColumn"] == saved_sort and not status()["sortAscending"], "per-folder view restore")
             assert 1 in status()["hiddenColumns"], status()
             trigger("viewOptions")
             until(lambda: any(w["title"] == options_title for w in top_levels()), "restored View Options")
             capture("finder-view-options-restored", options_title)
-            assert api.dialogButton("Cancel", timeout=3)
+            assert api.dialogButton("Close", timeout=3)
             record("nativeViewOptionsSaveAndFolderPersistence")
             assert api.setMode(0, timeout=3)
 
