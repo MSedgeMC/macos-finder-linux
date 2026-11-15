@@ -644,6 +644,7 @@ public:
       searchSummary->setText("Tags: " + tag + " — Searching…");
       LocalFileSearch::Options options;
       options.requiredTag = tag;
+      options.showHidden = true;
       fileSearch->start(searchRoot, QString(), options);
       refresh();
     });
@@ -1842,6 +1843,7 @@ private:
     auto *path =
         addAction(view, "path", "Show Path Bar", {"Meta+Alt+P"}, [this] {
           crumbs->setVisible(namedActions["path"]->isChecked());
+          QSettings().setValue("Window/pathBar", namedActions["path"]->isChecked());
         });
     path->setCheckable(true);
     path->setChecked(QSettings().value("Window/pathBar", false).toBool());
