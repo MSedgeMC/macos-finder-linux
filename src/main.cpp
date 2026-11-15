@@ -2354,6 +2354,7 @@ private:
         auto modes = state.value("modes").toArray();
         for (int i = 0; i < modes.size(); ++i) { auto value = modes[i].toObject(); value["horizontal"] = 0; value["vertical"] = 0; modes[i] = value; }
         state["modes"] = modes;
+        state.remove("iconPositions"); state.remove("positionsUrl"); state.remove("columnWidths");
         QSettings().setValue("View/defaultState", QJsonDocument(state).toJson(QJsonDocument::Compact));
       }
       dialog->accept();
