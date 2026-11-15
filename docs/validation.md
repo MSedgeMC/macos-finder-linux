@@ -95,6 +95,22 @@ These are boundary and geometry checks, not proof of complete macOS parity.
 The generic-kit comparison and remaining differences are described in
 [design and platform scope](design.md).
 
+The installed corrected executable subsequently passed the same 14 boundary
+captures and nine view/navigation smoke checks on isolated screens. All 14
+offline installer cases passed, including preservation of existing MIME-file
+permissions. Deployment changed only the executable and restarted only the
+windowless file-manager daemon; staged hashes, folder-default and FileManager1
+routes were verified afterward.
+
+The regression harness is [tests/verify-sidebar.py](../tests/verify-sidebar.py).
+It needs Python PyQt6, python-dbus and Pillow, and must be launched by the
+private Wayland runner described below (or an equivalent environment supplying
+its isolation markers and source configuration paths). Pass `--binary` and
+`--output`; it deliberately refuses the working display. Repeat with
+`QT_SCALE_FACTOR=1.5` to exercise fractional scaling. Its input bridge is
+available only when the application has both `--test-mode` and the private
+screen marker.
+
 The development workspace used its headless virtual-screen runner for GUI
 checks. To repeat them elsewhere, provide a compositor session with private
 Wayland, D-Bus, runtime and XDG directories. Never attach test windows
