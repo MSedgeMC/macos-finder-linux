@@ -22,6 +22,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
@@ -266,9 +267,8 @@ public:
         if (auto *text = qobject_cast<QTextEdit *>(editor); text && rename) rename(index, text->toPlainText());
     }
     void updateEditorGeometry(QWidget *editor, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        QStyleOptionViewItem content(option);
-        if (sectionRows && index.data(SectionStartRole).toBool()) content.rect.setTop(content.rect.top() + SectionHeight);
-        KFileItemDelegate::updateEditorGeometry(editor, content, index);
+        // FinderListView::visualRect already excludes its preceding heading.
+        KFileItemDelegate::updateEditorGeometry(editor, option, index);
     }
 };
 
@@ -419,6 +419,34 @@ public:
     using View::View;
     DropHandler handler;
 protected:
+    void mousePressEvent(QMouseEvent *event) override {
+        if (onHeading(event->position().toPoint())) { event->accept(); return; }
+        QTreeView::mousePressEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (onHeading(event->position().toPoint())) { event->accept(); return; }
+        QTreeView::mouseReleaseEvent(event);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (onHeading(event->position().toPoint())) { event->accept(); return; }
+        QTreeView::mouseDoubleClickEvent(event);
+    }
+    void setSelection(const QRect &rectangle, QItemSelectionModel::SelectionFlags flags) override {
+        QRect content = rectangle.normalized();
+        const QModelIndex first = QTreeView::indexAt(content.topLeft());
+        const QModelIndex last = QTreeView::indexAt(content.bottomRight());
+        // Qt's base tree substitutes the first/last model row for an invalid
+        // endpoint. A section heading is interior space, so trim it instead.
+        if (first.data(SectionStartRole).toBool() && content.top() < visualRect(first).top())
+            content.setTop(visualRect(first).top());
+        if (last.data(SectionStartRole).toBool() && content.bottom() < visualRect(last).top()) {
+            const QModelIndex previous = indexAbove(last);
+            if (!previous.isValid()) return;
+            content.setBottom(visualRect(previous).bottom());
+        }
+        if (content.bottom() < content.top()) return;
+        QTreeView::setSelection(content, flags);
+    }
     void dropEvent(QDropEvent *event) override {
         auto index = this->indexAt(event->position().toPoint());
         if (!index.isValid()) index = this->rootIndex();
@@ -453,6 +481,11 @@ protected:
         QRect content(rect);
         if (index.data(SectionStartRole).toBool()) content.setTop(content.top() + SectionHeight);
         QTreeView::drawBranches(painter, content, index);
+    }
+private:
+    bool onHeading(const QPoint &point) const {
+        const QModelIndex index = QTreeView::indexAt(point);
+        return index.data(SectionStartRole).toBool() && point.y() < visualRect(index).top();
     }
 };
 
