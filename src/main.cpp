@@ -37,6 +37,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -69,6 +70,7 @@
 #include <QStorageInfo>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <QTextEdit>
 #include <QThread>
 #include <QTimer>
@@ -994,6 +996,55 @@ public:
       l->addWidget(p);
       connect(p, &PreviewPane::openRequested, this,
               [this](const QUrl &url) { openUrl(url); });
+      connect(p, &PreviewPane::getInfoRequested, this, [this](const QUrl &url) {
+        auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+      });
+      connect(p, &PreviewPane::rotateCopyRequested, this, [this](const QUrl &url) {
+        if (!url.isLocalFile()) return;
+        auto temporary = std::make_shared<QTemporaryDir>();
+        if (!temporary->isValid()) { status->setText("Could not create the rotated copy."); return; }
+        const auto staged = temporary->filePath("rotated.png");
+        auto error = std::make_shared<QString>();
+        auto *worker = QThread::create([url, staged, error, temporary] {
+          QImageReader reader(url.toLocalFile()); reader.setAutoTransform(true);
+          const auto size = reader.size();
+          if (!size.isValid() || qint64(size.width()) * size.height() > 64000000) {
+            *error = "This image is too large to rotate safely."; return;
+          }
+          const auto image = reader.read();
+          if (image.isNull()) { *error = reader.errorString(); return; }
+          if (!image.transformed(QTransform().rotate(-90)).save(staged, "PNG"))
+            *error = "Could not write the rotated image copy.";
+        });
+        connect(worker, &QThread::finished, this, [this, url, staged, error, temporary] {
+          if (!error->isEmpty()) { status->setText(*error); return; }
+          const QFileInfo original(url.toLocalFile());
+          const QString stem = original.completeBaseName() + " rotated";
+          QString destination = original.dir().filePath(stem + ".png");
+          int number = 2;
+          while (QFileInfo::exists(destination)) destination = original.dir().filePath(stem + " " + QString::number(number++) + ".png");
+          auto *job = KIO::copyAs(QUrl::fromLocalFile(staged), QUrl::fromLocalFile(destination));
+          job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+          KIO::FileUndoManager::self()->recordCopyJob(job);
+          connect(job, &KJob::result, this, [this, temporary](KJob *finished) {
+            status->setText(finished->error() ? finished->errorText() : "Rotated copy created");
+          });
+        });
+        connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
+      });
+      connect(p, &PreviewPane::tagChangeRequested, this, [this, p](const QUrl &url, const QString &tag, int operation) {
+        if (writingTags) { p->tagChangeFinished(url, "A tag update is already running."); return; }
+        writingTags = true; ++tagGeneration;
+        auto *job = new TagsJob; job->urls = {url}; job->tag = tag; job->operation = operation;
+        QPointer<PreviewPane> pane(p);
+        connect(job, &TagsJob::done, this, [this, pane, url](QString error, QStringList) {
+          writingTags = false;
+          if (pane) pane->tagChangeFinished(url, error);
+          for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
+          if (browser()) browser()->refreshTags(); updateTags();
+        });
+        connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
+      });
       return p;
     };
     s.gallery = attach(b->galleryPreviewHost());
@@ -1276,6 +1327,7 @@ private:
       status->setText(error.isEmpty() ? "Tags updated" : error);
       updateTags();
       if (browser()) browser()->refreshTags();
+      for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
     });
     connect(job, &QThread::finished, job, &QObject::deleteLater);
     job->start();
