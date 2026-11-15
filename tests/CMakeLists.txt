@@ -45,3 +45,15 @@ target_include_directories(finder-quickactions-test PRIVATE "${PROJECT_SOURCE_DI
 target_link_libraries(finder-quickactions-test PRIVATE Qt6::Widgets Qt6::Pdf KF6::KIOCore KF6::KIOGui KF6::KIOWidgets)
 add_test(NAME finder-quickactions-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-quickactions-test>")
 set_tests_properties(finder-quickactions-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")
+
+add_executable(finder-smartfolder-test smartfolder.cpp ../src/smartfolder.cpp ../src/smartfolder.h)
+target_include_directories(finder-smartfolder-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-smartfolder-test PRIVATE Qt6::Core Threads::Threads)
+add_test(NAME finder-smartfolder-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-smartfolder-test>")
+set_tests_properties(finder-smartfolder-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
+
+add_executable(finder-browser-metadata-test browser-metadata.cpp ../src/browser.cpp ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp)
+target_include_directories(finder-browser-metadata-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-browser-metadata-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
+add_test(NAME finder-browser-metadata-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-metadata-test>")
+set_tests_properties(finder-browser-metadata-test PROPERTIES TIMEOUT 50 LABELS "unit;headless")

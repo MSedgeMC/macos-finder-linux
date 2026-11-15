@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "scroll.h"
 #include "quickactions.h"
+#include "smartfolder.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -543,7 +544,11 @@ public:
          QList<QPair<QString, int>>{{"Name", KDirModel::Name},
                                     {"Date Modified", KDirModel::ModifiedTime},
                                     {"Size", KDirModel::Size},
-                                    {"Kind", KDirModel::Type}}) {
+                                    {"Kind", KDirModel::Type},
+                                    {"Date Created", Browser::DateCreatedColumn},
+                                    {"Date Added", Browser::DateAddedColumn},
+                                    {"Last Opened", Browser::LastOpenedColumn},
+                                    {"Tags", Browser::TagsColumn}}) {
       auto *a = sortMenu->addAction(entry.first);
       a->setCheckable(true);
       a->setData(entry.second);
@@ -1172,6 +1177,7 @@ public:
   }
   void navigate(const QUrl &u) {
     if (openSmartFolder(u)) return;
+    ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
     if (browser()) {
       stopSearch();
       saveView();
@@ -1298,6 +1304,14 @@ public:
     return p;
   }
   void wireBrowser(Browser *b) {
+    connect(b, &Browser::contextMenuRequested, this, [this](QMenu *menu, const KFileItemList &items) {
+      refresh(); menu->addSeparator();
+      for (auto name : {"makeAlias", "showOriginal", "putBack", "deleteImmediately"})
+        if (namedActions.contains(name) && namedActions[name]->isVisible()) menu->addAction(namedActions[name]);
+      menu->addMenu(tagMenu)->setText("Tags"); menu->addMenu(share->menu())->setText("Share");
+      QList<QUrl> urls; for (const auto &item : items) urls << item.url();
+      auto *quick = menu->addMenu("Quick Actions"); quickActions->populateMenu(quick, orderedPreviewUrls(urls));
+    });
     connect(b, &Browser::urlChanged, this, [this, b](const QUrl &url) {
       auto &s = states[b];
       if (!s.navigatingHistory) {
@@ -1382,7 +1396,7 @@ public:
   QJsonObject diagnostics() const {
     QJsonArray selected, columns, hiddenColumns;
     if (auto *tree = browser()->findChild<QTreeView *>("finderListView"))
-      for (int i = 0; i < int(KDirModel::ColumnCount); ++i)
+      for (int i = 0; i < browser()->listColumnCount(); ++i)
         if (tree->isColumnHidden(i))
           hiddenColumns << i;
     for (auto u : selectedUrls())
@@ -1664,6 +1678,8 @@ private:
   QAction *descending;
   QMenu *actionsMenu;
   QuickActions *quickActions = nullptr;
+  SmartFolderReader *smartFolderReader = nullptr;
+  quint64 navigationGeneration = 0;
   QHash<QString, QWidget *> toolbarWidgets;
   QToolButton *tagButton;
   QMenu *tagMenu;
@@ -2062,19 +2078,22 @@ private:
   bool openingSmartFolder = false;
   bool openSmartFolder(const QUrl &url) {
     if (openingSmartFolder) return false;
-    if (!url.isLocalFile() || !url.fileName().endsWith(".finder-search")) return false;
-    QFile file(url.toLocalFile()); if (!file.open(QIODevice::ReadOnly) || file.size() > 65536) return false;
-    const auto definition = QJsonDocument::fromJson(file.readAll()).object();
-    if (definition.value("format").toString() != "macos-finder-linux-smart-folder" || definition.value("version").toInt() != 1) return false;
-    const QUrl root(definition.value("root").toString());
-    if (!root.isValid() || root.scheme().isEmpty() || root == url || (root.isLocalFile() && !QFileInfo(root.toLocalFile()).isDir())) return false;
-    openingSmartFolder = true; navigate(root); openingSmartFolder = false;
-    { QSignalBlocker scope(searchScope), kind(searchKind), content(searchContent), name(search);
-      search->setText(definition.value("name").toString()); searchContent->setText(definition.value("content").toString());
-      searchScope->setCurrentIndex(qMax(0, searchScope->findData(definition.value("scope").toString()))); searchKind->setCurrentIndex(qMax(0, searchKind->findData(definition.value("kind").toString())));
-      searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
-    }
-    search->show(); search->setFocus(); layoutHeader(); beginSearch(); return true;
+    if (!SmartFolderReader::isSmartFolderUrl(url)) return false;
+    const auto generation = ++navigationGeneration; QPointer<Browser> target(browser());
+    status->setText("Opening Smart Folder…");
+    smartFolderReader->read(url, [this, target, generation](const QJsonObject &definition, const QUrl &root, const QString &error, quint64) {
+      if (!target || target != browser() || generation != navigationGeneration) return;
+      if (!error.isEmpty()) { status->setText(error); return; }
+      openingSmartFolder = true; navigate(root); openingSmartFolder = false;
+      if (browser()->url().adjusted(QUrl::StripTrailingSlash) != root.adjusted(QUrl::StripTrailingSlash)) return;
+      { QSignalBlocker scope(searchScope), kind(searchKind), content(searchContent), name(search);
+        search->setText(definition.value("name").toString()); searchContent->setText(definition.value("content").toString());
+        searchScope->setCurrentIndex(qMax(0, searchScope->findData(definition.value("scope").toString()))); searchKind->setCurrentIndex(qMax(0, searchKind->findData(definition.value("kind").toString())));
+        searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
+      }
+      search->show(); search->setFocus(); layoutHeader(); beginSearch();
+    });
+    return true;
   }
   void showSearch() {
     if (!showingSearch()) {
@@ -2197,7 +2216,7 @@ private:
     form->addRow(reverse);
     auto *tree = browser()->findChild<QTreeView *>("finderListView");
     QList<QPair<int, QCheckBox *>> columns;
-    for (int c = 1; c < int(KDirModel::ColumnCount); ++c) {
+    for (int c = 1; c < browser()->listColumnCount(); ++c) {
       auto *box = new QCheckBox(
           tree->model()->headerData(c, Qt::Horizontal).toString());
       box->setObjectName("viewOptionColumn" + QString::number(c));
@@ -2205,6 +2224,11 @@ private:
       form->addRow(box);
       columns << qMakePair(c, box);
     }
+    auto *calculateSizes = new QCheckBox("Calculate all folder sizes", dialog); calculateSizes->setObjectName("viewOptionCalculateSizes");
+    calculateSizes->setChecked(browser()->sizeCalculationRunning()); form->addRow(calculateSizes);
+    QPointer<Browser> sizeTarget(browser());
+    connect(calculateSizes, &QCheckBox::toggled, dialog, [sizeTarget](bool enabled) { if (sizeTarget) { if (enabled) sizeTarget->calculateAllSizes(); else sizeTarget->cancelSizeCalculation(); } });
+    connect(browser(), &Browser::sizeCalculationRunningChanged, dialog, [calculateSizes](bool running) { QSignalBlocker blocker(calculateSizes); calculateSizes->setChecked(running); });
     auto *defaults = new QCheckBox("Use these settings for new folders");
     defaults->setEnabled(browser()->mode() != Browser::Columns);
     form->addRow(defaults);
@@ -2440,6 +2464,7 @@ private:
     return a;
   }
   void makeActions() {
+    smartFolderReader = new SmartFolderReader(this);
     quickActions = new QuickActions(this);
     connect(quickActions, &QuickActions::statusChanged, this, [this](const QString &message) { status->setText(message); });
     connect(quickActions, &QuickActions::errorOccurred, this, [this](const QString &message) { status->setText(message); });
