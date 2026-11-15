@@ -13,6 +13,7 @@
 #include "criteriaeditor.h"
 #include "appearance.h"
 #include "inspector.h"
+#include "searchresults.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -564,6 +565,9 @@ public:
       if (entry.second == 0)
         a->setChecked(true);
       connect(a, &QAction::triggered, this, [this, entry] {
+        if (showingSearch()) {
+          searchPresentation->sort(entry.second == Browser::KindColumn ? 1 : 0, descending->isChecked() ? Qt::DescendingOrder : Qt::AscendingOrder); return;
+        }
         if (browser())
           browser()->setSort(entry.second, !descending->isChecked());
         saveView();
@@ -581,6 +585,7 @@ public:
     descending = sortMenu->addAction("Reverse Order");
     descending->setCheckable(true);
     connect(descending, &QAction::toggled, this, [this](bool on) {
+      if (showingSearch()) { searchPresentation->sort(sortGroup->checkedAction()->data().toInt() == Browser::KindColumn ? 1 : 0, on ? Qt::DescendingOrder : Qt::AscendingOrder); return; }
       if (browser())
         browser()->setSort(sortGroup->checkedAction()->data().toInt(), !on);
       saveView();
@@ -846,24 +851,25 @@ public:
     connect(searchContent, &QLineEdit::textChanged, this, [this] { if (searchTimer) searchTimer->start(); });
     connect(advancedSearch, &QPushButton::clicked, this, [this] { searchCriteriaDialog(); });
     connect(saveSearch, &QPushButton::clicked, this, [this] { saveSmartFolder(); });
-    searchResults = new QTreeView;
-    searchResults->setObjectName("finderSearchResults");
-    searchResults->setRootIsDecorated(false);
-    searchResults->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    searchResults->setAlternatingRowColors(true);
-    searchResults->setIconSize({20, 20});
-    searchResults->setSortingEnabled(true);
+    searchPresentation = new SearchResults;
+    searchResults = searchPresentation->primaryView();
     searchModel = new QStandardItemModel(this);
     searchModel->setHorizontalHeaderLabels({"Name", "Kind", "Location"});
-    searchResults->setModel(searchModel);
-    connect(searchResults->selectionModel(),
-            &QItemSelectionModel::selectionChanged, this,
-            [this] { refresh(); });
+    searchPresentation->setModel(searchModel);
+    searchGallery = attachPreview(searchPresentation->galleryHost()); searchGallery->setGallery(true);
+    connect(searchPresentation, &SearchResults::selectionChanged, this, [this] {
+      searchGallery->setUrls(orderedPreviewUrls(searchSelection()));
+      if (showingSearch() && quickWindow && quickWindow->isVisible() && !searchSelection().isEmpty()) {
+        quickUrls = orderedPreviewUrls(searchSelection()); quickPane->updateQuickLook(quickUrls, quickUrls.first());
+      }
+      refresh();
+    });
     searchResults->setColumnWidth(0, 260);
     searchResults->setColumnWidth(1, 140);
     searchResults->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    searchResults->installEventFilter(this);
-    resultsLayout->addWidget(searchResults, 1);
+    connect(searchPresentation, &SearchResults::quickLookRequested, this, &FinderWindow::quickLook);
+    connect(searchPresentation, &SearchResults::renameRequested, this, &FinderWindow::renameSelection);
+    resultsLayout->addWidget(searchPresentation, 1);
     contentStack->addWidget(searchPage);
     auto *rightPane = new QWidget;
     auto *rightLayout = new QVBoxLayout(rightPane);
@@ -871,16 +877,9 @@ public:
     rightLayout->setSpacing(0);
     rightLayout->addWidget(contentStack, 1);
     body->addWidget(rightPane);
-    connect(searchResults, &QTreeView::doubleClicked, this,
-            [this](const QModelIndex &i) {
-              openUrl(i.siblingAtColumn(0).data(Qt::UserRole).toUrl());
-            });
-    searchResults->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(searchResults, &QWidget::customContextMenuRequested, this,
+    connect(searchPresentation, &SearchResults::activated, this, &FinderWindow::openUrl);
+    connect(searchPresentation, &SearchResults::contextMenuRequested, this,
             [this](const QPoint &p) {
-              const auto hit = searchResults->indexAt(p).siblingAtColumn(0);
-              if (hit.isValid() && !searchResults->selectionModel()->isSelected(hit))
-                searchResults->selectionModel()->setCurrentIndex(hit, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
               refresh();
               QMenu menu(this);
               for (auto name : {"open", "openWith", "quickLook", "rename", "copy", "copyPath", "duplicate", "compress", "extract", "makeAlias", "showOriginal", "trash", "deleteImmediately", "putBack", "info"})
@@ -890,7 +889,7 @@ public:
               menu.addAction("Show in Enclosing Folder", this, [this] {
                 const auto urls = searchSelection(); if (!urls.isEmpty()) showItems({urls.first()});
               })->setEnabled(!searchSelection().isEmpty());
-              menu.exec(searchResults->viewport()->mapToGlobal(p));
+              menu.exec(p);
             });
     fileSearch = new LocalFileSearch(this);
     searchTimer = new QTimer(this);
@@ -1272,7 +1271,7 @@ public:
   QList<QUrl> orderedPreviewUrls(const QList<QUrl> &urls) const {
     QList<QUrl> ordered = urls;
     QUrl current;
-    if (showingSearch()) current = searchResults->currentIndex().siblingAtColumn(0).data(Qt::UserRole).toUrl();
+    if (showingSearch()) current = searchPresentation->selectionModel()->currentIndex().siblingAtColumn(0).data(Qt::UserRole).toUrl();
     else current = browser()->activeView()->currentIndex().data(KDirModel::FileItemRole).value<KFileItem>().url();
     if (ordered.removeOne(current)) ordered.prepend(current);
     return ordered;
@@ -1316,8 +1315,13 @@ public:
   void setMode(int m) {
     if (!browser())
       return;
-    stopSearch();
     m = qBound(0, m, 3);
+    if (showingSearch()) {
+      searchPresentation->setMode(m); modeActions->actions()[m]->setChecked(true);
+      modePopup->setIcon(symbol(QStringList{"icons", "list", "columns", "gallery"}[m]));
+      searchPresentation->activeView()->setFocus(); refresh(); return;
+    }
+    stopSearch();
     browser()->setMode(Browser::Mode(m));
     modeActions->actions()[m]->setChecked(true);
     modePopup->setIcon(
@@ -1393,7 +1397,8 @@ public:
       });
   }
   PreviewPane *attachPreview(QWidget *host) {
-    auto *layout = new QVBoxLayout(host);
+    auto *layout = qobject_cast<QVBoxLayout *>(host->layout());
+    if (!layout) layout = new QVBoxLayout(host);
     layout->setContentsMargins(0, 0, 0, 0);
     auto *p = new PreviewPane(host);
     p->setCompact(true);
@@ -1524,7 +1529,7 @@ public:
         {"status", status->text()},
         {"historyIndex", states.value(browser()).historyIndex},
         {"historyCount", states.value(browser()).history.size()},
-        {"mode", int(browser()->mode())},
+        {"mode", showingSearch() ? searchPresentation->mode() : int(browser()->mode())},
         {"iconSize", browser()->iconSize()},
         {"sortColumn", browser()->sortColumn()},
         {"group", int(browser()->group())},
@@ -1773,6 +1778,8 @@ private:
   QStackedWidget *contentStack;
   QWidget *searchPage;
   QTreeView *searchResults;
+  SearchResults *searchPresentation;
+  PreviewPane *searchGallery;
   QStandardItemModel *searchModel;
   LocalFileSearch *fileSearch = nullptr;
   QTimer *searchTimer = nullptr;
@@ -1920,10 +1927,7 @@ private:
     job->start();
   }
   QList<QUrl> searchSelection() const {
-    QList<QUrl> urls;
-    for (auto i : searchResults->selectionModel()->selectedRows())
-      urls << i.data(Qt::UserRole).toUrl();
-    return urls;
+    return searchPresentation->selectedUrls();
   }
   void saveTabSearch() {
     if (!searchStateBrowser || !states.contains(searchStateBrowser) || !fileSearch) return;
@@ -1943,6 +1947,7 @@ private:
       searchProvider = LocalFileSearch::Options::Provider(qBound(0, state.value("provider").toInt(), 2));
     }
     selectedTag = state.value("tag").toString(); search->setVisible(state.value("visible").toBool()); layoutHeader();
+    searchPresentation->setMode(qBound(0, state.value("resultsMode").toInt(int(browser()->mode())), 3));
     if (!selectedTag.isEmpty()) {
       searchRoot = QUrl::fromLocalFile(QDir::homePath()); searchModel->removeRows(0, searchModel->rowCount()); contentStack->setCurrentWidget(searchPage);
       LocalFileSearch::Options options; options.requiredTag = selectedTag; options.showHidden = true; options.preferredPath = browser()->url().toLocalFile();
@@ -2227,7 +2232,7 @@ private:
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
       {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
       {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter},
-      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}};
+      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}, {"resultsMode", searchPresentation->mode()}};
   }
   void saveSmartFolder() {
     auto *dialog = new QFileDialog(this, "Save Smart Folder", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), "Finder Smart Folder (*.finder-search)");
@@ -2261,6 +2266,7 @@ private:
         searchScope->setCurrentIndex(qMax(0, searchScope->findData(definition.value("scope").toString()))); searchKind->setCurrentIndex(qMax(0, searchKind->findData(definition.value("kind").toString())));
         searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
         searchCriteria = definition.value("criteria").toObject(); searchParseKeywords = definition.value("parseKeywords").toBool(false);
+        searchPresentation->setMode(qBound(0, definition.value("resultsMode").toInt(int(browser()->mode())), 3));
         searchProvider = LocalFileSearch::Options::Provider(qBound(0, definition.value("provider").toInt(), 2));
       }
       search->show(); search->setFocus(); layoutHeader(); beginSearch();
@@ -2328,6 +2334,7 @@ private:
     installScrolling(dialog);
   }
   void viewOptions() {
+    if (showingSearch()) { searchCriteriaDialog(); return; }
     auto *existing = findChild<QDialog *>("finderViewOptions");
     if (existing) { existing->close(); return; }
     auto *dialog = new QDialog(this);
@@ -2496,9 +2503,9 @@ private:
     auto &s = states[browser()];
     back->setEnabled(s.historyIndex > 0);
     forward->setEnabled(s.historyIndex + 1 < s.history.size());
-    modeActions->actions()[int(browser()->mode())]->setChecked(true);
+    modeActions->actions()[showingSearch() ? searchPresentation->mode() : int(browser()->mode())]->setChecked(true);
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns",
-                                          "gallery"}[int(browser()->mode())]));
+                                        "gallery"}[showingSearch() ? searchPresentation->mode() : int(browser()->mode())]));
     auto &state = states[browser()];
     const auto previewUrls = browser()->selectedUrls();
     if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(previewUrls);
@@ -2533,8 +2540,10 @@ private:
       iconSlider->setValue(browser()->iconSize());
     }
     iconSlider->setVisible(browser()->mode() == Browser::Icons);
-    for (auto *a : sortGroup->actions())
+    for (auto *a : sortGroup->actions()) {
+      a->setEnabled(!showingSearch() || a->data().toInt() == Browser::NameColumn || a->data().toInt() == Browser::KindColumn);
       a->setChecked(a->data().toInt() == browser()->sortColumn());
+    }
     {
       QSignalBlocker blocker(descending);
       descending->setChecked(!browser()->sortAscending());
@@ -2847,7 +2856,7 @@ private:
                    qobject_cast<QTextEdit *>(QApplication::focusWidget()))
         text->selectAll();
       else if (showingSearch())
-        searchResults->selectAll();
+        searchPresentation->activeView()->selectAll();
       else
         browser()->activeView()->selectAll();
     });
@@ -3267,7 +3276,7 @@ public slots:
         if (urls.contains(index.data(Qt::UserRole).toUrl()))
           { tree->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows); tree->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate); }
       }
-      tree->setFocus();
+      if (auto *results = m->active()->findChild<SearchResults *>()) results->activeView()->setFocus(); else tree->setFocus();
       return true;
     }
     m->active()->browser()->selectUrls(urls);

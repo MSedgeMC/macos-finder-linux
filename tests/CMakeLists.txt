@@ -90,3 +90,9 @@ target_compile_definitions(finder-appearance-test PRIVATE FINDER_PREVIEW_PRINT_S
 target_link_libraries(finder-appearance-test PRIVATE Qt6::Widgets Qt6::DBus Qt6::Network Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::PrintSupport Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::CoreAddons KF6::ItemViews KF6::Bookmarks KF6::WidgetsAddons KF6::JobWidgets KF6::ConfigCore KF6::Service KF6::Solid KF6::FileMetaData)
 add_test(NAME finder-appearance-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-appearance-test>")
 set_tests_properties(finder-appearance-test PROPERTIES TIMEOUT 45 LABELS "unit;headless")
+
+add_executable(finder-searchresults-test searchresults.cpp ../src/searchresults.cpp ../src/searchresults.h)
+target_include_directories(finder-searchresults-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-searchresults-test PRIVATE Qt6::Widgets KF6::KIOCore KF6::KIOGui)
+add_test(NAME finder-searchresults-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-searchresults-test>")
+set_tests_properties(finder-searchresults-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
