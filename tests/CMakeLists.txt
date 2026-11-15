@@ -58,3 +58,9 @@ target_include_directories(finder-browser-metadata-test PRIVATE "${PROJECT_SOURC
 target_link_libraries(finder-browser-metadata-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
 add_test(NAME finder-browser-metadata-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-metadata-test>")
 set_tests_properties(finder-browser-metadata-test PROPERTIES TIMEOUT 50 LABELS "unit;headless")
+
+add_executable(finder-browser-arrangement-test browser-arrangement.cpp ../src/browser.cpp ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp)
+target_include_directories(finder-browser-arrangement-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-browser-arrangement-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
+add_test(NAME finder-browser-arrangement-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-arrangement-test>")
+set_tests_properties(finder-browser-arrangement-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")

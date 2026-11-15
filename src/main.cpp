@@ -562,6 +562,14 @@ public:
         saveView();
       });
     }
+    auto *none = sortMenu->addAction("None"); none->setData(-1); none->setCheckable(true); sortGroup->addAction(none); namedActions["sortNone"] = none;
+    connect(none, &QAction::triggered, this, [this] { browser()->setSort(-1, true); saveView(); refresh(); });
+    auto *snap = sortMenu->addAction("Snap to Grid"); snap->setCheckable(true); namedActions["snapToGrid"] = snap;
+    connect(snap, &QAction::toggled, this, [this](bool enabled) { browser()->setSnapToGrid(enabled); saveView(); });
+    auto *clean = sortMenu->addAction("Clean Up", this, [this] { browser()->cleanUp(); saveView(); }); namedActions["cleanUp"] = clean;
+    auto *cleanup = sortMenu->addMenu("Clean Up By");
+    for (const auto &entry : QList<QPair<QString, int>>{{"Name", Browser::NameColumn}, {"Kind", Browser::KindColumn}, {"Date Modified", Browser::DateModifiedColumn}, {"Size", Browser::SizeColumn}, {"Tags", Browser::TagsColumn}})
+      cleanup->addAction(entry.first, this, [this, entry] { browser()->cleanUpBy(entry.second); saveView(); refresh(); });
     sortMenu->addSeparator();
     descending = sortMenu->addAction("Reverse Order");
     descending->setCheckable(true);
@@ -1337,6 +1345,8 @@ public:
     return p;
   }
   void wireBrowser(Browser *b) {
+    connect(b, &Browser::iconArrangementChanged, this, [this, b] { if (b == browser() && !b->springLoadingActive()) saveView(); });
+    connect(b, &Browser::springUrlChanged, this, [this, b](const QUrl &url) { if (b == browser()) { folderTitle->setText(title(url)); folderTitle->setToolTip(url.toDisplayString(QUrl::RemovePassword)); } });
     connect(b, &Browser::contextMenuRequested, this, [this](QMenu *menu, const KFileItemList &items) {
       refresh(); menu->addSeparator();
       for (auto name : {"makeAlias", "showOriginal", "putBack", "deleteImmediately"})
@@ -2023,7 +2033,7 @@ private:
     });
   }
   void saveView() {
-    if (restoring || !browser())
+    if (restoring || !browser() || browser()->springLoadingActive())
       return;
     QSettings settings;
     settings.beginGroup(
@@ -2141,7 +2151,7 @@ private:
     smartFolderReader->read(url, [this, target, generation](const QJsonObject &definition, const QUrl &root, const QString &error, quint64) {
       if (!target || target != browser() || generation != navigationGeneration) return;
       if (!error.isEmpty()) { status->setText(error); return; }
-      openingSmartFolder = true; navigate(root); openingSmartFolder = false;
+      stopSearch(); saveView(); explicitNavigation = true; target->navigateValidated(root); explicitNavigation = false;
       if (browser()->url().adjusted(QUrl::StripTrailingSlash) != root.adjusted(QUrl::StripTrailingSlash)) return;
       { QSignalBlocker scope(searchScope), kind(searchKind), content(searchContent), name(search);
         search->setText(definition.value("name").toString()); searchContent->setText(definition.value("content").toString());
@@ -2398,6 +2408,11 @@ private:
     }
     for (auto *action : groupActions->actions()) action->setChecked(action->data().toInt() == int(browser()->group()));
     if (namedActions.contains("compress")) namedActions["compress"]->setEnabled(!showingSearch() && browser()->canCompressSelection());
+    if (namedActions.contains("sortNone")) namedActions["sortNone"]->setEnabled(browser()->mode() == Browser::Icons);
+    if (namedActions.contains("snapToGrid")) {
+      QSignalBlocker block(namedActions["snapToGrid"]); namedActions["snapToGrid"]->setChecked(browser()->snapToGrid()); namedActions["snapToGrid"]->setEnabled(browser()->mode() == Browser::Icons);
+    }
+    if (namedActions.contains("cleanUp")) namedActions["cleanUp"]->setEnabled(browser()->canArrangeIcons());
     {
       QSignalBlocker blocker(iconSlider);
       iconSlider->setValue(browser()->iconSize());
