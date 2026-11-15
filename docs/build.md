@@ -15,7 +15,7 @@ WindowSystem, I18n, Service, Solid and FileMetaData; and their dependencies.
 On a recent Ubuntu/Kubuntu release with Qt 6 and KDE Frameworks 6 available:
 
 ```sh
-sudo apt install build-essential cmake ninja-build \
+sudo apt install build-essential cmake ninja-build gettext \
     qt6-base-dev qt6-base-dev-tools qt6-pdf-dev qt6-multimedia-dev \
     libkf6kio-dev libkf6coreaddons-dev libkf6itemviews-dev \
     libkf6bookmarks-dev libkf6widgetsaddons-dev libkf6jobwidgets-dev \
