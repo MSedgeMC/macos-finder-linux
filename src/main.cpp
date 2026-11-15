@@ -759,6 +759,7 @@ public:
     tabs->setCornerWidget(newTab, Qt::TopRightCorner);
     connect(newTab, &QToolButton::clicked, this, [this] { addTab(browser()->url(), true); });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) {
+      ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
       if (fileSearch)
         stopSearch();
       if (browser()) {
@@ -858,11 +859,15 @@ public:
     searchResults->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(searchResults, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &p) {
+              const auto hit = searchResults->indexAt(p).siblingAtColumn(0);
+              if (hit.isValid() && !searchResults->selectionModel()->isSelected(hit))
+                searchResults->selectionModel()->setCurrentIndex(hit, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
               refresh();
               QMenu menu(this);
               for (auto name : {"open", "openWith", "quickLook", "rename", "copy", "copyPath", "duplicate", "makeAlias", "showOriginal", "trash", "deleteImmediately", "putBack", "info"})
                 if (namedActions.contains(name) && namedActions[name]->isVisible()) menu.addAction(namedActions[name]);
               menu.addMenu(tagMenu); menu.addMenu(share->menu());
+              auto *quick = menu.addMenu("Quick Actions"); quickActions->populateMenu(quick, orderedPreviewUrls(searchSelection()));
               menu.addAction("Show in Enclosing Folder", this, [this] {
                 const auto urls = searchSelection(); if (!urls.isEmpty()) showItems({urls.first()});
               })->setEnabled(!searchSelection().isEmpty());
