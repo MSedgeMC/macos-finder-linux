@@ -62,6 +62,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStandardPaths>
@@ -212,6 +213,31 @@ protected:
     }
   }
 };
+class SidebarHandle : public QSplitterHandle {
+public:
+  using QSplitterHandle::QSplitterHandle;
+
+protected:
+  // The zero-width handle overlaps both adjoining panes for native resize
+  // input. Leave their pixels visible instead of painting a style separator.
+  void paintEvent(QPaintEvent *) override {}
+};
+class SidebarSplitter : public QSplitter {
+public:
+  explicit SidebarSplitter(QWidget *parent = nullptr)
+      : QSplitter(Qt::Horizontal, parent) {
+    // Qt retains a wider overlapping grab area when the layout width is zero.
+    // No transparent layout strip is reserved between sidebar and file pane.
+    setHandleWidth(0);
+  }
+
+protected:
+  QSplitterHandle *createHandle() override {
+    auto *handle = new SidebarHandle(orientation(), this);
+    handle->setAccessibleName("Resize Sidebar");
+    return handle;
+  }
+};
 class Header : public Material {
 public:
   using Material::Material;
@@ -337,6 +363,7 @@ public:
     auto *hs = new QHBoxLayout(headerSidebar);
     hs->setContentsMargins(0, 0, 0, 0);
     auto *sidebarButton = button("sidebar", "Show Sidebar", headerSidebar);
+    sidebarButton->setObjectName("finderSidebarToggle");
     hs->addWidget(sidebarButton);
     hs->addStretch();
     headerSidebar->setFixedWidth(244);
@@ -526,9 +553,8 @@ public:
                                    QUrl::AssumeLocalFile));
       location->hide();
     });
-    body = new QSplitter(Qt::Horizontal);
+    body = new SidebarSplitter;
     body->setObjectName("finderBody");
-    body->setHandleWidth(1);
     sidebar = new Material;
     sidebar->setObjectName("finderSidebar");
     auto *sl = new QVBoxLayout(sidebar);
@@ -585,6 +611,8 @@ public:
     });
     body->addWidget(sidebar);
     contentStack = new QStackedWidget;
+    contentStack->setBackgroundRole(QPalette::Base);
+    contentStack->setAutoFillBackground(true);
     contentStack->addWidget(tabs);
     searchPage = new QWidget;
     auto *resultsLayout = new QVBoxLayout(searchPage);
@@ -972,6 +1000,13 @@ public:
         {"tabs", tabs->count()},
         {"headerHeight", header->height()},
         {"sidebarWidth", sidebar->width()},
+        {"sidebarVisible", sidebar->isVisible()},
+        {"bodyY", body->y()},
+        {"bodyHeight", body->height()},
+        {"contentX", contentStack->mapTo(this, QPoint(0, 0)).x()},
+        {"splitterGrabWidth", body->handle(1)->width()},
+        {"navigationWidth", back->parentWidget()->width()},
+        {"viewCapsuleWidth", modeBox->width()},
         {"visibleLists", columns},
         {"focus", f ? f->metaObject()->className() : ""},
         {"search", search->text()},
@@ -1940,6 +1975,32 @@ public slots:
     if (!m->active())
       return false;
     m->active()->resize(width, height);
+    return true;
+  }
+  bool dragSidebar(int distance) {
+    if (!m->active())
+      return false;
+    auto *splitter = m->active()->findChild<QSplitter *>("finderBody");
+    if (!splitter || !splitter->handle(1)->isVisible())
+      return false;
+    auto *handle = splitter->handle(1);
+    const QPoint start = handle->rect().center();
+    const QPoint globalStart = handle->mapToGlobal(start);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(start),
+                      QPointF(globalStart), Qt::LeftButton, Qt::LeftButton,
+                      Qt::NoModifier);
+    QApplication::sendEvent(handle, &press);
+    const QPoint globalEnd = globalStart + QPoint(distance, 0);
+    QMouseEvent move(QEvent::MouseMove,
+                     QPointF(handle->mapFromGlobal(globalEnd)),
+                     QPointF(globalEnd), Qt::NoButton, Qt::LeftButton,
+                     Qt::NoModifier);
+    QApplication::sendEvent(handle, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease,
+                        QPointF(handle->mapFromGlobal(globalEnd)),
+                        QPointF(globalEnd), Qt::LeftButton, Qt::NoButton,
+                        Qt::NoModifier);
+    QApplication::sendEvent(handle, &release);
     return true;
   }
   bool closeWindow() {
