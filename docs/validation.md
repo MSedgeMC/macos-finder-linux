@@ -125,11 +125,9 @@ The installed copy also passed the compositor blur check (detail ratio 0.119)
 with an unchanged opaque file pane. Its hash matched the staged executable,
 Finder remained the folder default and the private test interface was absent
 from the production daemon. Only the executable content changed; the update
-restarted the windowless file-manager daemon and retained a scoped backup. All 14
-offline installer cases passed, including preservation of existing MIME-file
-permissions. Deployment changed only the executable and restarted only the
-windowless file-manager daemon; staged hashes, folder-default and FileManager1
-routes were verified afterward.
+restarted the windowless file-manager daemon and retained a scoped backup.
+All 14 offline installer cases passed, including preservation of existing
+MIME-file permissions.
 
 The regression harness is [tests/verify-sidebar.py](../tests/verify-sidebar.py).
 It needs Python PyQt6, python-dbus and Pillow, and must be launched by the
