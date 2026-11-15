@@ -429,7 +429,8 @@ public:
     bool sectionRows = false;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         QSize size = KFileItemDelegate::sizeHint(option, index);
-        size.setHeight(24 + (sectionRows && index.data(SectionStartRole).toBool() ? SectionHeight : 0));
+        size.setHeight(qMax(24, qMax(option.decorationSize.height() + 6, option.fontMetrics.height() + 6)) +
+                       (sectionRows && index.data(SectionStartRole).toBool() ? SectionHeight : 0));
         return size;
     }
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
@@ -579,7 +580,7 @@ public:
     using FileDelegate::FileDelegate;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         QSize size = KFileItemDelegate::sizeHint(option, index);
-        size.setHeight(24);
+        size.setHeight(qMax(24, option.fontMetrics.height() + 6));
         size.rwidth() += 14;
         return size;
     }
@@ -820,21 +821,25 @@ public:
     }
 
     void layoutIcons() {
-        QFont font = icons->font(); font.setPixelSize(iconOptions.textSize);
+        const auto options = viewOptions[Icons].icons;
+        QFont font = icons->font(); font.setPixelSize(options.textSize);
         const int lineHeight = QFontMetrics(font).height();
         const int size = icons->iconSize().width();
-        const int width = iconOptions.label == LabelRight ? size + 144 + iconOptions.spacing : size + 40 + iconOptions.spacing;
-        const int height = iconOptions.label == LabelRight ? qMax(size + 16, 2 * lineHeight + 20) : size + 24 + 2 * lineHeight;
+        const int width = options.label == LabelRight ? size + 144 + options.spacing : size + 40 + options.spacing;
+        const int height = options.label == LabelRight ? qMax(size + 16, 2 * lineHeight + 20) : size + 24 + 2 * lineHeight;
         icons->setGridSize(QSize(width, height));
         icons->viewport()->update();
         // Gallery keeps its own thumbnail size independently of Icons zoom, with
         // modest extra space spread across the visible horizontal filmstrip.
         const int available = strip->viewport()->width();
         const int gallerySize = strip->iconSize().width();
+        QFont galleryFont = strip->font();
+        galleryFont.setPixelSize(viewOptions[Gallery].icons.textSize);
+        const int galleryLineHeight = QFontMetrics(galleryFont).height();
         const int minimumWidth = gallerySize + 32;
         const int columns = qMax(1, available / minimumWidth);
         const int stripWidth = qBound(minimumWidth, available / columns, minimumWidth + 16);
-        const QSize stripGrid(stripWidth, gallerySize + 20 + 2 * lineHeight);
+        const QSize stripGrid(stripWidth, gallerySize + 20 + 2 * galleryLineHeight);
         if (strip->gridSize() != stripGrid) strip->setGridSize(stripGrid);
         strip->setFixedHeight(stripGrid.height() + 16);
         strip->viewport()->update();
@@ -1074,6 +1079,7 @@ public:
     }
 
     void prepare(QAbstractItemView *view, bool childColumn = false) {
+        if (childColumn) view->setFont(columns->font());
         view->setSelectionMode(QAbstractItemView::ExtendedSelection);
         view->setSelectionBehavior(QAbstractItemView::SelectRows);
         view->setDragEnabled(true);
@@ -1146,6 +1152,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->list->setIconSize({18, 18}); d->list->setSortingEnabled(true);
     d->columns = new ColumnsView(d->stack); d->columns->setObjectName("finderColumnView");
     d->columns->setIconSize({18, 18});
+    d->viewOptions[List].size = 18; d->viewOptions[Columns].size = 18;
     d->columns->setColumnWidths({220, 220, 220, 220, 220}); d->columns->setResizeGripsVisible(true);
     d->columnHost = new QWidget; d->columnHost->setObjectName("finderColumnPreview");
     d->columnHost->setMinimumWidth(250); d->columns->setPreviewWidget(d->columnHost);
@@ -1258,7 +1265,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
 Browser::~Browser() = default;
 QUrl Browser::url() const { return d->currentUrl; }
 Browser::Mode Browser::mode() const { return d->currentMode; }
-int Browser::iconSize() const { return (mode() == Gallery ? static_cast<QListView *>(d->strip) : d->icons)->iconSize().width(); }
+int Browser::iconSize() const { return activeView()->iconSize().width(); }
 Browser::Group Browser::group() const { return d->proxy->grouping; }
 int Browser::gridSpacing() const { return d->iconOptions.spacing; }
 int Browser::textSize() const { return d->iconOptions.textSize; }
@@ -1288,7 +1295,8 @@ void Browser::restoreViewState(const QByteArray &state) {
     for (int number = 0; number < modes.size(); ++number) {
         const auto saved = modes[number].toObject();
         auto &options = d->viewOptions[number];
-        options.size = qBound(32, saved.value("iconSize").toInt(64), 256);
+        options.size = number == Columns ? 18 : number == List ? qBound(16, saved.value("iconSize").toInt(18), 64) :
+            qBound(32, saved.value("iconSize").toInt(64), 256);
         options.sort = qBound(0, saved.value("sort").toInt(), int(KDirModel::ColumnCount) - 1);
         options.ascending = saved.value("ascending").toBool(true);
         options.group = Group(qBound(0, saved.value("group").toInt(), int(GroupTags)));
@@ -1305,6 +1313,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     d->currentMode = Mode(qBound(0, object.value("mode").toInt(), int(Gallery)));
     d->stack->setCurrentIndex(int(mode())); setFocusProxy(activeView());
     d->restoreModeOptions();
+    d->layoutIcons();
     d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
     setPreviewWidth(object.value("previewWidth").toInt(280));
     const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
@@ -1424,13 +1433,20 @@ void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFi
 void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
 void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); d->scheduleThumbnails(); }
 void Browser::setIconSize(int size) {
-    size = qBound(32, size, 256);
+    if (mode() == Columns) return;
+    size = mode() == List ? qBound(16, size, 64) : qBound(32, size, 256);
     if (iconSize() == size) return;
-    auto *view = mode() == Gallery ? d->strip : static_cast<QListView *>(d->icons);
+    auto *view = activeView();
     view->setIconSize(QSize(size, size));
+    d->viewOptions[mode()].size = size;
     d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
+    if (mode() == List) {
+        auto *delegate = static_cast<FileDelegate *>(d->list->itemDelegate());
+        delegate->setMaximumSize(QSize(10000, qMax(24, size + 6) + SectionHeight));
+        d->list->doItemsLayout();
+    }
     d->layoutIcons();
-    if (mode() == Icons || mode() == Gallery) d->resetThumbnailRequests();
+    d->resetThumbnailRequests();
 }
 void Browser::setGroup(Group value) {
     if (value < GroupNone || value > GroupTags || group() == value) return;
@@ -1450,22 +1466,29 @@ void Browser::setGridSpacing(int spacing) {
     spacing = qBound(0, spacing, 128);
     if (gridSpacing() == spacing) return;
     d->iconOptions.spacing = spacing;
+    d->viewOptions[mode()].icons.spacing = spacing;
     d->layoutIcons();
+    d->scheduleThumbnails();
 }
 void Browser::setTextSize(int pixels) {
     pixels = qBound(9, pixels, 20);
-    if (textSize() == pixels) return;
+    if (textSize() == pixels && activeView()->font().pixelSize() == pixels) return;
     d->iconOptions.textSize = pixels;
+    d->viewOptions[mode()].icons.textSize = pixels;
     QFont font = d->icons->font(); font.setPixelSize(d->iconOptions.textSize);
-    d->icons->setFont(font); d->strip->setFont(font);
-    d->list->setFont(font); d->columns->setFont(font);
+    activeView()->setFont(font);
+    if (mode() == Columns)
+        for (auto *column : d->columns->findChildren<QListView *>()) column->setFont(font);
     d->layoutIcons();
     if (mode() == List) d->list->doItemsLayout();
+    d->scheduleThumbnails();
 }
 void Browser::setLabelPosition(LabelPosition position) {
     if (position < LabelBelow || position > LabelRight || labelPosition() == position) return;
     d->iconOptions.label = position;
+    d->viewOptions[mode()].icons.label = position;
     d->layoutIcons();
+    d->scheduleThumbnails();
 }
 void Browser::setIconPreviewsShown(bool shown) {
     if (d->previews == shown) return;
