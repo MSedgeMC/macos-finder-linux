@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QThread>
+#include <QMimeDatabase>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -262,7 +263,51 @@ private:
                     close(tagged);
                 }
             }
-            if (tagMatches && (type == DT_DIR || type == DT_REG || type == DT_LNK) &&
+            bool metadataMatches = true;
+            if (request.options.minimumSize >= 0 || request.options.maximumSize >= 0 ||
+                request.options.modifiedAfter >= 0 || request.options.modifiedBefore >= 0) {
+                struct stat metadata;
+                metadataMatches = fstatat(dirfd(frame.directory.get()), name.constData(), &metadata, AT_SYMLINK_NOFOLLOW) == 0;
+                if (metadataMatches) {
+                    metadataMatches = (request.options.minimumSize < 0 || metadata.st_size >= request.options.minimumSize) &&
+                        (request.options.maximumSize < 0 || metadata.st_size <= request.options.maximumSize) &&
+                        (request.options.modifiedAfter < 0 || metadata.st_mtime >= request.options.modifiedAfter) &&
+                        (request.options.modifiedBefore < 0 || metadata.st_mtime <= request.options.modifiedBefore);
+                }
+            }
+            const auto kind = request.options.kind;
+            if (metadataMatches && !kind.isEmpty()) {
+                if (kind == "folder") metadataMatches = type == DT_DIR;
+                else if (kind == "file") metadataMatches = type == DT_REG;
+                else {
+                    const auto mime = QMimeDatabase().mimeTypeForFile(QFile::decodeName(name), QMimeDatabase::MatchExtension);
+                    metadataMatches = type == DT_REG && (
+                        (kind == "image" && mime.name().startsWith("image/")) ||
+                        (kind == "pdf" && mime.inherits("application/pdf")) ||
+                        (kind == "text" && mime.inherits("text/plain")) ||
+                        (kind == "audio" && mime.name().startsWith("audio/")) ||
+                        (kind == "video" && mime.name().startsWith("video/")) ||
+                        (kind == "archive" && (mime.inherits("application/zip") || mime.inherits("application/x-tar") || mime.inherits("application/x-compressed-tar"))));
+                }
+            }
+            const bool nameMatches = QFile::decodeName(name).contains(request.query, Qt::CaseInsensitive);
+            if (tagMatches && metadataMatches && nameMatches && !request.options.contentText.isEmpty()) {
+                metadataMatches = false;
+                const auto mime = QMimeDatabase().mimeTypeForFile(QFile::decodeName(name), QMimeDatabase::MatchExtension);
+                if (type == DT_REG && mime.inherits("text/plain")) {
+                    const int descriptor = openat(dirfd(frame.directory.get()), name.constData(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+                    if (descriptor >= 0) {
+                        struct stat metadata;
+                        if (fstat(descriptor, &metadata) == 0 && S_ISREG(metadata.st_mode) && metadata.st_size <= request.options.maxContentBytes) {
+                            QFile content;
+                            if (content.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle))
+                                metadataMatches = QString::fromUtf8(content.read(request.options.maxContentBytes)).contains(request.options.contentText, Qt::CaseInsensitive);
+                            else close(descriptor);
+                        } else close(descriptor);
+                    }
+                }
+            }
+            if (tagMatches && metadataMatches && (type == DT_DIR || type == DT_REG || type == DT_LNK) &&
                     QFile::decodeName(name).contains(request.query, Qt::CaseInsensitive)) {
                 batch.append(QUrl::fromLocalFile(QFile::decodeName(path)));
                 ++count;
@@ -338,6 +383,7 @@ quint64 LocalFileSearch::start(const QUrl &root, const QString &filename, const 
     options.maxResults = std::clamp(options.maxResults, 1, 10000);
     options.maxEntries = std::clamp(options.maxEntries, 1, 1000000);
     options.maxElapsedMs = std::clamp(options.maxElapsedMs, 1, 120000);
+    options.maxContentBytes = std::clamp(options.maxContentBytes, 1, 4 * 1024 * 1024);
     const auto generation = ++d->generation;
     d->running = true;
     {

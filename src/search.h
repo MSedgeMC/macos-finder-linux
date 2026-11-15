@@ -19,6 +19,14 @@ public:
         int maxEntries = 250000;
         int maxElapsedMs = 15000;
         QString requiredTag;
+        // Bounded local metadata predicates; empty/negative means unrestricted.
+        QString kind; // file, folder, image, pdf, text, audio, video, archive
+        qint64 minimumSize = -1;
+        qint64 maximumSize = -1;
+        qint64 modifiedAfter = -1; // Unix seconds
+        qint64 modifiedBefore = -1;
+        QString contentText;
+        int maxContentBytes = 512 * 1024;
         // Scan this descendant first, within the same total search budgets.
         QString preferredPath;
     };

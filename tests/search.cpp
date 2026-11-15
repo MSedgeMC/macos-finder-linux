@@ -21,11 +21,11 @@
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);
 }
-void fixture(const QString &path) {
+void fixture(const QString &path, const QByteArray &contents = "test fixture\n") {
     require(QDir().mkpath(QFileInfo(path).path()), "create fixture directory");
     QFile file(path);
     require(file.open(QIODevice::WriteOnly), "create fixture file");
-    require(file.write("test fixture\n") > 0, "write fixture");
+    require(file.write(contents) > 0, "write fixture");
 }
 struct Result {
     QList<QUrl> urls;
