@@ -1001,7 +1001,7 @@ public:
       if (qobject_cast<FinderPlacesView *>(area)) continue;
       FinderScroll::Options options;
       options.durationMs = smooth && !reduced ? 180 : 0;
-      options.horizontalWheel = area->objectName() == "finderGalleryStrip";
+      options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
       FinderScroll::install(area, options);
     }
   }
@@ -1725,7 +1725,7 @@ protected:
         FinderScroll::Options options;
         options.durationMs = QSettings().value("Input/smoothScrolling", true).toBool() &&
                                      !QSettings().value("Input/reduceMotion", false).toBool() ? 180 : 0;
-        options.horizontalWheel = area->objectName() == "finderGalleryStrip";
+        options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
         FinderScroll::install(area, options);
       }
     }
