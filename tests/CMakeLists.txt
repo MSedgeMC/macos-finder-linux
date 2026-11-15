@@ -29,3 +29,11 @@ foreach(test_target IN ITEMS finder-search-test finder-tags-test)
         LABELS "unit;headless"
     )
 endforeach()
+
+add_executable(finder-scroll-test scroll.cpp ../src/scroll.cpp ../src/scroll.h)
+target_include_directories(finder-scroll-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-scroll-test PRIVATE Qt6::Widgets)
+add_test(NAME finder-scroll-test
+    COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
+        --unset=DBUS_SESSION_BUS_ADDRESS QT_QPA_PLATFORM=offscreen "$<TARGET_FILE:finder-scroll-test>")
+set_tests_properties(finder-scroll-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")

@@ -6,6 +6,7 @@
 #include "search.h"
 #include "tags.h"
 #include "settings.h"
+#include "scroll.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -21,6 +22,7 @@
 #include <KService>
 #include <KWindowEffects>
 #include <QAbstractItemView>
+#include <QAbstractScrollArea>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
@@ -81,6 +83,8 @@
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QWindow>
+#include <QWheelEvent>
+#include <QScrollBar>
 #include <cmath>
 #include <mutex>
 
@@ -864,6 +868,7 @@ public:
     applyStyle();
     addTab(initial, true);
     qApp->installEventFilter(this);
+    installScrolling(this);
     QSettings settings;
     restoreGeometry(settings.value("Window/geometry").toByteArray());
     auto sizes = settings.value("Window/sidebar", 256).toInt();
@@ -872,6 +877,18 @@ public:
   }
   Browser *browser() const {
     return qobject_cast<Browser *>(tabs->currentWidget());
+  }
+  void installScrolling(QWidget *root) {
+    const bool smooth = QSettings().value("Input/smoothScrolling", true).toBool();
+    const bool reduced = QSettings().value("Input/reduceMotion", false).toBool();
+    for (auto *area : root->findChildren<QAbstractScrollArea *>()) {
+      // This hidden native wrapper is the sidebar backend, not presentation.
+      if (qobject_cast<FinderPlacesView *>(area)) continue;
+      FinderScroll::Options options;
+      options.durationMs = smooth && !reduced ? 180 : 0;
+      options.horizontalWheel = area->objectName() == "finderGalleryStrip";
+      FinderScroll::install(area, options);
+    }
   }
   QUrl configuredNewFolder() const {
     return QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString());
@@ -1176,6 +1193,7 @@ public:
     explicitNavigation = true;
     b->navigate(u);
     explicitNavigation = false;
+    installScrolling(b);
     if (activate) {
       tabs->setCurrentIndex(index);
       restoreView();
@@ -1232,6 +1250,9 @@ public:
         {"search", search->text()},
         {"width", width()},
         {"height", height()},
+        {"maximized", isMaximized()},
+        {"fullscreen", isFullScreen()},
+        {"visible", isVisible()},
         {"blur", header->blur}};
   }
   void testMaterialBlur(bool enabled) {
@@ -1318,6 +1339,15 @@ protected:
     QTimer::singleShot(0, this, [this] { updateMaterial(); });
   }
   bool eventFilter(QObject *o, QEvent *e) override {
+    if (e->type() == QEvent::Show) {
+      if (auto *area = qobject_cast<QAbstractScrollArea *>(o); area && area->window() == this && !qobject_cast<FinderPlacesView *>(area)) {
+        FinderScroll::Options options;
+        options.durationMs = QSettings().value("Input/smoothScrolling", true).toBool() &&
+                                     !QSettings().value("Input/reduceMotion", false).toBool() ? 180 : 0;
+        options.horizontalWheel = area->objectName() == "finderGalleryStrip";
+        FinderScroll::install(area, options);
+      }
+    }
     if (e->type() == QEvent::MouseButtonPress && !isMaximized()) {
       auto *w = qobject_cast<QWidget *>(o);
       auto *m = static_cast<QMouseEvent *>(e);
@@ -1606,12 +1636,14 @@ private:
         auto *finder = qobject_cast<FinderWindow *>(window);
         if (!finder) continue;
         finder->places->refreshPreferences();
+        finder->installScrolling(finder);
         for (auto *b : finder->states.keys())
           b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
         finder->refresh();
       }
     });
     dialog->open();
+    installScrolling(dialog);
   }
   void viewOptions() {
     auto *existing = findChild<QDialog *>("finderViewOptions");
@@ -2341,6 +2373,35 @@ public slots:
     }
     return QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact));
   }
+  QString scrollState(const QString &name) {
+    auto *area = m->active() ? m->active()->findChild<QAbstractScrollArea *>(name) : nullptr;
+    if (!area) return "{}";
+    return QString::fromUtf8(QJsonDocument(QJsonObject{
+      {"vertical", area->verticalScrollBar()->value()}, {"verticalMaximum", area->verticalScrollBar()->maximum()},
+      {"horizontal", area->horizontalScrollBar()->value()}, {"horizontalMaximum", area->horizontalScrollBar()->maximum()},
+      {"animating", FinderScroll::isAnimating(area)}}).toJson(QJsonDocument::Compact));
+  }
+  bool wheel(const QString &name, int angleX, int angleY, int pixelX, int pixelY, int phase) {
+    auto *area = m->active() ? m->active()->findChild<QAbstractScrollArea *>(name) : nullptr;
+    if (!area || !area->isVisible()) return false;
+    const QPointF local = area->viewport()->rect().center();
+    QWheelEvent event(local, area->viewport()->mapToGlobal(local.toPoint()), QPoint(pixelX, pixelY),
+        QPoint(angleX, angleY), Qt::NoButton, Qt::NoModifier, Qt::ScrollPhase(phase), false);
+    QApplication::sendEvent(area->viewport(), &event);
+    return event.isAccepted();
+  }
+  QString windows() {
+    QJsonArray result;
+    for (const auto &w : m->windows) if (w) result << w->diagnostics();
+    return QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact));
+  }
+  bool activateWindow(int index) {
+    int current = 0;
+    for (const auto &w : m->windows) if (w) {
+      if (current++ == index) { w->showNormal(); w->show(); w->raise(); w->activateWindow(); return true; }
+    }
+    return false;
+  }
   bool activateSidebar(const QString &label) {
     auto *window = m->active();
     if (!window) return false;
@@ -2405,6 +2466,9 @@ public slots:
           b->setCurrentIndex(value);
           return true;
         }
+        if (auto *b = w->findChild<QTabWidget *>(name)) {
+          b->setCurrentIndex(value); return true;
+        }
         if (auto *b = w->findChild<QSpinBox *>(name)) {
           b->setValue(value);
           return true;
@@ -2417,12 +2481,8 @@ public slots:
     return false;
   }
   bool setText(const QString &name, const QString &text) {
-    if (!m->active())
-      return false;
-    if (auto *line = m->active()->findChild<QLineEdit *>(name)) {
-      line->setText(text);
-      return true;
-    }
+    for (auto *w : QApplication::topLevelWidgets()) if (w->isVisible())
+      if (auto *line = w->findChild<QLineEdit *>(name)) { line->setText(text); return true; }
     return false;
   }
   bool dialogButton(const QString &text) {
