@@ -1007,6 +1007,48 @@ public:
   void detachTab(int index) {
     if (index >= 0 && index < tabs->count() && tabs->count() > 1) emit detachRequested(this, index);
   }
+  QJsonObject sessionState() {
+    saveTabSearch(); QJsonArray savedTabs;
+    for (int i = 0; i < qMin(tabs->count(), 100); ++i) {
+      auto *b = qobject_cast<Browser *>(tabs->widget(i)); if (!b || b->springLoadingActive()) continue;
+      QJsonArray history, selection;
+      const auto &state = states[b];
+      for (const auto &url : state.history.mid(qMax(0, int(state.history.size()) - 100))) history.append(url.toString(QUrl::RemovePassword));
+      for (const auto &url : b->selectedUrls().mid(0, 2000)) selection.append(url.toString(QUrl::RemovePassword));
+      savedTabs.append(QJsonObject{{"url", b->url().toString(QUrl::RemovePassword)}, {"view", QJsonDocument::fromJson(b->saveViewState()).object()},
+        {"history", history}, {"historyIndex", qBound(0, state.historyIndex - qMax(0, int(state.history.size()) - 100), qMax(0, int(history.size()) - 1))}, {"selected", selection}, {"search", state.searchState}});
+    }
+    return {{"version", 1}, {"tabs", savedTabs}, {"current", tabs->currentIndex()}, {"geometry", QString::fromLatin1(saveGeometry().toBase64())},
+      {"sidebarWidth", sidebar->width()}, {"sidebar", sidebar->isVisible()}, {"toolbar", header->isVisible()}, {"tabBar", !tabs->tabBar()->autoHide()}};
+  }
+  void restoreSessionState(const QJsonObject &session) {
+    const auto saved = session.value("tabs").toArray(); if (session.value("version").toInt() != 1 || saved.isEmpty() || saved.size() > 100) return;
+    const auto original = tabs->widget(0);
+    QSignalBlocker block(tabs);
+    for (const auto &entry : saved) {
+      const auto item = entry.toObject(); const QUrl url(item.value("url").toString());
+      if (!url.isValid() || url.isRelative() || url.hasQuery() || url.hasFragment() || !url.password().isEmpty()) continue;
+      addTab(url, false); auto *b = qobject_cast<Browser *>(tabs->widget(tabs->count() - 1)); if (!b) continue;
+      b->restoreViewState(QJsonDocument(item.value("view").toObject()).toJson(QJsonDocument::Compact));
+      auto &state = states[b]; state.viewRestored = true; state.history.clear();
+      const auto history = item.value("history").toArray();
+      for (const auto &value : history) { const QUrl previous(value.toString()); if (state.history.size() < 100 && previous.isValid() && !previous.isRelative() && previous.password().isEmpty()) state.history.append(previous); }
+      if (state.history.isEmpty()) state.history.append(url);
+      state.historyIndex = qBound(0, item.value("historyIndex").toInt(), int(state.history.size()) - 1);
+      state.searchState = item.value("search").toObject(); QList<QUrl> selected;
+      for (const auto &value : item.value("selected").toArray()) if (selected.size() < 2000) selected.append(QUrl(value.toString()));
+      b->selectUrls(selected);
+    }
+    if (tabs->count() > 1 && original) { if (auto *b = qobject_cast<Browser *>(original)) states.remove(b); tabs->removeTab(tabs->indexOf(original)); original->deleteLater(); }
+    tabs->setCurrentIndex(qBound(0, session.value("current").toInt(), tabs->count() - 1));
+    restoreGeometry(QByteArray::fromBase64(session.value("geometry").toString().toLatin1()));
+    const int savedSidebar = qBound(120, session.value("sidebarWidth").toInt(256), qMax(120, width() - 200));
+    body->setSizes({savedSidebar, qMax(200, width() - savedSidebar)});
+    header->setVisible(session.value("toolbar").toBool(true)); sidebar->setVisible(session.value("sidebar").toBool(true));
+    namedActions["toolbar"]->setChecked(!header->isHidden()); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); namedActions["tabBar"]->setChecked(session.value("tabBar").toBool());
+    tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
+    searchStateBrowser = browser(); restoreTabSearch(); refresh(); layoutHeader(); updateMaterial();
+  }
   void transferTabsTo(FinderWindow *destination, int only = -1) {
     if (!destination || destination == this) return;
     QList<Browser *> moving;
@@ -1627,6 +1669,8 @@ signals:
   void trashPolicyChanged();
   void settingsCreated(FinderSettings *dialog);
   void closeAllRequested();
+  void reopeningRequested(bool previousSession);
+  void closing(FinderWindow *window);
   void minimizeAllRequested();
   void hideRequested();
   void hideOthersRequested();
@@ -1642,6 +1686,7 @@ protected:
     updateMaterial();
   }
   void closeEvent(QCloseEvent *e) override {
+    emit closing(this);
     saveView();
     QSettings s;
     s.setValue("Window/geometry", saveGeometry());
@@ -2926,6 +2971,7 @@ public:
   QList<QPointer<FinderWindow>> windows;
   bool testing = false;
   bool daemon = false;
+  bool savingQuitSession = false;
   QTimer trashAgeTimer;
   QPointer<KIO::ListJob> trashAgeListing;
   Manager() {
@@ -2960,6 +3006,10 @@ public:
   FinderWindow *create(QUrl u) {
     auto *w = new FinderWindow(u);
     windows << w;
+    connect(w, &FinderWindow::closing, this, [this](FinderWindow *window) {
+      if (!savingQuitSession) QSettings().setValue("Session/lastClosed", QJsonDocument(window->sessionState()).toJson(QJsonDocument::Compact));
+    });
+    connect(w, &FinderWindow::reopeningRequested, this, [this](bool previous) { restoreSession(previous); });
     connect(w, &FinderWindow::settingsCreated, this, [this](FinderSettings *dialog) { connect(dialog, &FinderSettings::preferencesChanged, this, &Manager::refreshTrashPolicy); });
     connect(w, &FinderWindow::windowListRequested, this, [this, w](QMenu *menu) {
       menu->clear();
@@ -2972,7 +3022,10 @@ public:
     connect(w, &FinderWindow::newWindowRequested, this,
             [this](const QUrl &url) { create(url); });
     connect(w, &FinderWindow::quitRequested, this, [this] {
+      QJsonArray session; for (const auto &window : windows) if (window && session.size() < 20) session.append(window->sessionState());
+      QSettings().setValue("Session/previous", QJsonDocument(session).toJson(QJsonDocument::Compact)); savingQuitSession = true;
       const auto copy = windows; for (const auto &window : copy) if (window) window->close();
+      savingQuitSession = false;
       if (!daemon) QCoreApplication::quit();
     });
     connect(w, &FinderWindow::closeAllRequested, this, [this] {
@@ -3013,6 +3066,21 @@ public:
       if (w)
         return w;
     return nullptr;
+  }
+  void restoreSession(bool previous) {
+    const auto bytes = QSettings().value(previous ? "Session/previous" : "Session/lastClosed").toByteArray();
+    if (bytes.size() > 8 * 1024 * 1024) return;
+    const auto document = QJsonDocument::fromJson(bytes);
+    QJsonArray session = previous ? document.array() : QJsonArray{document.object()};
+    int restored = 0;
+    for (const auto &value : session) {
+      if (restored >= 20) break;
+      const auto state = value.toObject(); const auto saved = state.value("tabs").toArray();
+      if (state.value("version").toInt() != 1 || saved.isEmpty() || saved.size() > 100) continue;
+      const QUrl url(saved.first().toObject().value("url").toString()); if (!url.isValid() || url.isRelative() || !url.password().isEmpty()) continue;
+      auto *window = create(url); window->restoreSessionState(state);
+      ++restored;
+    }
   }
 public slots:
   int windowCount() {
@@ -3476,7 +3544,8 @@ int main(int argc, char **argv) {
     bus.registerService("org.local.FinderTest");
     bus.registerObject("/Test", &test, QDBusConnection::ExportAllSlots);
   }
-  if (paths.isEmpty() && !manager.daemon)
+  if (paths.isEmpty() && !manager.daemon && args.contains("--restore-session")) manager.restoreSession(true);
+  if (paths.isEmpty() && !manager.daemon && manager.windows.isEmpty())
     paths << FinderPreferences::newWindowUrl().toString();
   if (quick)
     manager.quickLook(paths);
