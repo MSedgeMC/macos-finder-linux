@@ -14,6 +14,7 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProgressDialog>
 #include <KIO/FileUndoManager>
 #include <KIO/RenameDialog>
 #include <KJob>
@@ -163,6 +164,7 @@ int main(int argc, char **argv)
     selectionFixture.close();
     pane.selectPdfText(0, textBounds.topLeft(), textBounds.bottomRight());
     check(waitFor([&] { return pane.selectedPdfText().contains("needle"); }), "PDF text selection supplies real text");
+    if (argc > 1) check(pane.grab().save(QString::fromLocal8Bit(argv[1]) + QStringLiteral(".pdf.png")), "isolated PDF screenshot artifact");
     QKeyEvent copyPdf(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
     QApplication::sendEvent(pdfView, &copyPdf);
     check(QGuiApplication::clipboard()->text().contains("needle"), "PDF selection copies to clipboard");
@@ -170,6 +172,7 @@ int main(int argc, char **argv)
     check(waitFor([&] { return pages->text() == "Page 2 of 2" && content->currentWidget() == pdfView; }), "worker renders next PDF page");
     pane.searchPdf("needle");
     pane.setUrls({redUrl});
+    check(pane.selectedPdfText().isEmpty(), "navigation clears stale PDF selection immediately");
     pane.hide();
     pane.setUrls({blueUrl});
     pane.show();
@@ -333,6 +336,10 @@ int main(int argc, char **argv)
         const auto originalAudio = fileBytes(audioPath);
         const QUrl audioUrl = QUrl::fromLocalFile(audioPath), audioCopy = QUrl::fromLocalFile(files.filePath("audio-trim.wav"));
         pane.setUrls({audioUrl});
+        const QByteArray backendPath = qgetenv("PATH");
+        qputenv("PATH", files.filePath("no-backends").toLocal8Bit());
+        check(!pane.canTrimCurrent(), "missing ffmpeg backend disables real trim capability");
+        qputenv("PATH", backendPath);
         check(pane.canTrimCurrent() && pane.findChild<QAction *>("previewTrimCopy")->isEnabled(), "installed media trim backend exposed");
         int trimmed = 0, trimProgress = -1; QString trimError; QUrl actual;
         QObject::connect(&pane, &PreviewPane::trimFinished, [&](const QUrl &source, const QUrl &output, const QString &error) {
@@ -386,6 +393,31 @@ int main(int argc, char **argv)
         check(waitFor([&] { return trimmed == 7; }) && trimError.isEmpty() && actual == videoCopy, "real video trim publishes native copy");
         check(runBackend(ffprobe, {"-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", videoCopy.toLocalFile()}, &duration)
             && std::abs(duration.trimmed().toDouble() - 1.) < .15 && fileBytes(videoPath) == videoOriginal, "video output duration and source preservation");
+        pane.exportTrimCopy(0, 5000, QUrl::fromLocalFile(files.filePath("beyond-duration.mp4")));
+        check(waitFor([&] { return trimmed == 8; }) && !trimError.isEmpty() && !QFile::exists(files.filePath("beyond-duration.mp4")), "range past actual duration is rejected before encoding");
+        // A controlled external encoder fixture keeps cancellation deterministic
+        // without wasting CPU on a large generated movie. ffprobe remains real.
+        const QString backendDirectory = files.filePath("cancel-backend");
+        check(QDir().mkpath(backendDirectory), "private cancel backend directory");
+        { QFile script(backendDirectory + "/ffmpeg"); check(script.open(QIODevice::WriteOnly), "cancel encoder fixture");
+          script.write("#!/bin/sh\nexec /usr/bin/sleep 30\n"); script.close();
+          check(script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner), "encoder fixture executable"); }
+        qputenv("PATH", backendDirectory.toLocal8Bit() + ':' + backendPath);
+        const QUrl cancelledEncoder = QUrl::fromLocalFile(files.filePath("cancelled-encoder.mp4"));
+        pane.exportTrimCopy(0, 2000, cancelledEncoder);
+        check(waitFor([&] {
+            for (auto *widget : QApplication::topLevelWidgets()) {
+                if (auto *progress = qobject_cast<QProgressDialog *>(widget); progress && progress->objectName() == "previewTrimProgress"
+                    && progress->labelText() == "Encoding trimmed copy…") return true;
+            }
+            return false;
+        }), "bounded asynchronous encoder starts");
+        const int beforeCancelTicks = ticks;
+        dispatch.restart(); pane.cancelTrim();
+        check(dispatch.elapsed() < 200 && trimmed == 9 && !pane.trimBusy() && !trimError.isEmpty()
+            && !QFile::exists(cancelledEncoder.toLocalFile()), "running encoder cancellation does not block or publish");
+        check(waitFor([&] { return ticks > beforeCancelTicks; }), "GUI heartbeat survives encoder cancellation");
+        qputenv("PATH", backendPath);
         std::cout << "PASS: real ffmpeg audio/video trim duration, native conflict/renamed result/Undo, progress/cancel and source preservation\n";
     } else {
         check(!pane.canTrimCurrent(), "absent backend cannot expose fake trim");

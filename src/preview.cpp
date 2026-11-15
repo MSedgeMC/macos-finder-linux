@@ -2583,22 +2583,22 @@ void PreviewPane::probeTrimSource()
                 if (!source.isFile() || source.size() != state->sourceSize || source.lastModified() != state->sourceModified) {
                     finishTrim(tr("The source changed during export. No copy was saved.")); return;
                 }
-            if (state->progress) { state->progress->setLabelText(tr("Saving copy…")); state->progress->setValue(95); }
-            auto *job = KIO::copyAs(QUrl::fromLocalFile(state->staged), state->destination, KIO::HideProgressInfo);
-            state->job = job;
-            job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
-            KIO::FileUndoManager::self()->recordCopyJob(job);
-            connect(job, &KIO::CopyJob::copyingDone, this, [state](KIO::Job *, const QUrl &, const QUrl &to, const QDateTime &, bool, bool) { state->actual = to; });
-            connect(job, &KJob::result, job, [temporary = state->temporary] { Q_UNUSED(temporary); });
-            connect(job, &KJob::result, this, [this, state](KJob *result) {
-                if (m_trimState != state) return;
-                state->job = nullptr;
-                QString error;
-                if (result->error() == KJob::KilledJobError) error = tr("Media trim was cancelled.");
-                else if (result->error()) error = result->errorText().isEmpty() ? tr("The trimmed copy could not be saved.") : result->errorText();
-                else if (state->actual.isEmpty()) error = tr("No trimmed copy was saved.");
-                finishTrim(error);
-            });
+                if (state->progress) { state->progress->setLabelText(tr("Saving copy…")); state->progress->setValue(95); }
+                auto *job = KIO::copyAs(QUrl::fromLocalFile(state->staged), state->destination, KIO::HideProgressInfo);
+                state->job = job;
+                job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+                KIO::FileUndoManager::self()->recordCopyJob(job);
+                connect(job, &KIO::CopyJob::copyingDone, this, [state](KIO::Job *, const QUrl &, const QUrl &to, const QDateTime &, bool, bool) { state->actual = to; });
+                connect(job, &KJob::result, job, [temporary = state->temporary] { Q_UNUSED(temporary); });
+                connect(job, &KJob::result, this, [this, state](KJob *result) {
+                    if (m_trimState != state) return;
+                    state->job = nullptr;
+                    QString error;
+                    if (result->error() == KJob::KilledJobError) error = tr("Media trim was cancelled.");
+                    else if (result->error()) error = result->errorText().isEmpty() ? tr("The trimmed copy could not be saved.") : result->errorText();
+                    else if (state->actual.isEmpty()) error = tr("No trimmed copy was saved.");
+                    finishTrim(error);
+                });
             });
             verify->start(QStandardPaths::findExecutable(QStringLiteral("ffprobe")), {QStringLiteral("-v"), QStringLiteral("error"),
                 QStringLiteral("-show_entries"), QStringLiteral("format=duration"), QStringLiteral("-of"), QStringLiteral("default=nw=1:nk=1"), state->staged});
