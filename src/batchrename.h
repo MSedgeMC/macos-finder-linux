@@ -8,6 +8,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <memory>
 
@@ -49,6 +50,8 @@ struct Plan {
     int changedCount = 0;
     bool canRename() const { return problem.isEmpty() && changedCount > 0; }
 };
+// Supply listing KFileItems with a known file type, as Browser does. The
+// public KFileItem::isDir() getter may stat arbitrary uninitialized items.
 QList<Item> capture(const KFileItemList &items);
 Plan preview(const QList<Item> &items, const Options &options);
 // Explicit names support non-UI clients and dependency/cycle tests. Names are
@@ -69,7 +72,12 @@ Plan previewNames(const QList<Item> &items, const QStringList &names);
 // Local file URLs only: moveAs can fall back to copying on unsupported remote
 // renames in KF6.2, so remote sources are rejected instead of writing file data.
 // Errors can leave partial success, including a temporary URL after a cycle
-// failure; actual current URLs are reported, and every successful step has Undo.
+// failure or native conflict cancellation; actual current URLs are reported,
+// and every successful step has Undo. Destruction also cancels without waiting.
+// Native conflict UI offers an alternate name, Skip for independent items, or
+// Cancel; replacing another file/merging folders is deliberately unavailable.
+// Apple A12 guide (macOS 27) supplies the options; date spelling/separators are
+// a Linux approximation, not evidence of release-specific pixel/locale parity.
 class BatchRenameEngine : public QObject {
     Q_OBJECT
 public:

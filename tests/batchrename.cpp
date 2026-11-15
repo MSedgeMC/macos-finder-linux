@@ -187,6 +187,8 @@ int main(int argc, char **argv)
     check(::symlink("missing", QFile::encodeName(path("two/broken.link")).constData()) == 0, "broken symlink fixture");
     QList<Item> mixed{item(path("one/a.txt")), item(path("two/b.tar.gz")), item(path("one/Dir.ext"), true), item(path("two/broken.link"))};
     options = {}; options.mode = Mode::AddText; options.text = "-new";
+    struct stat originalMetadata {};
+    check(::stat(QFile::encodeName(path("one/a.txt")).constData(), &originalMetadata) == 0, "capture original inode and metadata");
     BatchRenameEngine mixedEngine; Observer mixedResult(mixedEngine);
     int heartbeat = 0; QTimer timer; timer.setInterval(1);
     QObject::connect(&timer, &QTimer::timeout, [&] { ++heartbeat; }); timer.start();
@@ -197,6 +199,11 @@ int main(int argc, char **argv)
     check(bytes(path("one/a-new.txt")) == "A" && bytes(path("two/b-new.tar.gz")) == "B" && bytes(path("one/Dir.ext-new/child")) == "child"
           && QFileInfo(path("two/broken-new.link")).isSymbolicLink(), "contents and broken symlink preserved");
     check(mixedEngine.originalUrls()[0] == mixed[0].url && heartbeat > 0, "immutable original URLs and responsive event loop");
+    struct stat renamedMetadata {};
+    check(::stat(QFile::encodeName(path("one/a-new.txt")).constData(), &renamedMetadata) == 0
+          && originalMetadata.st_ino == renamedMetadata.st_ino && originalMetadata.st_dev == renamedMetadata.st_dev
+          && originalMetadata.st_mode == renamedMetadata.st_mode && originalMetadata.st_mtim.tv_sec == renamedMetadata.st_mtim.tv_sec
+          && originalMetadata.st_mtim.tv_nsec == renamedMetadata.st_mtim.tv_nsec, "rename preserves inode, mode and content modification time");
     undoSteps(4);
     check(bytes(path("one/a.txt")) == "A" && QFileInfo(path("two/broken.link")).isSymbolicLink(), "native Undo restores mixed original names");
 
@@ -287,7 +294,32 @@ int main(int argc, char **argv)
     check(waitFor([] { return conflictDialog(); }), "native cancel conflict dialog");
     conflictDialog()->cancelPressed(); raceCancelResult.finish(raceCancel);
     check(raceCancelResult.cancelled && raceCancelResult.outputs.isEmpty() && bytes(path("race-cancel-source")) == "source", "native conflict cancel");
-    std::cout << "PASS: native KIO race conflict, same-parent constraint, chosen target and cancel\n";
+    write(path("race-skip-source"), "source");
+    BatchRenameEngine raceSkip; Observer raceSkipResult(raceSkip);
+    QObject::connect(&raceSkip, &BatchRenameEngine::jobCreated, &raceSkip, [&](KIO::Job *job) {
+        if (qobject_cast<KIO::CopyJob *>(job)) write(path("race-skip-target"), "racer");
+    });
+    raceSkip.start(previewNames({item(path("race-skip-source"))}, {"race-skip-target"}));
+    check(waitFor([] { return conflictDialog(); }), "native skip conflict dialog");
+    conflictDialog()->skipPressed(); raceSkipResult.finish(raceSkip);
+    check(!raceSkipResult.cancelled && raceSkipResult.outputs.isEmpty() && bytes(path("race-skip-source")) == "source"
+          && bytes(path("race-skip-target")) == "racer", "native Skip preserves both files");
+
+    // Failure after cycle staging reports the recoverable temporary URL. Do
+    // not invent rollback: native Undo restores it after the missing slot is
+    // repaired (the same condition any native Undo job requires).
+    write(path("fail-cycle-a"), "A"); write(path("fail-cycle-b"), "B");
+    BatchRenameEngine failCycle; Observer failCycleResult(failCycle);
+    QObject::connect(&failCycle, &BatchRenameEngine::jobCreated, &failCycle, [&](KIO::Job *job) {
+        if (qobject_cast<KIO::CopyJob *>(job) && failCycleResult.moves == 2) QFile::remove(path("fail-cycle-b"));
+    });
+    failCycle.start(previewNames({item(path("fail-cycle-a")), item(path("fail-cycle-b"))}, {"fail-cycle-b", "fail-cycle-a"}));
+    failCycleResult.finish(failCycle);
+    check(failCycleResult.errorCode == KIO::ERR_DOES_NOT_EXIST && failCycleResult.outputs.size() == 1
+          && failCycleResult.outputs.first().fileName().startsWith(".finder-rename-")
+          && bytes(failCycleResult.outputs.first().toLocalFile()) == "A", "cycle failure reports preserved temporary item");
+    undoSteps(1); check(bytes(path("fail-cycle-a")) == "A", "native Undo recovers cycle staging after failure");
+    std::cout << "PASS: native KIO race conflict, reserved names, chosen target, cancel/Skip and cycle failure recovery\n";
 
     // Dialog fixture: normal modeless public integration, live controls, stable
     // selection, extension warning and actual async completion. Screenshot is
@@ -329,6 +361,37 @@ int main(int argc, char **argv)
     check(waitFor([&] { return dialogFinished == 1 && !dialogGuard; }), "dialog asynchronously completes and closes");
     check(dialogOutputs.size() == 2 && bytes(path("dialog-a.md")) == "first" && bytes(path("dialog-b.md")) == "second"
           && original.first() == QUrl::fromLocalFile(path("dialog-a.TXT")), "dialog actual outputs and immutable originals"); undoSteps(2);
+    // Real close request during execution waits for a dependency-safe stop,
+    // emits partial results once, and cleans up after completion.
+    write(path("close-a.txt"), "a"); write(path("close-b.txt"), "b");
+    auto *closing = new BatchRenameDialog({fileItem(item(path("close-a.txt"))), fileItem(item(path("close-b.txt")))});
+    QPointer<BatchRenameDialog> closingGuard(closing);
+    closing->show(); options = {}; options.mode = Mode::AddText; options.text = "-renamed";
+    closing->setOptions(options);
+    auto *closingEngine = closing->findChild<BatchRenameEngine *>();
+    int closeSignals = 0; QList<QUrl> closeOutputs;
+    QObject::connect(closing, &BatchRenameDialog::renamingFinished, &app, [&](const QList<QUrl> &urls) { ++closeSignals; closeOutputs = urls; });
+    QObject::connect(closingEngine, &BatchRenameEngine::itemRenamed, closing, [closing] { closing->close(); });
+    closing->accept();
+    check(waitFor([&] { return !closingGuard; }) && closeSignals == 1 && closeOutputs.size() == 1
+          && bytes(path("close-a-renamed.txt")) == "a" && bytes(path("close-b.txt")) == "b", "close during work cancels after current item and emits partial subset");
+    undoSteps(1);
+
+    // A preflight collision is left visible with a Close action; an attempted
+    // operation cannot accidentally retry immutable originals after a failure.
+    write(path("dialog-conflict.txt"), "source"); write(path("dialog-conflict-new.txt"), "target");
+    auto *failed = new BatchRenameDialog({fileItem(item(path("dialog-conflict.txt")))});
+    QPointer<BatchRenameDialog> failedGuard(failed); failed->show(); failed->setOptions(options);
+    // Use an explicitly matching suffix in this fixture.
+    options.text = "-new"; failed->setOptions(options);
+    int failedSignals = 0;
+    QObject::connect(failed, &BatchRenameDialog::renamingFinished, &app, [&](const QList<QUrl> &urls) { ++failedSignals; check(urls.isEmpty(), "failed dialog emits no renamed items"); });
+    failed->accept();
+    check(waitFor([&] { return failedSignals == 1 && !failed->busy(); }) && failedGuard && failed->isVisible()
+          && failed->findChild<QLabel *>("batchRenameStatus")->text().contains("already exists"), "failed dialog remains readable");
+    auto *failedButtons = failed->findChild<QDialogButtonBox *>();
+    check(!failedButtons->button(QDialogButtonBox::Ok)->isEnabled() && failedButtons->button(QDialogButtonBox::Cancel)->text() == "Close", "failed dialog cannot retry stale originals");
+    failedButtons->button(QDialogButtonBox::Cancel)->click(); check(waitFor([&] { return !failedGuard; }), "failed dialog cleanup");
     auto *empty = new BatchRenameDialog({}); QPointer<BatchRenameDialog> emptyGuard(empty);
     empty->show(); empty->reject(); check(waitFor([&] { return !emptyGuard; }), "idle dialog cancel cleans up");
     std::cout << "PASS: modeless live dialog, extension confirmation/review, async results and cleanup\n";

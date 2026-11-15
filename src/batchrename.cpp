@@ -139,7 +139,7 @@ QList<Item> FinderBatchRename::capture(const KFileItemList &items)
 {
     QList<Item> result;
     result.reserve(items.size());
-    for (const auto &item : items) result.append({item.url(), item.isDir() && !item.isLink()});
+    for (const auto &item : items) result.append({item.url(), item.isDir()});
     return result;
 }
 
@@ -296,7 +296,10 @@ struct BatchRenameEngine::Private {
         }
         if (checks.isEmpty() && probeIndex == probes.size()) {
             emit q->statusChanged(QStringLiteral("Renaming…"));
-            QTimer::singleShot(0, q, [this] { next(); });
+            const auto scheduledGeneration = generation;
+            QTimer::singleShot(0, q, [this, scheduledGeneration] {
+                if (generation == scheduledGeneration) next();
+            });
         }
     }
     void schedule()
@@ -384,7 +387,10 @@ struct BatchRenameEngine::Private {
             }
             ++stepIndex;
             groupActive = !step.groupEnd;
-            QTimer::singleShot(0, q, [this] { next(); });
+            const auto scheduledGeneration = generation;
+            QTimer::singleShot(0, q, [this, scheduledGeneration] {
+                if (generation == scheduledGeneration) next();
+            });
         });
         emit q->jobCreated(job);
     }
@@ -414,6 +420,7 @@ void BatchRenameEngine::start(const Plan &plan)
     QStringList names;
     for (const auto &entry : plan.entries) { items.append(entry.item); names.append(entry.newName); }
     d->plan = previewNames(items, names); // Never trust caller-supplied target URLs/counts.
+    if (!plan.problem.isEmpty()) d->plan.problem = plan.problem;
     d->current.clear(); d->steps.clear(); d->probes.clear(); d->reserved.clear();
     d->probeIndex = d->stepIndex = d->completed = 0;
     d->cancelled = d->groupActive = false;
@@ -466,7 +473,7 @@ struct BatchRenameDialog::Private {
     QProgressBar *progress = nullptr;
     QDialogButtonBox *buttons = nullptr;
     QPointer<QMessageBox> warning;
-    bool setting = false, attempted = false;
+    bool setting = false, attempted = false, failed = false;
 
     void read()
     {
@@ -594,9 +601,13 @@ BatchRenameDialog::BatchRenameDialog(const KFileItemList &items, QWidget *parent
         connect(combo, &QComboBox::currentIndexChanged, this, [this] { d->refresh(); });
     connect(d->start, &QSpinBox::valueChanged, this, [this] { d->refresh(); });
     connect(d->engine, &BatchRenameEngine::statusChanged, d->status, &QLabel::setText);
-    connect(d->engine, &BatchRenameEngine::validationFailed, d->status, &QLabel::setText);
+    connect(d->engine, &BatchRenameEngine::validationFailed, this, [this](const QString &message) {
+        d->failed = true; d->status->setText(message);
+    });
     connect(d->engine, &BatchRenameEngine::progressChanged, this, [this](int count, int) { d->progress->setValue(count); });
-    connect(d->engine, &BatchRenameEngine::error, this, [this](KJob *job) { d->status->setText(job->errorString()); emit error(job); });
+    connect(d->engine, &BatchRenameEngine::error, this, [this](KJob *job) {
+        d->failed = true; d->status->setText(job->errorString()); emit error(job);
+    });
     connect(d->engine, &BatchRenameEngine::finished, this, [this](const QList<QUrl> &urls, bool cancelled) {
         emit renamingFinished(urls);
         const auto current = d->engine->currentUrls();
@@ -607,9 +618,11 @@ BatchRenameDialog::BatchRenameDialog(const KFileItemList &items, QWidget *parent
             d->table->item(i, 1)->setText(identity(current.at(i)).fileName());
             const bool changed = identity(current.at(i)) != identity(entry.item.url);
             if (changed) ++actual;
-            d->table->item(i, 2)->setText(changed ? QStringLiteral("Renamed") : entry.changed ? QStringLiteral("Not renamed") : QStringLiteral("Unchanged"));
+            const bool temporary = identity(current.at(i)).fileName().startsWith(QLatin1String(".finder-rename-"));
+            d->table->item(i, 2)->setText(temporary ? QStringLiteral("Temporary name — use Undo")
+                : changed ? QStringLiteral("Renamed") : entry.changed ? QStringLiteral("Not renamed") : QStringLiteral("Unchanged"));
         }
-        if (cancelled || actual == d->plan.changedCount) {
+        if (cancelled || (!d->failed && actual == d->plan.changedCount)) {
             if (cancelled) QDialog::reject(); else QDialog::accept();
         } else {
             // Keep a failed/partial result readable. Reusing captured original
