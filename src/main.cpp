@@ -934,7 +934,14 @@ public:
             [this](quint64, const QString &e) { searchSummary->setText(e); });
     connect(fileSearch, &LocalFileSearch::providerStatus, this, [this](quint64, const QJsonObject &info) {
       searchProviderStatus = info;
-      searchProviderLabel->setText(info.value("detail").toString()); searchProviderLabel->setVisible(!searchProviderLabel->text().isEmpty());
+      const bool indexed = info.value("provider").toString() == "baloo";
+      QString coverage = indexed ? "Searching the existing file index; some folders may be excluded." : QString();
+      if (info.value("limited").toBool() || info.value("incompleteContentFiles").toInt() > 0 || info.value("unavailableMetadata").toInt() > 0)
+        coverage += coverage.isEmpty() ? "Some files could not be fully searched." : " Some files could not be fully searched.";
+      if (searchScope->currentData().toString() == "computer" && !indexed && !info.value("indexAvailable").toBool())
+        coverage = "Computer search requires an existing file index. Choose Current Folder to search directly.";
+      searchProviderLabel->setText(coverage); searchProviderLabel->setVisible(!coverage.isEmpty());
+      searchProviderLabel->setToolTip(info.value("detail").toString());
       searchSummary->setToolTip(info.value("detail").toString());
       searchSummary->setAccessibleDescription(info.value("coverage").toString() + ": " + info.value("detail").toString());
     });
