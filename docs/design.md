@@ -32,14 +32,13 @@ the area below each icon.
 ![Gallery with a right information panel](../screenshots/gallery.png)
 
 These images are captures of this Linux implementation using disposable
-fixtures, not Apple reference images. They are cropped below the content to
-remove local filesystem breadcrumbs and status information.
+fixtures, not Apple reference images. They use disposable files and hide filesystem breadcrumbs and status paths.
 
-The originating desktop's deliberate preferences are Ubuntu Medium (500),
-slight hinting and RGB smoothing, a Windows-style cursor, and right-side
-minimize/maximize/close controls with visible symbols. The application preserves
-the desktop font and cursor rather than installing Apple assets. These choices
-are intentional differences from macOS typography and traffic-light controls.
+The app defaults to left traffic-light window controls and 13px SF Pro Display
+when that font is already installed, with Inter/sans-serif fallback. It installs
+no fonts and leaves global desktop font and cursor settings unchanged. Icons
+default to 64px; path and status bars start hidden and can be enabled in View.
+The toolbar keeps native move, resize, minimize, maximize and close behavior.
 
 ## Material and native behavior
 
@@ -52,14 +51,29 @@ Foreground text, icons and file content remain crisp.
 
 KDirModel, KIO, KFilePlacesModel and KFilePlacesView retain native filesystem
 watching, bookmarks, storage locations, context menus, keyboard navigation,
-thumbnails, transfers, conflict handling, Trash and Undo. Material rendering is
+thumbnails, transfers, conflict handling, Trash and Undo. A separate QTreeView
+presents true 32px sidebar rows and 18px nonselectable headers, while
+KFilePlacesModel and the original view retain bookmark/device menus, native
+mount/eject and deferred file drops. Recents and Shared precede Favorites;
+Locations and seven tag colors follow. Tag selection searches actual local
+metadata under the home folder, including hidden folders, within the search
+budgets below. Linux routes use the available KIO workers. Material rendering is
 separate from these actions. Tabs and history keep independent folder state;
-folder settings retain view, sorting, icon size and List column visibility.
+folder settings retain view, sorting, grouping, spacing, label position, preview
+visibility, icon size and List column visibility. Six grouping choices operate
+on real file indexes: None, Name, Kind, Date Modified, Size and Tags. A file
+with several tags appears once under its complete tag set. This differs from
+Finder grouping that can repeat an item in separate tag categories.
 
 Quick Look uses bounded, cached native image and PDF rendering. PDF pages are
 composited on white paper, text previews are read-only and limited to 512 KiB
 with horizontal scrolling, and audio/video begins only after Play. Unsupported
 or remote formats offer metadata and their normal default-application route.
+Gallery adds compact Information, Show More, a thumbnail/name/kind-size header,
+editable standard/custom tags, Open/Get Info and More actions. Rotate Left as
+Copy exports a bounded original-resolution PNG through KIO, choosing an unused
+name and recording native Undo; it does not overwrite the original. Compress
+uses Ark when present, and email sharing uses the installed xdg-email route.
 
 Recursive filename search runs on a worker and ignores obsolete requests after
 cancellation. Its defaults are 2,000 results, 250,000 entries and 15 seconds;
@@ -95,9 +109,8 @@ and [liquid_glass_widgets](https://github.com/sdegenaar/liquid_glass_widgets).
 Their platform shaders and rendering APIs are references, not compatible Qt
 assets or evidence of equality with current macOS.
 
-iCloud, AirDrop, macOS sharing services, Finder extensions, complete Quick
-Actions, full grouping behavior and all Finder preview formats are not
-implemented. Search results currently use a metadata List. Native remote
+iCloud, AirDrop, macOS sharing services, Finder extensions, the complete Quick
+Actions catalog and every Finder preview format are not implemented. Search results currently use a metadata List. Native remote
 directory support depends on installed KIO workers, and blur depends on KWin.
 No lossless comparison with identical files, geometry, scale, typography and
 backdrop has established pixel parity.
@@ -105,10 +118,9 @@ backdrop has established pixel parity.
 A component comparison on 2026-11-15 confirmed the 52-pixel toolbar,
 256-pixel initial sidebar, content origin at (256, 52), the capsule dimensions
 above, 32-pixel medium sidebar rows, and `#1e1e1e` opaque dark content. These
-matches concern generic kit primitives. Section headers retain native KDE hit
-geometry (31 pixels with the tested font versus the kit's 18-pixel allocation),
-and the documented typography, controls, material and platform differences
-remain. This comparison does not establish whole-window 1:1 Finder equality.
+matches concern generic kit primitives. The sidebar presentation now uses
+actual 18px header hit geometry and 32px rows. Material, typography fallback
+and platform differences remain. This comparison does not establish whole-window 1:1 Finder equality.
 
 This repository does not bundle Apple fonts, Apple kit images or proprietary
 icon assets. Qt/KDE dependencies and any separately installed icon theme retain

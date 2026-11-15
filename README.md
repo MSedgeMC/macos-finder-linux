@@ -9,12 +9,16 @@ and native KIO file operations.
 This is a Linux approximation inspired by Apple Liquid Glass. It does not
 contain Apple's Finder or renderer, and exact macOS pixel parity is not
 established. The file pane is opaque; suitable chrome requests genuine KWin
-compositor blur. Ubuntu Medium and visible right-side window controls are the
-current default preferences.
+compositor blur. The app now defaults to left traffic-light controls, 64px icons and an
+already-installed SF Pro Display font, with Inter/sans-serif fallback. It does
+not install fonts or change the desktop cursor.
 
 Implemented features include tabs/history, inline rename, native conflict
 handling, copy/move, Trash/Undo, file watching, device bookmarks/eject, saved
-folder views, image/PDF/text previews, and explicit-play audio/video. Linux
+folder views, all six grouping choices, optional side previews, Gallery
+Information/Show More, editable tag chips, image/PDF/text previews, and
+explicit-play audio/video. Compress uses Ark when available. Gallery can export
+an original-resolution rotated PNG copy with native conflict handling and Undo. Linux
 `user.xdg.tags` preserves custom tags. Local filename search runs on a bounded,
 cancelable worker without background indexing.
 
@@ -33,6 +37,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 The native implementation passed **32 isolated Wayland integration checks**.
+The sidebar also passed 22 boundary/geometry captures at 1× scale, including
+actual tag activation and native resize input. A compositor capture measured
+real backdrop blur while the file pane stayed unchanged.
 See [validation](docs/validation.md) and [design and platform limits](docs/design.md).
 
 ## Optional KDE desktop integration
