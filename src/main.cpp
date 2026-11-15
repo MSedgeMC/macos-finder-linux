@@ -375,7 +375,7 @@ public:
     auto *nav = new QWidget;
     nav->setObjectName("navigationCapsule");
     auto *nl = new QHBoxLayout(nav);
-    nl->setContentsMargins(2, 0, 2, 0);
+    nl->setContentsMargins(2, 0, 3, 0);
     nl->setSpacing(0);
     back = button("back", "Back", nav);
     forward = button("forward", "Forward", nav);
@@ -393,7 +393,7 @@ public:
     modeBox = new QWidget;
     modeBox->setObjectName("modeCapsule");
     auto *ml = new QHBoxLayout(modeBox);
-    ml->setContentsMargins(2, 0, 2, 0);
+    ml->setContentsMargins(3, 0, 3, 0);
     ml->setSpacing(0);
     modeActions = new QActionGroup(this);
     modeActions->setExclusive(true);
