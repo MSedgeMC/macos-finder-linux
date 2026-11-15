@@ -201,3 +201,11 @@ The same harness's earlier baseline took 1,246 ms and used approximately
 performance guarantee. Diagnostic-call P95 was 1.84–5.79 ms across views; that
 measures the test D-Bus response and must not be reported as frame time. Builds
 and other test sessions were stopped for this measurement.
+
+
+The final scoped update was installed and verified on 2026-11-15. The installed
+executable matched the privately verified staged hash; Finder remained the
+folder default, the windowless daemon owned FileManager1, and the private test
+interface was absent from the production session. The installer retained the
+previous executable and its scoped restore manifest. No working-desktop test
+windows, automated input or compositor restart were used.
