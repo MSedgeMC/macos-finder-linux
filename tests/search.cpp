@@ -247,7 +247,7 @@ int main(int argc, char **argv) {
         require(result.provider.value("provider") == "local" && result.provider.value("incompleteContentFiles").toInt() > 0, "content limitations reported");
         richOptions.maxContentBytes = 64;
         result = scan(search, richUrl, "large", richOptions);
-        require(result.count == 0 && result.provider.value("incompleteContentFiles").toInt() == 1, "truncated content doesn't claim absent match");
+        require(result.count == 0 && result.limited && result.provider.value("incompleteContentFiles").toInt() == 1, "truncated content doesn't claim absent match");
         richOptions.contentText.clear();
         richOptions.criteria = combine("none", {condition("content", "contains", "amber")});
         result = scan(search, richUrl, {}, richOptions);
@@ -263,6 +263,11 @@ int main(int argc, char **argv) {
         richOptions.criteria = condition("content", "endsWith", "amber tail");
         result = scan(search, richUrl, "large", richOptions);
         require(result.count == 0, "truncated prefix cannot prove suffix");
+        fixture(rich + "/invalid.txt", QByteArray("draft\xc3", 6));
+        richOptions.criteria = combine("none", {condition("content", "contains", "amber")});
+        result = scan(search, richUrl, "invalid", richOptions);
+        require(result.count == 0 && result.provider.value("incompleteContentFiles").toInt() == 1, "incomplete UTF-8 must not prove content absence");
+        require(QFile::remove(rich + "/invalid.txt"), "remove invalid Unicode fixture");
         cases.append("UTF-8, UTF-16 and extensionless content; binary/FIFO/symlink exclusion; prefix, aggregate IO and three-valued negation limits");
 
         QString parseError;
@@ -300,11 +305,58 @@ int main(int argc, char **argv) {
         result = scan(search, richUrl, "invoice", richOptions);
         require(result.count == 1 && result.provider.value("provider") == "local" && !result.provider.value("indexAvailable").toBool() &&
             !QFileInfo::exists(missingDb), "missing index fallback created index directory");
+        result = scan(search, QUrl::fromLocalFile("/"), "invoice", richOptions);
+        require(!result.error.isEmpty() && result.urls.isEmpty() && result.provider.value("examinedEntries").toInt() == 0,
+            "computer-wide provider fallback scanned the disk");
         richOptions.provider = LocalFileSearch::Options::Provider::IndexOnly;
         result = scan(search, richUrl, "invoice", richOptions);
         require(!result.error.isEmpty() && result.urls.isEmpty() && !QFileInfo::exists(missingDb), "index-only absence fallback");
+        // Synthetic CLI contract fixture exercises the untrusted external
+        // provider boundary. It is not a claim about real index extraction.
+        const QByteArray previousPath = qgetenv("PATH");
+        const QString bin = temporary.path() + "/provider-bin";
+        const QString mockDb = temporary.path() + "/provider-db";
+        fixture(mockDb + "/index", "existing synthetic index");
+        fixture(bin + "/baloosearch6", R"PY(#!/usr/bin/python3
+import json, os, sys, time
+a = sys.argv[1:]
+if a == ['--version']:
+    print('Baloo 6.24.0')
+elif a == ['--help']:
+    print('--sort --directory --limit')
+else:
+    assert a[0:2] == ['--sort', 'none']
+    assert a[2] == '--limit' and int(a[3]) > 0
+    assert '--' in a
+    assert 'DISPLAY' not in os.environ and 'WAYLAND_DISPLAY' not in os.environ
+    assert '/nonexistent/' in os.environ.get('DBUS_SESSION_BUS_ADDRESS', '')
+    if 'slow' in a[-1]:
+        time.sleep(2)
+    else:
+        assert a[-1] == 'modified>="1970-01-01T00:00:00Z"'
+        for path in json.load(open(os.path.join(os.path.dirname(__file__), 'paths.json'))):
+            print(path)
+)PY");
+        require(QFile::setPermissions(bin + "/baloosearch6", QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner), "executable provider fixture");
+        const QString blocked = rich + "/link-dir";
+        require(QFile::link(temporary.path() + "/outside", blocked), "indexed symlink ancestor fixture");
+        fixture(bin + "/paths.json", QJsonDocument(QJsonArray{rich + "/invoice.txt", rich + "/pipe.txt", rich + "/invoice.txt",
+            rich + "/../outside/needle-outside.txt", temporary.path() + "/outside/needle-outside.txt", blocked + "/needle-outside.txt"}).toJson());
+        qputenv("PATH", bin.toUtf8() + ':' + previousPath);
+        qputenv("BALOO_DB_PATH", mockDb.toUtf8());
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/invoice.txt") &&
+            result.provider.value("provider") == "baloo" && result.provider.value("coverage") == "existing-index-only" && result.limited,
+            "provider candidates escape scope, duplicate, follow symlink ancestor, or scan special files");
+        richOptions.parseKeywords = true;
+        richOptions.maxElapsedMs = 100;
+        result = scan(search, richUrl, "content:slow", richOptions);
+        require(!result.error.isEmpty() && result.urls.isEmpty(), "provider process ignores search elapsed budget");
+        qputenv("PATH", previousPath);
+        require(QFile::remove(blocked), "remove indexed symlink fixture");
         if (previousDb.isNull()) qunsetenv("BALOO_DB_PATH"); else qputenv("BALOO_DB_PATH", previousDb);
         cases.append("optional provider falls back honestly without creating an index; index-only unavailable reports error");
+        cases.append("provider protocol isolates desktop session, rejects out-of-scope/special/duplicate candidates, and enforces process timeout");
 
         const QString large = temporary.path() + "/large";
         for (int directory = 0; directory < 100; ++directory)

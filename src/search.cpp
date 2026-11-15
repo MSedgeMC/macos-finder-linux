@@ -369,6 +369,7 @@ struct Metrics {
     qint64 contentBytes = 0;
     int incompleteContent = 0;
     int unavailableMetadata = 0;
+    bool contentLimited = false;
 };
 struct Entry {
     QString name;
@@ -448,7 +449,7 @@ struct Entry {
         if (!S_ISREG(metadata.st_mode)) { ++metrics.incompleteContent; return; }
         const qint64 allowance = std::min<qint64>(request.options.maxContentBytes,
             request.options.maxTotalContentBytes - metrics.contentBytes);
-        if (allowance <= 0 || stopped()) { ++metrics.incompleteContent; return; }
+        if (allowance <= 0 || stopped()) { metrics.contentLimited = true; ++metrics.incompleteContent; return; }
         // Reopen the pinned inode, not its potentially changed pathname.
         const auto path = "/proc/self/fd/" + QByteArray::number(pinned.fd);
         Descriptor input(open(path.constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC));
@@ -471,11 +472,12 @@ struct Entry {
             before.st_ctim.tv_sec == after.st_ctim.tv_sec && before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
         if (!stable || stopped() || readError) { ++metrics.incompleteContent; return; }
         contentComplete = bytes.size() >= before.st_size;
+        metrics.contentLimited |= !contentComplete;
         const auto encoding = QStringConverter::encodingForData(bytes).value_or(QStringConverter::Utf8);
         const bool unicodeWide = encoding == QStringConverter::Utf16LE || encoding == QStringConverter::Utf16BE ||
             encoding == QStringConverter::Utf32LE || encoding == QStringConverter::Utf32BE;
         if (!unicodeWide && bytes.contains('\0')) { ++metrics.incompleteContent; return; }
-        QStringDecoder decoder(encoding);
+        QStringDecoder decoder(encoding, contentComplete ? QStringConverter::Flag::Stateless : QStringConverter::Flags{});
         content = decoder.decode(bytes);
         contentKnown = !decoder.hasError();
         if (!contentComplete || !contentKnown) ++metrics.incompleteContent;
@@ -546,12 +548,20 @@ struct ProcessResult { bool ok = false, bounded = false; QByteArray output; };
 ProcessResult balooCommand(const QString &program, const QStringList &arguments,
                           const Request &request, QElapsedTimer &elapsed, qint64 maxOutput) {
     ProcessResult result;
+    if (request.cancel->load(std::memory_order_relaxed) || elapsed.elapsed() >= request.options.maxElapsedMs) {
+        result.bounded = true;
+        return result;
+    }
     QProcess process;
+    process.setWorkingDirectory("/");
+    process.setUnixProcessParameters(QProcess::UnixProcessFlag::CloseFileDescriptors |
+        QProcess::UnixProcessFlag::DisconnectControllingTerminal | QProcess::UnixProcessFlag::DisableCoreDumps);
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert("LC_ALL", "C.UTF-8");
     environment.remove("DISPLAY");
     environment.remove("WAYLAND_DISPLAY");
-    environment.remove("DBUS_SESSION_BUS_ADDRESS");
+    // A query uses LMDB directly; it needs neither a display nor a session bus.
+    environment.insert("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/finder-search-session-bus");
     process.setProcessEnvironment(environment);
     process.setStandardInputFile(QProcess::nullDevice());
     process.setStandardErrorFile(QProcess::nullDevice());
@@ -580,8 +590,9 @@ QString balooAvailable(const QList<Mount> &mounts, const Request &request, QElap
     if (!QDir::isAbsolutePath(db)) { reason = "Baloo database path is not absolute."; return {}; }
     Descriptor directory(openRoot(QFile::encodeName(db), mounts, request.cancel));
     struct stat index{};
-    if (directory.fd < 0 || fstatat(directory.fd, "index", &index, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(index.st_mode) || index.st_size == 0) {
-        reason = "No existing readable local Baloo index; using bounded local search.";
+    Descriptor indexFile(directory.fd < 0 ? -1 : openat(directory.fd, "index", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+    if (indexFile.fd < 0 || fstat(indexFile.fd, &index) != 0 || !S_ISREG(index.st_mode) || index.st_size == 0) {
+        reason = "No existing readable local Baloo index.";
         return {};
     }
     auto program = QStandardPaths::findExecutable("baloosearch6");
@@ -687,12 +698,16 @@ private:
         lastBatch.start();
         const auto canceled = [&] { return request.cancel->load(std::memory_order_relaxed); };
         const auto status = [&] {
-            emit statusReady(request.generation, {{"provider", provider}, {"coverage", coverage}, {"detail", detail},
+            QString explanation = detail;
+            if (metrics.incompleteContent) explanation += QStringLiteral(" %1 files had unavailable or incomplete content.").arg(metrics.incompleteContent);
+            if (metrics.unavailableMetadata) explanation += QStringLiteral(" %1 metadata values were unavailable.").arg(metrics.unavailableMetadata);
+            emit statusReady(request.generation, {{"provider", provider}, {"coverage", coverage}, {"detail", explanation},
                 {"indexAvailable", indexAvailable}, {"examinedEntries", examined},
                 {"contentBytesRead", QString::number(metrics.contentBytes)}, {"incompleteContentFiles", metrics.incompleteContent},
                 {"unavailableMetadata", metrics.unavailableMetadata}, {"limited", limited}});
         };
         const auto finish = [&] {
+            limited |= metrics.contentLimited;
             if (!canceled()) status();
             if (!canceled() && !batch.isEmpty()) emit batchReady(request.generation, batch);
             emit complete(request.generation, count, limited, skipped, failure, canceled());
@@ -709,7 +724,7 @@ private:
             return;
         }
         const auto root = QDir::cleanPath(request.root.toLocalFile());
-        if (!QDir::isAbsolutePath(root)) {
+        if (!QDir::isAbsolutePath(root) || root.contains(QChar::Null)) {
             failure = QStringLiteral("Choose an absolute local folder for search.");
             finish();
             return;
@@ -744,9 +759,13 @@ private:
                 auto seed = indexedSeed(criteria);
                 // This enumerates only the selected folder's existing index
                 // postings when no positive seed can represent the predicate.
-                if (seed.isEmpty()) seed = "modified>=1970-01-01";
-                const QStringList arguments{"--sort", "none", "--limit", QString::number(cap),
-                    "--directory", root, "--", seed};
+                if (seed.isEmpty()) seed = "modified>=\"1970-01-01T00:00:00Z\"";
+                QStringList arguments{"--sort", "none", "--limit", QString::number(cap)};
+                // Baloo does not index a '/' directory document. Omitting its
+                // folder filter searches only existing index postings; each
+                // returned candidate still passes local-mount/descriptor checks.
+                if (root != "/") arguments << "--directory" << root;
+                arguments << "--" << seed;
                 const auto found = balooCommand(program, arguments, request, elapsed, 8 * 1024 * 1024);
                 if (found.ok) {
                     provider = "baloo";
@@ -786,8 +805,12 @@ private:
                         if (parent.fd < 0) { ++skipped; continue; }
                         Entry candidate(parent.fd, path.mid(slash + 1), mimes, request, elapsed, metrics);
                         if (!candidate.valid) { ++skipped; continue; }
+                        // Stale index records can now name a pipe/device/link.
+                        // Indexed content never bypasses the ordinary-file gate.
+                        if (!S_ISREG(candidate.metadata.st_mode) && !S_ISDIR(candidate.metadata.st_mode) &&
+                            !S_ISLNK(candidate.metadata.st_mode)) { ++skipped; continue; }
                         candidate.path = path;
-                        candidate.indexedContent = &contentHits;
+                        if (S_ISREG(candidate.metadata.st_mode)) candidate.indexedContent = &contentHits;
                         if (candidate.evaluate(criteria) != Truth::Yes || canceled()) continue;
                         batch.append(QUrl::fromLocalFile(QFile::decodeName(path)));
                         ++count;
@@ -801,18 +824,19 @@ private:
                     finish();
                     return;
                 }
-                reason = "Baloo query failed or exceeded its time/output budget; using bounded local search.";
+                reason = "Baloo query failed or exceeded its time/output budget.";
                 if (found.bounded) limited = true;
             }
-            if (request.options.provider == LocalFileSearch::Options::Provider::IndexOnly) {
+            if (request.options.provider == LocalFileSearch::Options::Provider::IndexOnly || root == "/") {
                 provider = "baloo";
                 coverage = "existing-index-only";
+                if (root == "/") reason += " Computer-wide search needs an existing index; select a local folder for bounded scanning.";
                 detail = reason;
                 failure = reason;
                 finish();
                 return;
             }
-            detail = reason;
+            detail = reason + " Using bounded local metadata and Unicode text search in the selected folder.";
         }
         status();
         std::vector<Frame> stack;
