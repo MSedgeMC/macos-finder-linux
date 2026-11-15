@@ -2,6 +2,9 @@
 // Copyright 2026 kubuntu-customization contributors
 #include "places.h"
 #include "tags.h"
+#include "settings.h"
+#include <Solid/StorageDrive>
+#include <Solid/OpticalDrive>
 
 #include <KFilePlacesModel>
 #include <KProtocolInfo>
@@ -495,9 +498,11 @@ public:
         defaultPlace("applications", "Applications", applications, "applications");
         for (const auto &place : QList<QPair<QStandardPaths::StandardLocation, QString>>{
                  {QStandardPaths::DesktopLocation, "Desktop"}, {QStandardPaths::DocumentsLocation, "Documents"},
-                 {QStandardPaths::DownloadLocation, "Downloads"}}) {
+                 {QStandardPaths::DownloadLocation, "Downloads"}, {QStandardPaths::HomeLocation, "Home"},
+                 {QStandardPaths::MusicLocation, "Music"}, {QStandardPaths::PicturesLocation, "Pictures"},
+                 {QStandardPaths::MoviesLocation, "Movies"}}) {
             const QUrl url = QUrl::fromLocalFile(QStandardPaths::writableLocation(place.first));
-            defaultPlace(place.second.toLower(), place.second, url, place.second.toLower());
+            defaultPlace(place.second == "Movies" ? "videos" : place.second.toLower(), place.second, url, place.second.toLower());
         }
         // Keep real local bookmarks and useful saved queries, in source order.
         // Presentation defaults do not reorder or write KDE's shared bookmarks.
@@ -512,15 +517,27 @@ public:
             used.append(index);
         }
         section("Locations");
+        auto hardwareKey = [](Solid::Device device) {
+            for (int depth = 0; device.isValid() && depth < 16; ++depth) {
+                if (device.is<Solid::OpticalDrive>()) return QStringLiteral("opticalMedia");
+                if (auto *drive = device.as<Solid::StorageDrive>()) {
+                    if (drive->driveType() == Solid::StorageDrive::CdromDrive) return QStringLiteral("opticalMedia");
+                    return drive->isRemovable() || drive->isHotpluggable() ? QStringLiteral("externalDisks") : QStringLiteral("internalDisks");
+                }
+                device = device.parent();
+            }
+            return QStringLiteral("externalDisks");
+        };
         bool hasRootDisk = false;
         for (const auto &index : available) {
             if (!model->isDevice(index)) continue;
+            if (!FinderPreferences::sidebarItemVisible(hardwareKey(model->deviceForIndex(index)))) continue;
             const QUrl url = model->url(index);
             hasRootDisk |= url.isLocalFile() && url.toLocalFile() == "/";
             append("device:" + model->deviceForIndex(index).udi(), model->text(index), url, "device", index);
             used.append(index);
         }
-        if (!hasRootDisk) {
+        if (!hasRootDisk && FinderPreferences::sidebarItemVisible("internalDisks")) {
             const QUrl root = QUrl::fromLocalFile("/");
             defaultPlace("filesystem", "Linux Filesystem", root, "device");
         }
@@ -528,36 +545,23 @@ public:
         defaultPlace("network", "Network", network, "network");
         for (const auto &index : available) {
             if (used.contains(index) || model->groupType(index) != KFilePlacesModel::RemoteType || model->url(index) == shared) continue;
+            if (!FinderPreferences::sidebarItemVisible("connectedServers")) continue;
             append("remote:" + model->url(index).toString(), model->text(index), model->url(index), glyphFor(model, index), index);
             used.append(index);
         }
         const QUrl trash("trash:/");
         defaultPlace("trash", "Trash", trash, "trash");
         section("Tags");
-        const QStringList colorNames = FileTags::standardTags();
-        for (const QString &color : colorNames) {
-            auto *item = append("tag:" + color, color, {}, {});
-            item->setData(color, TagRole); item->setData(FileTags::tagColor(color), TagColorRole);
+        QStringList discovered;
+        for (const auto &index : available)
+            if (model->groupType(index) == KFilePlacesModel::TagsType && !model->url(index).path().isEmpty() && model->url(index).path() != "/")
+                discovered << model->text(index);
+        FinderPreferences::registerObservedTags(discovered);
+        for (const auto &tag : FinderPreferences::tagRegistry()) {
+            auto *item = append("tag:" + tag.id, tag.name, {}, {});
+            item->setData(tag.name, TagRole); item->setData(tag.color, TagColorRole);
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-            item->setToolTip("Show local files tagged " + color + ".");
-        }
-        for (const auto &index : available) {
-            if (model->groupType(index) != KFilePlacesModel::TagsType || colorNames.contains(model->text(index))) continue;
-            const QString tag = model->text(index);
-            if (model->url(index).path().isEmpty() || model->url(index).path() == "/") continue;
-            auto *item = append("tag:" + tag, tag, {}, {}, index);
-            item->setData(tag, TagRole); item->setData(QColor("#8e8e93"), TagColorRole);
-            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-        }
-        const auto favorites = QSettings().value("Tags/favorites").toStringList();
-        for (const auto &tag : favorites) {
-            bool present = false;
-            for (int row = 0; row < rows->rowCount(); ++row)
-                present |= rows->item(row)->data(TagRole).toString() == tag;
-            if (present) continue;
-            auto *item = append("tag:" + tag, tag, {}, {});
-            item->setData(tag, TagRole); item->setData(QColor("#8e8e93"), TagColorRole);
-            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            item->setToolTip("Show local files tagged " + tag.name + ".");
         }
         const auto hiddenKeys = QSettings().value("Sidebar/hiddenKeys").toStringList();
         const auto hiddenTags = QSettings().value("Sidebar/hiddenTags").toStringList();
@@ -566,9 +570,8 @@ public:
             const auto key = item->data(KeyRole).toString();
             const auto url = item->data(UrlRole).toUrl();
             const auto tag = item->data(TagRole).toString();
-            bool hide = hiddenKeys.contains(key) || (!tag.isEmpty() && hiddenTags.contains(tag));
-            if (key.startsWith("device:")) hide |= hiddenKeys.contains("devices");
-            if (key.startsWith("remote:")) hide |= hiddenKeys.contains("network");
+            bool hide = !FinderPreferences::sidebarItemVisible(key) || (!tag.isEmpty() && hiddenTags.contains(tag));
+            if (key == "filesystem") hide |= !FinderPreferences::sidebarItemVisible("internalDisks");
             for (const auto &entry : QList<QPair<QString, QStandardPaths::StandardLocation>>{
                 {"home", QStandardPaths::HomeLocation}, {"music", QStandardPaths::MusicLocation},
                 {"pictures", QStandardPaths::PicturesLocation}, {"videos", QStandardPaths::MoviesLocation}})

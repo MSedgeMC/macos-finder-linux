@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS
-    Core Gui Widgets DBus Network Pdf Multimedia MultimediaWidgets Xml
+    Core Gui Widgets DBus Network Pdf Multimedia MultimediaWidgets Xml PrintSupport
 )
 find_package(Threads REQUIRED)
 find_package(KF6KIO 6.2 REQUIRED)
@@ -35,17 +35,19 @@ add_executable(finder
     src/search.cpp src/search.h
     src/tags.cpp src/tags.h
     src/settings.cpp src/settings.h
+    src/preferences.cpp src/preferences.h
     src/scroll.cpp src/scroll.h
 )
 target_link_libraries(finder PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Network
-    Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Xml
+    Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Xml Qt6::PrintSupport
     Threads::Threads
     KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets
     KF6::CoreAddons KF6::ItemViews KF6::Bookmarks KF6::WidgetsAddons
     KF6::JobWidgets KF6::ConfigCore KF6::WindowSystem KF6::I18n
     KF6::Service KF6::Solid KF6::FileMetaData
 )
+target_compile_definitions(finder PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(finder PRIVATE -Wall -Wextra)
 endif()

@@ -8,9 +8,10 @@ target_link_libraries(finder-search-test PRIVATE Qt6::Core Threads::Threads)
 add_executable(finder-tags-test
     tags.cpp
     ../src/tags.cpp ../src/tags.h
+    ../src/preferences.cpp ../src/preferences.h
 )
 target_include_directories(finder-tags-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(finder-tags-test PRIVATE Qt6::Core Qt6::Gui KF6::FileMetaData)
+target_link_libraries(finder-tags-test PRIVATE Qt6::Core Qt6::Gui KF6::FileMetaData KF6::KIOCore)
 
 foreach(test_target IN ITEMS finder-search-test finder-tags-test)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -37,3 +38,10 @@ add_test(NAME finder-scroll-test
     COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY
         --unset=DBUS_SESSION_BUS_ADDRESS QT_QPA_PLATFORM=offscreen "$<TARGET_FILE:finder-scroll-test>")
 set_tests_properties(finder-scroll-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
+
+add_executable(finder-preview-test preview.cpp ../src/preview.cpp ../src/preview.h ../src/tags.cpp ../src/preferences.cpp)
+target_include_directories(finder-preview-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_definitions(finder-preview-test PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
+target_link_libraries(finder-preview-test PRIVATE Qt6::Widgets Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::PrintSupport KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::FileMetaData KF6::Service)
+add_test(NAME finder-preview-test COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY --unset=DBUS_SESSION_BUS_ADDRESS QT_QPA_PLATFORM=offscreen "$<TARGET_FILE:finder-preview-test>")
+set_tests_properties(finder-preview-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")

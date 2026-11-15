@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 #include "tags.h"
+#include "preferences.h"
 
 #include <KFileMetaData/UserMetaData>
 #include <QDir>
@@ -199,6 +200,8 @@ QStringList FileTags::standardTags() {
 }
 
 QColor FileTags::tagColor(const QString &tag) {
+    const auto registered = FinderPreferences::registeredTagColor(tag);
+    if (registered.isValid()) return registered;
     const auto name = tag.trimmed().toLower();
     if (name == "red") return QColor("#ff3b30");
     if (name == "orange") return QColor("#ff9500");
