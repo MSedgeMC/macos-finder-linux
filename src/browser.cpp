@@ -2,6 +2,7 @@
 // Copyright 2026 kubuntu-customization contributors
 // Public Qt/KIO views and jobs; no private Dolphin ABI or shell file mutations.
 #include "browser.h"
+#include "appearance.h"
 #include "tags.h"
 #include "preferences.h"
 
@@ -774,7 +775,8 @@ void paintHeading(QPainter *painter, const QRect &rect, const QPalette &palette,
     painter->setFont(font);
     painter->setPen(palette.color(QPalette::Text));
     painter->drawText(rect.adjusted(12, 0, -12, -2), Qt::AlignLeft | Qt::AlignVCenter, text);
-    QColor rule = palette.color(QPalette::Text); rule.setAlpha(35);
+    QColor rule = FinderAppearance::highContrast() ? palette.color(QPalette::Mid) : palette.color(QPalette::Text);
+    if (!FinderAppearance::highContrast()) rule.setAlpha(35);
     painter->setPen(rule);
     painter->drawLine(rect.bottomLeft() + QPoint(12, 0), rect.bottomRight() - QPoint(12, 0));
     painter->restore();
@@ -857,11 +859,13 @@ public:
         const bool selected = option.state & QStyle::State_Selected;
         const bool enabled = option.state & QStyle::State_Enabled;
         if (selected) {
-            painter->setPen(Qt::NoPen); painter->setBrush(QColor("#363638"));
+            painter->setPen(Qt::NoPen); painter->setBrush(FinderAppearance::color(FinderAppearance::IconSelection));
             painter->drawRoundedRect(iconHighlight, 8, 8);
         }
         if (option.state & QStyle::State_HasFocus) {
-            painter->setPen(QPen(QColor("#6ca4f8"), 1)); painter->setBrush(Qt::NoBrush);
+            const QColor focus = FinderAppearance::highContrast() && selected
+                ? FinderAppearance::palette().color(QPalette::HighlightedText) : FinderAppearance::color(FinderAppearance::Focus);
+            painter->setPen(QPen(focus, FinderAppearance::highContrast() ? 2 : 1)); painter->setBrush(Qt::NoBrush);
             painter->drawRoundedRect(iconHighlight, 8, 8);
         }
         const QVariant decoration = index.data(Qt::DecorationRole);
@@ -913,10 +917,10 @@ public:
         const qreal contentLeft = rightLabel ? labelLeft : labelLeft + (labelWidth - widest - dotsWidth) / 2.0;
         QRectF label(contentLeft + dotsWidth - 3, labelTop - 1, widest + 6, lines.size() * lineHeight + 2);
         if (selected) {
-            painter->setPen(Qt::NoPen); painter->setBrush(QColor("#296ec6"));
+            painter->setPen(Qt::NoPen); painter->setBrush(FinderAppearance::color(FinderAppearance::IconLabelSelection));
             painter->drawRoundedRect(label, 3, 3);
         }
-        painter->setPen(selected ? QColor(Qt::white) :
+        painter->setPen(selected ? FinderAppearance::palette().color(QPalette::HighlightedText) :
                         option.palette.color(enabled ? QPalette::Active : QPalette::Disabled, QPalette::Text));
         for (int number = 0; number < lines.size(); ++number) {
             const QRectF textRect(contentLeft + dotsWidth, labelTop + number * lineHeight, widest, lineHeight);
@@ -1994,12 +1998,27 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         // thumbnail request for every row in the directory.
         for (auto *view : QList<QAbstractItemView *>{d->icons, d->list, d->columns, d->strip}) view->viewport()->update();
     });
-    setStyleSheet("#finderBrowser QAbstractItemView{background:#1e1e1e;color:#ededf0;border:0;}"
-                  "#finderBrowser QTreeView{alternate-background-color:#252525;}"
-                  "#finderBrowser QAbstractItemView::item:selected{background:#3b3b40;color:white;}"
-                  "#finderBrowser QColumnView::item{height:24px;}"
-                  "#finderGalleryPreview,#finderColumnPreview,#finderSidePreview{background:#1e1e1e;}"
-                  "#finderBrowser QHeaderView::section{background:#29292b;color:#d7d7da;border:0;padding:4px 8px;}");
+    const auto updateAppearance = [this] {
+        setStyleSheet(QStringLiteral(
+            "#finderBrowser QAbstractItemView{background:palette(base);color:palette(text);border:0;}"
+            "#finderBrowser QTreeView{alternate-background-color:palette(alternate-base);}"
+            "#finderBrowser QAbstractItemView::item:selected{background:%1;color:%2;}"
+            "#finderBrowser QColumnView::item{height:24px;}"
+            "#finderGalleryPreview,#finderColumnPreview,#finderSidePreview{background:palette(base);}"
+            "#finderBrowser QHeaderView::section{background:%3;color:%4;border:0;padding:4px 8px;}")
+            .arg(FinderAppearance::color(FinderAppearance::Selection).name(),
+                 FinderAppearance::color(FinderAppearance::SelectedText).name(),
+                 FinderAppearance::color(FinderAppearance::Header).name(),
+                 FinderAppearance::color(FinderAppearance::HeaderText).name()));
+        for (auto *view : QList<QAbstractItemView *>{d->icons, d->list, d->columns, d->strip}) view->viewport()->update();
+    };
+    if (auto *appearance = FinderAppearance::instance())
+        connect(appearance, &FinderAppearance::changed, this, updateAppearance);
+    updateAppearance();
+    d->icons->setAccessibleName(tr("Files in icon view"));
+    d->list->setAccessibleName(tr("Files in list view"));
+    d->columns->setAccessibleName(tr("Files in column view"));
+    d->strip->setAccessibleName(tr("Files in gallery view"));
 }
 
 Browser::~Browser() = default;

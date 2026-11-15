@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 #include "preview.h"
+#include "appearance.h"
 #include "tags.h"
 
 #include <KFileItem>
@@ -172,7 +173,7 @@ protected:
         painter.translate(-horizontalScrollBar()->value(), -verticalScrollBar()->value());
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
         for (int page : visiblePages()) {
-            painter.fillRect(pages[page].adjusted(2, 3, 2, 3), QColor(0, 0, 0, 45));
+            painter.fillRect(pages[page].adjusted(2, 3, 2, 3), FinderAppearance::color(FinderAppearance::MaterialShadow));
             painter.fillRect(pages[page], Qt::white);
             if (rasters.contains(page)) painter.drawImage(pages[page], rasters[page]);
             else {
@@ -1498,6 +1499,7 @@ void PreviewPane::createGallery()
         "#previewInformationHeading,#previewTagsHeading{font-weight:600;}"
         "#previewShowMore{background:transparent;border:0;color:palette(link);padding:0;font-size:11px;}"
         "#previewTagEditor{background:palette(base);color:palette(text);border:1px solid palette(mid);border-radius:4px;padding:5px;}"
+        "#previewTagEditor:focus{border-color:palette(highlight);}"
         "#previewTagColors QToolButton{border:0;border-radius:11px;background:transparent;padding:1px;}"
         "#previewTagColors QToolButton:checked{background:palette(mid);}"
         "#previewTagChips QToolButton{background:palette(button);color:palette(button-text);border:0;border-radius:7px;padding:3px 7px;text-align:left;}"
@@ -1505,6 +1507,7 @@ void PreviewPane::createGallery()
         "#previewQuickActions QPushButton,#previewQuickActions QToolButton{background:transparent;color:palette(button-text);border:0;border-radius:5px;padding:5px;font-size:11px;}"
         "#previewQuickActions QPushButton:hover,#previewQuickActions QToolButton:hover{background:palette(button);}"
         "#previewQuickActions QPushButton:disabled,#previewQuickActions QToolButton:disabled{color:palette(placeholder-text);}"
+        "#previewGalleryDetails QToolButton:focus,#previewQuickActions QPushButton:focus,#previewShowMore:focus{outline:2px solid palette(highlight);}"
     ));
     auto *details = new QVBoxLayout(m_gallerySidebar);
     details->setContentsMargins(0, 0, 0, 0);
@@ -1681,11 +1684,7 @@ void PreviewPane::updateGalleryMetadata()
     m_showMore->setText(m_moreDetails ? tr("Show Less") : tr("Show More"));
     m_showMore->setVisible(!m_moreInformation.isEmpty());
     const QColor foreground = palette().color(QPalette::WindowText);
-    const QColor background = m_gallerySidebar->palette().color(QPalette::Window);
-    const QColor secondary = QColor::fromRgbF(
-        foreground.redF() * .7 + background.redF() * .3,
-        foreground.greenF() * .7 + background.greenF() * .3,
-        foreground.blueF() * .7 + background.blueF() * .3);
+    const QColor secondary = palette().color(QPalette::PlaceholderText);
     QString html = QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"3\">");
     auto append = [&](const auto &rows) {
         for (const auto &row : rows) {

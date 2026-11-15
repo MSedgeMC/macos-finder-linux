@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 #include "places.h"
+#include "appearance.h"
 #include "tags.h"
 #include "settings.h"
 #include <Solid/StorageDrive>
@@ -134,8 +135,7 @@ public:
         if (index.data(HeadingRole).toBool()) {
             QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Bold);
             p->setFont(font);
-            QColor text = option.palette.color(QPalette::WindowText); text.setAlphaF(0.55);
-            p->setPen(text);
+            p->setPen(option.palette.color(QPalette::PlaceholderText));
             const QRect label = option.rect.adjusted(10, 0, -10, 0);
             p->drawText(label, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
                         QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, label.width()));
@@ -145,13 +145,11 @@ public:
         const QRect row = option.rect;
         QPainterPath contour; contour.addRoundedRect(QRectF(row.adjusted(4, 1, -4, -1)), 8, 8);
         if (option.state & QStyle::State_Selected) {
-            QColor fill = option.palette.color(QPalette::WindowText); fill.setAlphaF(0.11);
-            p->fillPath(contour, fill);
+            p->fillPath(contour, FinderAppearance::color(FinderAppearance::SidebarSelection));
         } else if (option.state & QStyle::State_MouseOver) {
-            QColor fill = option.palette.color(QPalette::WindowText); fill.setAlphaF(0.045);
-            p->fillPath(contour, fill);
+            p->fillPath(contour, FinderAppearance::color(FinderAppearance::SidebarHover));
         }
-        if (index.data(HiddenRole).toBool()) p->setOpacity(0.6);
+        if (index.data(HiddenRole).toBool() && !FinderAppearance::highContrast()) p->setOpacity(0.6);
         const QRect iconRect(reverse ? row.right() - 29 : row.left() + 10,
                              row.top() + (row.height() - IconSize) / 2, IconSize, IconSize);
         const auto color = index.data(TagColorRole).value<QColor>();
@@ -162,7 +160,9 @@ public:
             p->save(); p->translate(iconRect.topLeft());
             const QString glyph = index.data(GlyphRole).toString();
             const bool gray = glyph == "trash" || glyph == "device";
-            p->setPen(QPen(gray ? option.palette.color(QPalette::PlaceholderText) : QColor("#007aff"),
+            const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
+            p->setPen(QPen(contrastSelection ? option.palette.color(QPalette::HighlightedText)
+                          : gray ? option.palette.color(QPalette::PlaceholderText) : FinderAppearance::color(FinderAppearance::Accent),
                            1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p->setBrush(Qt::NoBrush); p->drawPath(placeGlyphs().value(glyph)); p->restore();
         }
@@ -172,14 +172,15 @@ public:
         QFont font(option.font);
         font.setWeight(option.state & QStyle::State_Selected ? QFont::Bold : QFont::Normal);
         p->setFont(font);
+        const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
         p->setPen(option.palette.color(option.state & QStyle::State_Enabled ? QPalette::Active : QPalette::Disabled,
-                                        QPalette::Text));
+                                        contrastSelection ? QPalette::HighlightedText : QPalette::Text));
         p->drawText(textRect, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
                     QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, textRect.width()));
         if (hasAction) {
             const QPointF center = actionRect(row, option.direction).center();
             p->save(); p->setOpacity(1); p->translate(center);
-            p->setPen(QPen(option.palette.color(QPalette::Text), 1.25, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setPen(QPen(option.palette.color(contrastSelection ? QPalette::HighlightedText : QPalette::Text), 1.25, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p->setBrush(Qt::NoBrush);
             if (index.data(BusyRole).toBool()) {
                 p->rotate(busyAngle); p->drawArc(QRectF(-6, -6, 12, 12), 0, 260 * 16);
@@ -191,8 +192,9 @@ public:
             p->restore();
         }
         if (option.state & QStyle::State_HasFocus) {
-            QColor focus = option.palette.color(QPalette::Highlight); focus.setAlphaF(0.8);
-            p->setPen(QPen(focus, 1)); p->setBrush(Qt::NoBrush); p->drawPath(contour);
+            QColor focus = contrastSelection ? option.palette.color(QPalette::HighlightedText)
+                : FinderAppearance::color(FinderAppearance::Focus);
+            p->setPen(QPen(focus, FinderAppearance::highContrast() ? 2 : 1)); p->setBrush(Qt::NoBrush); p->drawPath(contour);
         }
         p->restore();
     }
@@ -217,7 +219,7 @@ public:
         setStyleSheet(QStringLiteral(
             "QTreeView { background: transparent; border: 0; }"
             "QScrollBar:vertical { background: transparent; width: 10px; margin: 1px; }"
-            "QScrollBar::handle:vertical { background: rgba(220,220,225,80); border-radius: 4px; min-height: 28px; }"
+            "QScrollBar::handle:vertical { background: palette(midlight); border-radius: 4px; min-height: 28px; }"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height: 0; }"
             "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical { background: transparent; }"));
         setDragEnabled(true); setAcceptDrops(true); setDropIndicatorShown(false);

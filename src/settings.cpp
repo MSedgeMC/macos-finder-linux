@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "settings.h"
+#include "appearance.h"
+#include <QApplication>
 #include <KProtocolInfo>
 #include <QCloseEvent>
 #include <QDragEnterEvent>
@@ -148,6 +150,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         form->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key](bool checked) {
             QSettings().setValue(key, checked);
+            if (key.startsWith(QStringLiteral("Appearance/"))) FinderAppearance::apply(qApp);
             emit preferencesChanged();
         });
         return box;
@@ -195,6 +198,23 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         chooser->open();
     });
     option(general, tr("Open folders in tabs instead of new windows"), "General/openFoldersInTabs", true, "finderSettingsOpenTabs");
+    auto *appearanceMode = new QComboBox(this);
+    appearanceMode->setObjectName("finderSettingsAppearanceMode");
+    appearanceMode->setAccessibleName(tr("Finder appearance"));
+    appearanceMode->addItem(tr("Dark"), "dark");
+    appearanceMode->addItem(tr("Light"), "light");
+    appearanceMode->addItem(tr("Follow System"), "system");
+    const int modeIndex = appearanceMode->findData(QSettings().value("Appearance/mode", "dark"));
+    appearanceMode->setCurrentIndex(modeIndex < 0 ? 0 : modeIndex);
+    general->addRow(tr("Appearance:"), appearanceMode);
+    connect(appearanceMode, &QComboBox::currentIndexChanged, this, [this, appearanceMode] {
+        QSettings().setValue("Appearance/mode", appearanceMode->currentData());
+        FinderAppearance::apply(qApp);
+        emit preferencesChanged();
+    });
+    option(general, tr("Increase contrast"), "Appearance/increaseContrast", false, "finderSettingsIncreaseContrast");
+    auto *reduceTransparency = option(general, tr("Reduce transparency"), "Appearance/reduceTransparency", false, "finderSettingsReduceTransparency");
+    reduceTransparency->setToolTip(tr("Use an opaque material for Finder window surfaces."));
     auto *desktop = new QLabel(tr("Plasma manages desktop icons and folder sorting. Use Configure Desktop and Wallpaper on the desktop for Folder View options, or System Settings for desktop appearance."), this);
     desktop->setWordWrap(true);
     general->addRow(desktop);
@@ -571,6 +591,11 @@ void FinderSettings::reloadPreferences() {
     if (auto *scope = findChild<QComboBox *>("finderSettingsSearchScope")) {
         const QSignalBlocker blocker(scope);
         scope->setCurrentIndex(scope->findData(FinderPreferences::defaultSearchScope()));
+    }
+    if (auto *mode = findChild<QComboBox *>("finderSettingsAppearanceMode")) {
+        const QSignalBlocker blocker(mode);
+        const int index = mode->findData(QSettings().value("Appearance/mode", "dark"));
+        mode->setCurrentIndex(index < 0 ? 0 : index);
     }
     reloadTags();
 }
