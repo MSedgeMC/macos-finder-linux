@@ -2893,6 +2893,10 @@ public:
     return w;
   }
   FinderWindow *active() {
+    // A sheet or Quick Look owns focus while its Finder window is inactive.
+    // Resolve that parent before falling back to another open Finder window.
+    for (auto *widget = QApplication::activeWindow(); widget; widget = widget->parentWidget())
+      if (auto *finder = qobject_cast<FinderWindow *>(widget)) return finder;
     for (auto &w : windows)
       if (w && w->isActiveWindow())
         return w;
