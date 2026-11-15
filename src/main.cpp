@@ -1979,14 +1979,29 @@ private:
         "Folders/" + QString::fromLatin1(browser()->url().toEncoded().toBase64(
                          QByteArray::Base64UrlEncoding)));
     auto savedState = settings.value("viewState").toByteArray();
+    int inheritedMode = -1;
+    if (!settings.value("alwaysOpen", false).toBool()) {
+      auto ancestor = browser()->url().adjusted(QUrl::StripTrailingSlash);
+      while (!ancestor.path().isEmpty() && ancestor.path() != "/") {
+        auto path = ancestor.path(); path = path.left(path.lastIndexOf('/')); ancestor.setPath(path.isEmpty() ? "/" : path);
+        QSettings parent; parent.beginGroup("Folders/" + QString::fromLatin1(ancestor.toEncoded().toBase64(QByteArray::Base64UrlEncoding)));
+        if (parent.value("alwaysOpen", false).toBool() && parent.value("browseIn", false).toBool()) {
+          inheritedMode = qBound(0, parent.value("preferredMode", 0).toInt(), 3); break;
+        }
+      }
+    }
     if (savedState.isEmpty()) savedState = QSettings().value("View/defaultState").toByteArray();
     if (!savedState.isEmpty()) {
       browser()->restoreViewState(savedState);
+      if (inheritedMode >= 0) browser()->setMode(Browser::Mode(inheritedMode));
+      else if (settings.value("alwaysOpen", false).toBool()) browser()->setMode(Browser::Mode(qBound(0, settings.value("preferredMode", int(browser()->mode())).toInt(), 3)));
       browser()->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
       restoring = false; return;
     }
     int mode = settings.value("mode", QSettings().value("View/defaultMode", 0))
                    .toInt();
+    if (inheritedMode >= 0) mode = inheritedMode;
+    else if (settings.value("alwaysOpen", false).toBool()) mode = settings.value("preferredMode", mode).toInt();
     browser()->setMode(Browser::Mode(qBound(0, mode, 3)));
     browser()->setIconSize(
         settings
@@ -2135,6 +2150,18 @@ private:
     mode->addItems({"Icons", "List", "Columns", "Gallery"});
     mode->setCurrentIndex(int(browser()->mode()));
     form->addRow("View", mode);
+    const auto folderKey = "Folders/" + QString::fromLatin1(browser()->url().toEncoded().toBase64(QByteArray::Base64UrlEncoding));
+    auto *alwaysOpen = new QCheckBox("Always open in this view", dialog); alwaysOpen->setObjectName("viewOptionAlwaysOpen");
+    alwaysOpen->setChecked(QSettings().value(folderKey + "/alwaysOpen", false).toBool()); form->addRow(alwaysOpen);
+    auto *browseIn = new QCheckBox("Browse subfolders in this view", dialog); browseIn->setObjectName("viewOptionBrowseIn");
+    browseIn->setChecked(QSettings().value(folderKey + "/browseIn", false).toBool()); browseIn->setEnabled(alwaysOpen->isChecked()); form->addRow(browseIn);
+    auto persistInheritance = [this, alwaysOpen, browseIn, folderKey] {
+      QSettings().setValue(folderKey + "/alwaysOpen", alwaysOpen->isChecked()); QSettings().setValue(folderKey + "/browseIn", browseIn->isChecked());
+      if (browser()) QSettings().setValue(folderKey + "/preferredMode", int(browser()->mode()));
+      browseIn->setEnabled(alwaysOpen->isChecked());
+    };
+    connect(alwaysOpen, &QCheckBox::toggled, dialog, persistInheritance);
+    connect(browseIn, &QCheckBox::toggled, dialog, persistInheritance);
     auto *size = new QSpinBox;
     size->setObjectName("viewOptionIconSize");
     size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 32 : 256);
@@ -2217,9 +2244,9 @@ private:
       auto *tree = target->findChild<QTreeView *>("finderListView");
       for (auto [column, box] : columns) { const QSignalBlocker block(box); box->setChecked(!tree->isColumnHidden(column)); }
     };
-    connect(mode, &QComboBox::currentIndexChanged, dialog, [this, dialog, target, targetUrl, mode, reload] {
+    connect(mode, &QComboBox::currentIndexChanged, dialog, [this, dialog, target, targetUrl, mode, reload, persistInheritance] {
       if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return; }
-      setMode(mode->currentIndex()); reload();
+      setMode(mode->currentIndex()); reload(); persistInheritance();
     });
     connect(tabs, &QTabWidget::currentChanged, dialog, [this, dialog, target] { if (target != browser()) dialog->close(); });
     connect(target, &Browser::urlChanged, dialog, [dialog, targetUrl](const QUrl &url) { if (url != targetUrl) dialog->close(); });
@@ -2672,7 +2699,9 @@ private:
     const QList<QPair<QString, QRectF>> layouts{{"Left Half", {0,0,.5,1}}, {"Right Half", {.5,0,.5,1}},
       {"Top Half", {0,0,1,.5}}, {"Bottom Half", {0,.5,1,.5}}, {"Top Left", {0,0,.5,.5}},
       {"Top Right", {.5,0,.5,.5}}, {"Bottom Left", {0,.5,.5,.5}}, {"Bottom Right", {.5,.5,.5,.5}}};
-    for (const auto &[name, rect] : layouts) moveResize->addAction(name, this, [this, rect] { tileWindow(rect.x(), rect.y(), rect.width(), rect.height()); });
+    for (int i = 0; i < layouts.size(); ++i) {
+      const auto [name, rect] = layouts[i]; addAction(moveResize, "tile" + QString::number(i), name, {}, [this, rect] { tileWindow(rect.x(), rect.y(), rect.width(), rect.height()); });
+    }
     auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
       if (isFullScreen()) { if (wasMaximizedBeforeFullscreen) showMaximized(); else showNormal(); }
       else { wasMaximizedBeforeFullscreen = isMaximized(); showFullScreen(); }
