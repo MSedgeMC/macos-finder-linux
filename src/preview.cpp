@@ -640,7 +640,6 @@ void PreviewPane::refreshTags()
     const quint64 generation = ++m_tagGeneration;
     m_tags.clear();
     m_tagReadError.clear();
-    m_tagError.clear();
     m_readingTags = !url.isEmpty() && !m_pendingTags.contains(url);
     updateTagWidgets();
     if (!m_readingTags) return;
@@ -723,6 +722,7 @@ void PreviewPane::tagChangeFinished(const QUrl &url, const QString &error)
     m_pendingTags.remove(url);
     if (url != currentUrl()) return;
     if (error.isEmpty()) {
+        m_tagError.clear();
         if (m_tagEditor) m_tagEditor->clear();
         refreshTags();
     } else {
@@ -797,6 +797,7 @@ void PreviewPane::showCurrent()
         cancelNativePreview();
         m_fingerprint.clear();
         m_mime.clear();
+        m_tagError.clear();
         m_kindSizeText.clear();
         m_information.clear();
         m_moreInformation.clear();
@@ -819,6 +820,7 @@ void PreviewPane::showCurrent()
         m_pdf->close();
         m_fingerprint.clear();
         m_mime.clear();
+        m_tagError.clear();
         m_image = QImage();
         m_kindSizeText = tr("Remote item");
         m_information.clear();
@@ -841,6 +843,7 @@ void PreviewPane::showCurrent()
     cancelNativePreview();
     m_fingerprint = fingerprint;
     m_mime.clear();
+    m_tagError.clear();
     m_information.clear();
     m_moreInformation.clear();
     m_rotatableImage = false;
