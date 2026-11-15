@@ -849,6 +849,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
         bool ok = false; const int page = m_pdfPageEntry->text().toInt(&ok);
         if (ok && page > 0 && page <= m_pageCount) setPdfPage(page - 1);
         else updatePdfPageControls();
+        m_pdfPageEntry->setText(QString::number(m_page + 1));
     });
     connect(m_pdfSearch, &QLineEdit::returnPressed, this, [this] { searchPdf(m_pdfSearch->text()); });
     connect(m_pdfSearch, &QLineEdit::textChanged, this, [this](const QString &text) { if (text.isEmpty()) searchPdf({}); });
@@ -1941,6 +1942,7 @@ void PreviewPane::showCurrent()
     const QString fingerprint = url.toString() + QLatin1Char('|') + QString::number(info.size())
         + QLatin1Char('|') + QString::number(info.lastModified().toMSecsSinceEpoch());
     if (fingerprint == m_fingerprint) return;
+    m_refreshTimer->stop();
     cancelTrim();
     resetPdf(); m_textReady = false;
     cancelNativePreview();
@@ -2302,7 +2304,9 @@ void PreviewPane::requestPdfSearchBatch()
         if (document.load(path) != QPdfDocument::Error::None) { result.error = tr("This PDF could not be searched."); return result; }
         QElapsedTimer elapsed; elapsed.start();
         for (int page = start; page < end && !cancelled->load(); ++page) {
-            const QString text = document.getAllText(page).text();
+            // Bound the native selection request itself instead of extracting
+            // an arbitrarily long full-page QString and truncating afterwards.
+            const QString text = document.getSelectionAtIndex(page, 0, textLimit + 1).text();
             result.characters += text.size(); result.next = page + 1;
             const QString bounded = text.left(textLimit);
             result.limited = result.limited || text.size() > textLimit;
@@ -2556,6 +2560,29 @@ void PreviewPane::probeTrimSource()
             if (!source.isFile() || source.size() != state->sourceSize || source.lastModified() != state->sourceModified) {
                 finishTrim(tr("The source changed during export. The trimmed copy was not published.")); return;
             }
+            // ffmpeg's size cap can end with exit code zero. Verify duration in
+            // a separate asynchronous probe before publishing a partial file.
+            auto *verify = new QProcess; state->process = verify; state->output.clear(); state->watchdog->start(15000);
+            connect(verify, &QProcess::readyReadStandardOutput, this, [state] {
+                if (state->process) { state->output += state->process->readAllStandardOutput(); state->output = state->output.right(65536); }
+            });
+            connect(verify, &QProcess::errorOccurred, this, [this, state](QProcess::ProcessError error) {
+                if (m_trimState == state && error == QProcess::FailedToStart) finishTrim(tr("The exported media could not be verified."));
+            });
+            connect(verify, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), verify, [state, verify] { verify->deleteLater(); });
+            connect(verify, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this, [this, state, verify](int code, QProcess::ExitStatus status) {
+                if (m_trimState != state) return;
+                state->output += verify->readAllStandardOutput(); state->process = nullptr; state->watchdog->stop();
+                bool ok = false; const double seconds = state->output.trimmed().toDouble(&ok);
+                const double expected = (state->end - state->start) / 1000.;
+                const auto source = QFileInfo(state->source.toLocalFile());
+                if (code || status != QProcess::NormalExit || !ok || !std::isfinite(seconds)
+                    || std::abs(seconds - expected) > std::max(.25, expected * .002)) {
+                    finishTrim(tr("The backend produced an incomplete trim or reached its output limit. No copy was saved.")); return;
+                }
+                if (!source.isFile() || source.size() != state->sourceSize || source.lastModified() != state->sourceModified) {
+                    finishTrim(tr("The source changed during export. No copy was saved.")); return;
+                }
             if (state->progress) { state->progress->setLabelText(tr("Saving copy…")); state->progress->setValue(95); }
             auto *job = KIO::copyAs(QUrl::fromLocalFile(state->staged), state->destination, KIO::HideProgressInfo);
             state->job = job;
@@ -2572,6 +2599,9 @@ void PreviewPane::probeTrimSource()
                 else if (state->actual.isEmpty()) error = tr("No trimmed copy was saved.");
                 finishTrim(error);
             });
+            });
+            verify->start(QStandardPaths::findExecutable(QStringLiteral("ffprobe")), {QStringLiteral("-v"), QStringLiteral("error"),
+                QStringLiteral("-show_entries"), QStringLiteral("format=duration"), QStringLiteral("-of"), QStringLiteral("default=nw=1:nk=1"), state->staged});
         });
         encoder->start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), args);
     });
