@@ -712,6 +712,13 @@ void FinderPlacesView::resizeEvent(QResizeEvent *event) {
     KFilePlacesView::resizeEvent(event);
     d->tree->setGeometry(viewport()->rect());
 }
+void FinderPlacesView::scrollContentsBy(int dx, int dy) {
+    // Native context menus/drop routing scroll their source row into view.
+    // QWidget::scroll also moves child widgets: restore the presentation to
+    // the viewport rather than letting a backing scroll offset move it.
+    QListView::scrollContentsBy(dx, dy);
+    if (d) d->tree->setGeometry(viewport()->rect());
+}
 void FinderPlacesView::paintEvent(QPaintEvent *) {
     // The native delegate's capacity/group drawing is deliberately not painted
     // behind this transparent presentation; the parent supplies the material.

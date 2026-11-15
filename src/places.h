@@ -32,6 +32,7 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void scrollContentsBy(int dx, int dy) override;
     void paintEvent(QPaintEvent *event) override;
     void showEvent(QShowEvent *event) override;
 
