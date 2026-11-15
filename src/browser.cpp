@@ -695,7 +695,9 @@ public:
         thumbnailGenerator = new KFilePreviewGenerator(currentMode == Icons ? static_cast<QAbstractItemView *>(icons) : strip);
         thumbnailGenerator->setEnabledPlugins(KIO::PreviewJob::defaultPlugins());
         thumbnailGenerator->setPreviewShown(previews);
-        thumbnailGenerator->updateIcons();
+        // setPreviewShown(false) already refreshes the model; avoid a second
+        // all-row traversal and cancellation of the jobs it just started.
+        if (previews) thumbnailGenerator->updateIcons();
     }
 
     KFileItem item(const QModelIndex &index) const {
@@ -708,13 +710,15 @@ public:
 
     QModelIndexList selectedNames() const {
         QModelIndexList names;
-        // QListView and QColumnView select the name index; QTreeView selects
-        // every metadata column. selectedRows() would miss the former.
-        for (const auto &index : activeSelection()->selectedIndexes()) {
+        // selectedIndexes() expands every metadata column in a list selection.
+        // Walk selection ranges and create only name indexes, including the
+        // name-only ranges emitted by QListView/QColumnView.
+        for (const auto &range : activeSelection()->selection()) {
+            if (range.left() > KDirModel::Name || range.right() < KDirModel::Name) continue;
             // QColumnView retains ancestor highlights as the active column
             // changes. File actions apply only to this column's selection.
-            if (index.column() == KDirModel::Name &&
-                (currentMode != Columns || index.parent() == columnSelection->currentIndex().parent())) names.append(index);
+            if (currentMode == Columns && range.parent() != columnSelection->currentIndex().parent()) continue;
+            for (int row = range.top(); row <= range.bottom(); ++row) names.append(proxy->index(row, KDirModel::Name, range.parent()));
         }
         return names;
     }
@@ -900,7 +904,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->icons->setWordWrap(true); d->icons->setUniformItemSizes(true); d->icons->setCategoryDrawer(new FinderCategoryDrawer(d->icons));
     d->icons->setCategorySpacing(8); d->icons->setCollapsibleBlocks(false);
     d->list = new FinderListView(d->stack); d->list->setObjectName("finderListView");
-    d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(false);
+    d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(true);
     d->list->setIconSize({18, 18}); d->list->setSortingEnabled(true);
     d->columns = new ColumnsView(d->stack); d->columns->setObjectName("finderColumnView");
     d->columns->setColumnWidths({220, 220, 220, 220, 220}); d->columns->setResizeGripsVisible(true);
@@ -1045,9 +1049,11 @@ void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(
 void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); }
 void Browser::setIconSize(int size) {
     size = qBound(32, size, 256);
+    if (iconSize() == size) return;
     d->icons->setIconSize(QSize(size, size));
     d->layoutIcons();
-    if (d->thumbnailGenerator && mode() == Icons) d->thumbnailGenerator->updateIcons();
+    // KFilePreviewGenerator listens to IconSizeChanged itself. Calling
+    // updateIcons again cancels its new jobs and traverses all loaded rows.
 }
 void Browser::setGroup(Group value) {
     if (value < GroupNone || value > GroupTags || group() == value) return;
@@ -1055,29 +1061,36 @@ void Browser::setGroup(Group value) {
     const bool previousChanging = d->changing;
     d->changing = true;
     d->proxy->setGroup(value);
-    d->list->doItemsLayout();
-    d->icons->doItemsLayout();
+    d->list->setUniformRowHeights(value == GroupNone);
+    if (mode() == List) d->list->doItemsLayout();
+    else if (mode() == Icons) d->icons->doItemsLayout();
     selectUrls(urls);
     d->changing = previousChanging;
     d->selected();
 }
 void Browser::setGridSpacing(int spacing) {
-    d->iconOptions.spacing = qBound(0, spacing, 128);
+    spacing = qBound(0, spacing, 128);
+    if (gridSpacing() == spacing) return;
+    d->iconOptions.spacing = spacing;
     d->layoutIcons();
 }
 void Browser::setTextSize(int pixels) {
-    d->iconOptions.textSize = qBound(9, pixels, 20);
+    pixels = qBound(9, pixels, 20);
+    if (textSize() == pixels) return;
+    d->iconOptions.textSize = pixels;
     QFont font = d->icons->font(); font.setPixelSize(d->iconOptions.textSize);
     d->icons->setFont(font); d->strip->setFont(font);
     d->list->setFont(font); d->columns->setFont(font);
-    d->layoutIcons(); d->list->doItemsLayout();
+    d->layoutIcons();
+    if (mode() == List) d->list->doItemsLayout();
 }
 void Browser::setLabelPosition(LabelPosition position) {
-    if (position < LabelBelow || position > LabelRight) return;
+    if (position < LabelBelow || position > LabelRight || labelPosition() == position) return;
     d->iconOptions.label = position;
     d->layoutIcons();
 }
 void Browser::setIconPreviewsShown(bool shown) {
+    if (d->previews == shown) return;
     d->previews = shown;
     if (d->thumbnailGenerator) d->thumbnailGenerator->setPreviewShown(shown);
 }
