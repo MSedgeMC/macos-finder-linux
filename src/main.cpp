@@ -2249,7 +2249,7 @@ private:
       searchModifiedAfter = dateEnabled->isChecked() ? date->date().startOfDay().toSecsSinceEpoch() : -1;
       searchCriteria = criteria; searchParseKeywords = keywords->isChecked(); searchProvider = LocalFileSearch::Options::Provider(provider->currentIndex());
       beginSearch(); dialog->accept();
-    }); dialog->resize(720, 580); dialog->open();
+    }); dialog->resize(720, 460); dialog->open();
   }
   QJsonObject searchDefinition() const {
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
