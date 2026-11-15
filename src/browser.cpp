@@ -47,7 +47,6 @@
 #include <KFileItemDelegate>
 #include <KFileItemActions>
 #include <KFileItemListProperties>
-#include <KFilePreviewGenerator>
 #include <KPropertiesDialog>
 #include <KProtocolManager>
 #include <KJobWidgets>
@@ -651,7 +650,10 @@ public:
     QWidget *galleryHost;
     QWidget *columnHost;
     QWidget *sidePreviewHost;
-    KFilePreviewGenerator *thumbnailGenerator = nullptr;
+    QTimer thumbnailTimer;
+    QPointer<KIO::PreviewJob> thumbnailJob;
+    QSet<QUrl> thumbnailRequests;
+    quint64 thumbnailRevision = 0;
     QUrl rootUrl;
     QUrl currentUrl;
     Mode currentMode = Icons;
@@ -661,7 +663,11 @@ public:
     bool sidePreview = false;
     IconOptions iconOptions;
 
-    explicit Private(Browser *owner) : q(owner) {}
+    explicit Private(Browser *owner) : q(owner) {
+        thumbnailTimer.setSingleShot(true);
+        thumbnailTimer.setInterval(120);
+        QObject::connect(&thumbnailTimer, &QTimer::timeout, q, [this] { updateVisibleThumbnails(); });
+    }
 
     void layoutIcons() {
         QFont font = icons->font(); font.setPixelSize(iconOptions.textSize);
@@ -686,19 +692,60 @@ public:
         sidePreviewHost->setVisible(sidePreview && currentMode != Gallery && currentMode != Columns);
     }
 
-    void updateThumbnailGenerator() {
-        // A disabled generator still responds to shared KDirModel changes and
-        // resolves generic icons. Keep exactly one generator for the active
-        // thumbnail view so it cannot overwrite another view's decoded pixels.
-        delete thumbnailGenerator;
-        thumbnailGenerator = nullptr;
-        if (currentMode != Icons && currentMode != Gallery) return;
-        thumbnailGenerator = new KFilePreviewGenerator(currentMode == Icons ? static_cast<QAbstractItemView *>(icons) : strip);
-        thumbnailGenerator->setEnabledPlugins(KIO::PreviewJob::defaultPlugins());
-        thumbnailGenerator->setPreviewShown(previews);
-        // setPreviewShown(false) already refreshes the model; avoid a second
-        // all-row traversal and cancellation of the jobs it just started.
-        if (previews) thumbnailGenerator->updateIcons();
+    void resetThumbnailRequests() {
+        ++thumbnailRevision;
+        thumbnailRequests.clear();
+        scheduleThumbnails();
+    }
+
+    void scheduleThumbnails() {
+        if (previews && (currentMode == Icons || currentMode == Gallery) && !thumbnailTimer.isActive())
+            thumbnailTimer.start();
+    }
+
+    void updateVisibleThumbnails() {
+        if (thumbnailJob || !previews || (currentMode != Icons && currentMode != Gallery)) return;
+        auto *view = currentMode == Icons ? static_cast<QListView *>(icons) : strip;
+        const QRect viewport = view->viewport()->rect();
+        if (!view->isVisible() || viewport.isEmpty()) return;
+        const QSize grid = view->gridSize();
+        const int dx = qMax(16, grid.width() / 2);
+        const int dy = qMax(16, grid.height() / 2);
+        KFileItemList visible;
+        QSet<QUrl> sampled;
+        // Sample viewport cells rather than walking every model row. Half-cell
+        // steps also cover partially visible tiles and categorized headings.
+        for (int y = 1; y < viewport.height() && visible.size() < 16; y += dy) {
+            for (int x = 1; x < viewport.width() && visible.size() < 16; x += dx) {
+                const auto index = view->indexAt(QPoint(x, y));
+                if (!index.isValid()) continue;
+                const auto entry = item(index);
+                if (entry.isNull() || thumbnailRequests.contains(entry.url()) || sampled.contains(entry.url())) continue;
+                sampled.insert(entry.url()); visible.append(entry);
+            }
+        }
+        if (visible.isEmpty()) return; // A stationary view has no timer loop.
+        for (const auto &entry : visible) thumbnailRequests.insert(entry.url());
+        const auto revision = thumbnailRevision;
+        const auto extent = view->iconSize();
+        const auto plugins = KIO::PreviewJob::defaultPlugins();
+        auto *operation = KIO::filePreview(visible, extent, &plugins);
+        operation->setDevicePixelRatio(view->devicePixelRatioF());
+        thumbnailJob = operation;
+        QObject::connect(operation, &KIO::PreviewJob::gotPreview, q,
+            [this, revision](const KFileItem &entry, const QPixmap &pixmap) {
+                if (revision != thumbnailRevision || !previews) return;
+                const auto index = model->indexForUrl(entry.url());
+                if (index.isValid()) model->setData(index, QIcon(pixmap), Qt::DecorationRole);
+            });
+        QObject::connect(operation, &KJob::result, q, [this] {
+            thumbnailJob = nullptr;
+            scheduleThumbnails();
+        });
+        // Native jobs own cache, worker limits and failure handling. Let this
+        // small batch finish on view/navigation changes and ignore old results.
+        // In KF 6.24 killing a PreviewJob can leave FilePreviewJob's timeout
+        // using an already deleted transfer job; no private ABI workaround.
     }
 
     KFileItem item(const QModelIndex &index) const {
@@ -884,6 +931,10 @@ public:
         view->setItemDelegate(delegate);
         view->installEventFilter(q);
         view->viewport()->installEventFilter(q);
+        if (view == icons || view == strip) {
+            QObject::connect(view->verticalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
+            QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
+        }
         // QColumnView already forwards its child columns' activation signals.
         if (!childColumn) QObject::connect(view, &QAbstractItemView::doubleClicked, q, [this](const auto &index) { activate(index); });
         QObject::connect(view, &QWidget::customContextMenuRequested, q, [this, view](const auto &point) { context(view, point); });
@@ -981,7 +1032,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->gallery->setFocusProxy(d->strip);
     // A private KDE profile need not have PreviewSettings populated. Native
     // default thumbnailers include installed image/PDF workers and their cache.
-    d->updateThumbnailGenerator();
+    d->resetThumbnailRequests();
     connect(d->selection, &QItemSelectionModel::selectionChanged, this, [this] { if (d->currentMode != Columns) d->selected(); });
     connect(d->selection, &QItemSelectionModel::currentChanged, this, [this] { if (d->currentMode != Columns) d->selected(); });
     connect(d->columnSelection, &QItemSelectionModel::selectionChanged, this, [this] { if (d->currentMode == Columns) d->selected(); });
@@ -992,6 +1043,13 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         }
     });
     connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) { emit errorOccurred(job->errorString()); });
+    connect(d->model->dirLister(), &KDirLister::newItems, this, [this](const KFileItemList &items) {
+        for (const auto &item : items) d->thumbnailRequests.remove(item.url());
+        d->scheduleThumbnails();
+    });
+    connect(d->model->dirLister(), &KDirLister::refreshItems, this, [this](const QList<QPair<KFileItem, KFileItem>> &items) {
+        if (!items.isEmpty()) d->resetThumbnailRequests();
+    });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
     connect(d->model, &QAbstractItemModel::rowsRemoved, this, [this] { d->count(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->count(); });
@@ -1064,6 +1122,7 @@ void Browser::navigate(const QUrl &requested) {
     d->changing = true;
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear();
     d->rootUrl = target; d->currentUrl = target;
+    d->resetThumbnailRequests();
     d->proxy->refreshTags();
     d->model->openUrl(target);
     // KDirLister can clear rows without a modelReset. Rebuild the column path
@@ -1078,22 +1137,21 @@ void Browser::setMode(Mode mode) {
     const bool collapseColumns = d->currentMode == Columns && current != d->rootUrl;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
     setFocusProxy(activeView());
-    d->updateThumbnailGenerator();
+    d->resetThumbnailRequests();
     d->updatePreviewVisibility(); d->layoutIcons();
     if (collapseColumns) navigate(current);
     selectUrls(urls);
     activeView()->setFocus(); d->selected();
 }
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }
-void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); }
-void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); }
+void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
+void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); d->scheduleThumbnails(); }
 void Browser::setIconSize(int size) {
     size = qBound(32, size, 256);
     if (iconSize() == size) return;
     d->icons->setIconSize(QSize(size, size));
     d->layoutIcons();
-    // KFilePreviewGenerator listens to IconSizeChanged itself. Calling
-    // updateIcons again cancels its new jobs and traverses all loaded rows.
+    if (mode() == Icons) d->resetThumbnailRequests();
 }
 void Browser::setGroup(Group value) {
     if (value < GroupNone || value > GroupTags || group() == value) return;
@@ -1107,6 +1165,7 @@ void Browser::setGroup(Group value) {
     selectUrls(urls);
     d->changing = previousChanging;
     d->selected();
+    d->scheduleThumbnails();
 }
 void Browser::setGridSpacing(int spacing) {
     spacing = qBound(0, spacing, 128);
@@ -1132,7 +1191,8 @@ void Browser::setLabelPosition(LabelPosition position) {
 void Browser::setIconPreviewsShown(bool shown) {
     if (d->previews == shown) return;
     d->previews = shown;
-    if (d->thumbnailGenerator) d->thumbnailGenerator->setPreviewShown(shown);
+    d->resetThumbnailRequests();
+    if (!shown) d->model->clearAllPreviews();
 }
 void Browser::setPreviewShown(bool shown) {
     d->sidePreview = shown;
@@ -1290,6 +1350,8 @@ void Browser::drop(QDropEvent *event, QUrl destination) {
     d->job(job, "Transferring…"); event->acceptProposedAction();
 }
 bool Browser::eventFilter(QObject *object, QEvent *event) {
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        (object == d->icons->viewport() || object == d->strip->viewport())) d->scheduleThumbnails();
     if (event->type() == QEvent::Resize && object == d->strip->viewport()) {
         // Defer until Qt has established the viewport geometry; no animation
         // loop or background polling is needed for a stationary filmstrip.
