@@ -5,6 +5,13 @@
 
 #include <KFileItem>
 #include <KIO/PreviewJob>
+#include <KIO/ApplicationLauncherJob>
+#include <KIO/JobUiDelegateFactory>
+#include <KIO/OpenUrlJob>
+#include <KApplicationTrader>
+#include <KEMailClientLauncherJob>
+#include <KService>
+#include <KJobUiDelegate>
 #include <QAction>
 #include <QApplication>
 #include <QAudioOutput>
@@ -25,6 +32,7 @@
 #include <QListWidget>
 #include <QLocale>
 #include <QMediaPlayer>
+#include <QMetaMethod>
 #include <QMouseEvent>
 #include <QMenu>
 #include <QMimeDatabase>
@@ -38,14 +46,19 @@
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QTextEdit>
+#include <QTextDocument>
 #include <QTimer>
-#include <QThread>
 #include <QThreadPool>
 #include <QRunnable>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVideoWidget>
 #include <QWheelEvent>
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+#include <QPrintDialog>
+#include <QPrinter>
+#include <QProgressDialog>
+#endif
 #include <QGuiApplication>
 #include <QtEndian>
 #include <algorithm>
@@ -62,6 +75,19 @@ struct PreviewRaster {
     int pageCount = 0;
     bool rotatable = false;
     QString error;
+};
+
+struct PreviewPrintState {
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    QUrl url;
+    QString mime;
+    int page = 0;
+    int lastPage = -1;
+    bool started = false;
+    std::shared_ptr<QPrinter> printer;
+    std::unique_ptr<QPainter> painter;
+    QPointer<QProgressDialog> progress;
+#endif
 };
 
 // Each pane/domain has at most one submitted job and one replaceable pending
@@ -375,7 +401,7 @@ QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 
 PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>()),
-    m_contactWork(std::make_shared<PreviewWorkQueue>())
+    m_contactWork(std::make_shared<PreviewWorkQueue>()), m_printWork(std::make_shared<PreviewWorkQueue>())
 {
     setObjectName(QStringLiteral("finderPreviewPane"));
     setAutoFillBackground(true);
@@ -484,6 +510,45 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     viewControls->addWidget(m_contactToggle);
     viewControls->addWidget(m_slideshow);
     viewControls->addWidget(m_fullScreen);
+    m_nativeActions = new QToolButton(this);
+    m_nativeActions->setObjectName(QStringLiteral("previewNativeActions"));
+    m_nativeActions->setText(tr("Actions"));
+    m_nativeActions->setAccessibleName(tr("Open, Print and Share actions"));
+    m_nativeActions->setPopupMode(QToolButton::InstantPopup);
+    auto *nativeMenu = new QMenu(m_nativeActions);
+    m_openWithAction = nativeMenu->addAction(tr("Open With…"));
+    m_openWithAction->setObjectName(QStringLiteral("previewOpenWith"));
+    connect(m_openWithAction, &QAction::triggered, this, &PreviewPane::openWithCurrent);
+    m_printAction = nativeMenu->addAction(tr("Print…"));
+    m_printAction->setObjectName(QStringLiteral("previewPrint"));
+    connect(m_printAction, &QAction::triggered, this, &PreviewPane::printCurrent);
+    auto *shareMenu = nativeMenu->addMenu(tr("Share"));
+    m_copyUrlsAction = shareMenu->addAction(tr("Copy File Locations"));
+    connect(m_copyUrlsAction, &QAction::triggered, this, [this] {
+        QStringList locations;
+        for (const auto &url : actionUrls()) locations.append(url.isLocalFile() ? url.toLocalFile()
+            : url.toDisplayString(QUrl::RemovePassword));
+        QGuiApplication::clipboard()->setText(locations.join(QLatin1Char('\n')));
+    });
+    m_emailAction = shareMenu->addAction(tr("Email as Attachments…"));
+    m_emailAction->setObjectName(QStringLiteral("previewEmail"));
+    connect(m_emailAction, &QAction::triggered, this, [this] {
+        const auto urls = actionUrls();
+        if (urls.isEmpty()) return;
+        for (const auto &url : urls) if (!url.isLocalFile() || !QFileInfo(url.toLocalFile()).isFile()) return;
+        auto *job = new KEMailClientLauncherJob;
+        job->setAttachments(urls);
+        job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+        connect(job, &KJob::result, this, [this, url = currentUrl()](KJob *result) {
+            if (result->error()) emit actionError(url, result->errorText());
+        });
+        job->start();
+    });
+    m_shareAction = shareMenu->addAction(tr("Share…"));
+    m_shareAction->setObjectName(QStringLiteral("previewShare"));
+    connect(m_shareAction, &QAction::triggered, this, &PreviewPane::shareCurrent);
+    m_nativeActions->setMenu(nativeMenu);
+    viewControls->addWidget(m_nativeActions);
     previewLayout->addWidget(m_viewControls);
     m_slideshowTimer = new QTimer(this);
     m_contactTimer = new QTimer(this);
@@ -494,7 +559,14 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_refreshTimer->setSingleShot(true);
     m_refreshTimer->setInterval(120);
     connect(m_sourceWatcher, &QFileSystemWatcher::fileChanged, this, [this] { m_refreshTimer->start(); });
-    connect(m_sourceWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_refreshTimer->start(); });
+    connect(m_sourceWatcher, &QFileSystemWatcher::directoryChanged, this, [this] {
+        // Changes to adjacent files (including our PDF print output) do not
+        // invalidate a source whose inode watch is still active. Removed or
+        // atomically replaced sources lose that watch and require re-arming.
+        const QString path = currentUrl().toLocalFile();
+        if (QFileInfo(path).isFile() && m_sourceWatcher->files().contains(path)) return;
+        m_refreshTimer->start();
+    });
     connect(m_refreshTimer, &QTimer::timeout, this, &PreviewPane::refreshCurrent);
     connect(m_contactTimer, &QTimer::timeout, this, &PreviewPane::loadContactThumbnails);
     connect(m_contactList->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_contactTimer->start(); });
@@ -559,9 +631,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     connect(m_close, &QPushButton::clicked, this, &PreviewPane::requestClose);
     connect(m_previous, &QPushButton::clicked, this, [this] { advance(-1); });
     connect(m_next, &QPushButton::clicked, this, [this] { advance(1); });
-    connect(m_open, &QPushButton::clicked, this, [this] {
-        if (!currentUrl().isEmpty()) emit openRequested(currentUrl());
-    });
+    connect(m_open, &QPushButton::clicked, this, &PreviewPane::openCurrent);
     connect(m_pagePrevious, &QPushButton::clicked, this, [this] { renderPage(m_page - 1); });
     connect(m_pageNext, &QPushButton::clicked, this, [this] { renderPage(m_page + 1); });
     connect(m_play, &QPushButton::clicked, this, &PreviewPane::toggleMedia);
@@ -577,6 +647,11 @@ PreviewPane::~PreviewPane()
     m_renderWork->cancel();
     m_tagWork->cancel();
     m_contactWork->cancel();
+    m_printWork->cancel();
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (m_printState && m_printState->painter) m_printState->painter->end();
+    if (m_printState && m_printState->printer) m_printState->printer->abort();
+#endif
     cancelNativePreview();
     stopMedia();
 }
@@ -652,6 +727,216 @@ bool PreviewPane::isFullScreen() const { return window()->windowState().testFlag
 bool PreviewPane::contactSheet() const { return m_contactSheet; }
 bool PreviewPane::slideshowRunning() const { return m_slideshowTimer->isActive(); }
 
+QList<QUrl> PreviewPane::actionUrls() const
+{
+    return m_contactSheet ? m_urls : currentUrl().isEmpty() ? QList<QUrl>() : QList<QUrl>{currentUrl()};
+}
+
+void PreviewPane::openCurrent()
+{
+    const QUrl url = currentUrl();
+    if (url.isEmpty()) return;
+    if (isSignalConnected(QMetaMethod::fromSignal(&PreviewPane::openRequested))) {
+        emit openRequested(url);
+        return;
+    }
+    auto *job = new KIO::OpenUrlJob(url, m_mime);
+    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+    connect(job, &KJob::result, this, [this, url](KJob *result) {
+        if (result->error()) emit actionError(url, result->errorText());
+    });
+    job->start();
+}
+
+void PreviewPane::openWithCurrent()
+{
+    const QList<QUrl> urls = actionUrls();
+    if (urls.isEmpty()) return;
+    auto *job = new KIO::ApplicationLauncherJob;
+    job->setUrls(urls);
+    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+    connect(job, &KJob::result, this, [this, url = currentUrl()](KJob *result) {
+        if (result->error()) emit actionError(url, result->errorText());
+    });
+    job->start();
+}
+
+void PreviewPane::setShareProviderAvailable(bool available)
+{
+    m_shareProviderAvailable = available;
+    updateNativeActions();
+}
+
+void PreviewPane::shareCurrent()
+{
+    if (m_shareProviderAvailable && !actionUrls().isEmpty()) emit shareRequested(actionUrls());
+}
+
+bool PreviewPane::canPrintCurrent() const
+{
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (m_printState || m_contactSheet || !currentUrl().isLocalFile()) return false;
+    const QFileInfo info(currentUrl().toLocalFile());
+    return info.isFile() && info.isReadable() && (m_mime.startsWith(QStringLiteral("image/"))
+        || m_mime == QStringLiteral("application/pdf") || m_content->currentWidget() == m_text);
+#else
+    return false;
+#endif
+}
+
+void PreviewPane::updateNativeActions()
+{
+    const auto urls = actionUrls();
+    m_nativeActions->setEnabled(!urls.isEmpty());
+    m_openWithAction->setEnabled(!urls.isEmpty());
+    m_copyUrlsAction->setEnabled(!urls.isEmpty());
+    m_shareAction->setVisible(m_shareProviderAvailable);
+    m_shareAction->setEnabled(m_shareProviderAvailable && !urls.isEmpty());
+    const bool localFiles = !urls.isEmpty() && std::all_of(urls.begin(), urls.end(), [](const QUrl &url) {
+        return url.isLocalFile() && QFileInfo(url.toLocalFile()).isFile();
+    });
+    const auto emailHandler = KApplicationTrader::preferredService(QStringLiteral("x-scheme-handler/mailto"));
+    m_emailAction->setEnabled(localFiles && bool(emailHandler));
+    m_emailAction->setToolTip(emailHandler ? QString() : tr("No native email application is configured."));
+    m_printAction->setEnabled(canPrintCurrent());
+#if !defined(FINDER_PREVIEW_PRINT_SUPPORT) || !FINDER_PREVIEW_PRINT_SUPPORT
+    m_printAction->setToolTip(tr("This build does not include Qt PrintSupport."));
+#endif
+    const QString mime = currentUrl().isLocalFile()
+        ? QMimeDatabase().mimeTypeForFile(currentUrl().toLocalFile(), QMimeDatabase::MatchExtension).name() : m_mime;
+    const auto handler = mime.isEmpty() ? KService::Ptr() : KApplicationTrader::preferredService(mime);
+    m_open->setText(handler ? tr("Open with %1").arg(handler->name()) : tr("Open"));
+}
+
+void PreviewPane::printCurrent()
+{
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (!canPrintCurrent()) return;
+    setSlideshow(false);
+    const QUrl url = currentUrl();
+    auto printer = std::make_shared<QPrinter>(QPrinter::HighResolution);
+    printer->setDocName(url.fileName());
+    QPrintDialog dialog(printer.get(), window());
+    dialog.setWindowTitle(tr("Print %1").arg(url.fileName()));
+    if (m_pageCount > 0) {
+        dialog.setMinMax(1, m_pageCount);
+        dialog.setOption(QAbstractPrintDialog::PrintPageRange);
+    }
+    if (dialog.exec() == QDialog::Accepted && currentUrl() == url) printToPrinter(printer);
+#endif
+}
+
+void PreviewPane::printToPrinter(const std::shared_ptr<QPrinter> &printer)
+{
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (!printer || !canPrintCurrent()) return;
+    setSlideshow(false);
+    const QUrl url = currentUrl();
+    if (m_content->currentWidget() == m_text) {
+        // The bounded, user-visible plain text is printable with Qt's native
+        // pagination. Never send only a screenshot of the text viewport.
+        m_text->document()->print(printer.get());
+        emit printFinished(url, printer->printerState() == QPrinter::Error ? tr("Printing failed.") : QString());
+        return;
+    }
+    m_printState = std::make_shared<PreviewPrintState>();
+    m_printState->url = url;
+    m_printState->mime = m_mime;
+    m_printState->printer = printer;
+    printer->setFullPage(true); // paintRectPixels below uses sheet coordinates.
+    if (printer->printRange() == QPrinter::PageRange) {
+        // The source may be refreshing while a host supplies a print range.
+        // Clamp against the worker's actual document page count after load.
+        m_printState->page = std::max(0, printer->fromPage() - 1);
+        m_printState->lastPage = std::max(m_printState->page, printer->toPage() - 1);
+    }
+    auto *progress = new QProgressDialog(tr("Preparing pages…"), tr("Cancel"), 0, 0, window());
+    progress->setAttribute(Qt::WA_DeleteOnClose);
+    progress->setWindowTitle(tr("Print %1").arg(url.fileName()));
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    m_printState->progress = progress;
+    connect(progress, &QProgressDialog::canceled, this, [this] { finishPrint(tr("Printing was cancelled.")); });
+    progress->show();
+    updateNativeActions();
+    requestPrintPage();
+#else
+    Q_UNUSED(printer);
+    emit printFinished(currentUrl(), tr("This build does not include Qt PrintSupport."));
+#endif
+}
+
+void PreviewPane::requestPrintPage()
+{
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (!m_printState) return;
+    const auto state = m_printState;
+    submitPreview(m_printWork, this, [url = state->url, mime = state->mime, page = state->page](const auto &cancelled) {
+        if (mime == QStringLiteral("application/pdf")) {
+            // 4096² pixel budget is independent of the
+            // 1600×1200 display cache. One page at a time bounds print memory.
+            return readRaster(url.toLocalFile(), true, page, QSize(4096, 4096), cancelled);
+        }
+        PreviewRaster result;
+        QImageReader reader(url.toLocalFile());
+        reader.setAutoTransform(true);
+        const QSize size = reader.size();
+        if (!size.isValid() || qint64(size.width()) * size.height() > 64000000) {
+            result.error = tr("This image is too large to print safely. Open it with its default application.");
+        } else if (!cancelled->load()) {
+            // Intentionally no setScaledSize: print the oriented original,
+            // preserving its color space, resolution and alpha information.
+            result.image = reader.read();
+            if (result.image.isNull()) result.error = reader.errorString();
+        }
+        return result;
+    }, [this, state](const PreviewRaster &raster) {
+        if (state != m_printState) return;
+        if (raster.image.isNull()) { finishPrint(raster.error.isEmpty() ? tr("This page could not be printed.") : raster.error); return; }
+        if (!state->started) {
+            state->painter = std::make_unique<QPainter>();
+            if (!state->painter->begin(state->printer.get())) { finishPrint(tr("Could not start the printer.")); return; }
+            state->started = true;
+            if (state->lastPage < 0) state->lastPage = std::max(0, raster.pageCount - 1);
+            if (raster.pageCount > 0) {
+                state->page = std::clamp(state->page, 0, raster.pageCount - 1);
+                state->lastPage = std::clamp(state->lastPage, state->page, raster.pageCount - 1);
+            }
+        } else if (!state->printer->newPage()) { finishPrint(tr("Could not create the next printed page.")); return; }
+        QRectF area = state->printer->pageLayout().paintRectPixels(state->printer->resolution());
+        const QSizeF fitted = QSizeF(raster.image.size()).scaled(area.size(), Qt::KeepAspectRatio);
+        const QRectF target(area.center() - QPointF(fitted.width() / 2, fitted.height() / 2), fitted);
+        state->painter->setRenderHint(QPainter::SmoothPixmapTransform);
+        state->painter->fillRect(area, Qt::white);
+        state->painter->drawImage(target, raster.image);
+        if (state->progress) state->progress->setLabelText(tr("Printing page %1 of %2…").arg(state->page + 1).arg(state->lastPage + 1));
+        if (state->page < state->lastPage) {
+            ++state->page;
+            QTimer::singleShot(0, this, &PreviewPane::requestPrintPage);
+        } else finishPrint({});
+    });
+#endif
+}
+
+void PreviewPane::finishPrint(const QString &error)
+{
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    if (!m_printState) return;
+    const auto state = std::move(m_printState);
+    m_printWork->cancel();
+    QString finalError = error;
+    if (state->painter && state->painter->isActive() && !state->painter->end() && finalError.isEmpty())
+        finalError = tr("The printer could not finish the job.");
+    if (!finalError.isEmpty()) state->printer->abort();
+    if (state->progress) { state->progress->disconnect(this); state->progress->close(); }
+    updateNativeActions();
+    if (!finalError.isEmpty()) emit actionError(state->url, finalError);
+    emit printFinished(state->url, finalError);
+#else
+    Q_UNUSED(error);
+#endif
+}
+
 void PreviewPane::setContactSheet(bool enabled)
 {
     enabled = enabled && m_urls.size() > 1 && !m_compact && !m_gallery;
@@ -711,6 +996,7 @@ void PreviewPane::updatePreviewControls()
     m_fullScreen->setChecked(isFullScreen());
     m_fullScreen->setText(isFullScreen() ? tr("Exit Full Screen") : tr("Full Screen"));
     if (m_contactSheet) { m_pageControls->hide(); m_mediaControls->hide(); }
+    updateNativeActions();
 }
 
 void PreviewPane::updateSourceWatch()
@@ -1067,6 +1353,9 @@ void PreviewPane::createGallery()
     m_moreActions->setPopupMode(QToolButton::InstantPopup);
     auto *menu = new QMenu(m_moreActions);
     m_copyLocation = menu->addAction(tr("Copy Location"));
+    menu->addAction(m_openWithAction);
+    menu->addAction(m_printAction);
+    menu->addMenu(m_nativeActions->menu()->actions().last()->menu());
     m_copyLocation->setObjectName(QStringLiteral("previewCopyLocation"));
     connect(m_copyLocation, &QAction::triggered, this, [this] {
         const QUrl url = currentUrl();
@@ -1474,6 +1763,7 @@ void PreviewPane::showCurrent()
         } else text = QString::fromUtf8(bytes.left(textLimit));
         m_text->setPlainText(text);
         m_content->setCurrentWidget(m_text);
+        updatePreviewControls();
         if (bytes.size() > textLimit) {
             setInformation(tr("Preview"), tr("First 512 KiB"), true);
             setMetadata(m_metadataText + tr(" · Preview limited to the first 512 KiB"));
@@ -1519,7 +1809,9 @@ void PreviewPane::updateImageSize()
     const QSize size = m_picture->contentsRect().size();
     if (size.width() < 1 || size.height() < 1) return;
     const qreal dpr = devicePixelRatioF();
-    const QSize target = m_image.size().scaled(size * dpr, Qt::KeepAspectRatio);
+    QSize target = m_image.size().scaled(size * dpr, Qt::KeepAspectRatio);
+    if (target.width() > renderLimit.width() || target.height() > renderLimit.height())
+        target.scale(renderLimit, Qt::KeepAspectRatio);
     if (m_picture->pixmap().size() == target && qFuzzyCompare(m_picture->pixmap().devicePixelRatio(), dpr)) return;
     QPixmap pixmap = QPixmap::fromImage(m_image.scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     pixmap.setDevicePixelRatio(dpr);
@@ -1659,6 +1951,7 @@ void PreviewPane::changeEvent(QEvent *event)
 
 void PreviewPane::hideEvent(QHideEvent *event)
 {
+    finishPrint(tr("Printing was cancelled."));
     cancelNativePreview();
     m_renderWork->cancel();
     m_tagWork->cancel();

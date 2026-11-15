@@ -30,12 +30,15 @@ class QAction;
 class QListWidget;
 class QTimer;
 class QFileSystemWatcher;
+class QPrinter;
 namespace KIO { class PreviewJob; }
 struct PreviewRaster;
 struct PreviewWorkQueue;
+struct PreviewPrintState;
 
 // Preview shared by Gallery and the separate Quick Look window. The caller
-// owns native actions and serializes tag mutations with other application writes.
+// owns mutations and serializes tag writes. Built-in native launch/print/share
+// actions never alter the source; openRequested retains host launch ownership.
 class PreviewPane : public QWidget {
     Q_OBJECT
 public:
@@ -55,6 +58,7 @@ public:
     QSize originalImageSize() const;
     // Reusable Quick Look host: retain its window/pane, connect closeRequested
     // to hide (not delete), and forward active selection to updateQuickLook.
+    // Close hides the pane; a host-managed reopen must show() both pane/window.
     // toggleQuickLook returns true when opened, false when toggled closed.
     // primary is the actual last-selected URL, including search selections.
     bool toggleQuickLook(const QList<QUrl> &urls, const QUrl &primary = QUrl());
@@ -65,6 +69,8 @@ public:
     qreal zoomFactor() const;
     void resetZoom();
     void setFullScreen(bool fullScreen);
+    // Fullscreen transitions use the pane's top-level window, restore its
+    // prior state and are disabled for compact/Gallery embedding.
     bool isFullScreen() const;
     void setContactSheet(bool enabled);
     bool contactSheet() const;
@@ -72,6 +78,22 @@ public:
     // Stops on close/hide or contact sheet, and never auto-starts media.
     void setSlideshow(bool running, int intervalMs = 4000);
     bool slideshowRunning() const;
+    // Existing openRequested remains host-owned. With no connected host, Open
+    // uses a native KIO launcher; Open With always uses the native chooser.
+    void openCurrent();
+    void openWithCurrent();
+    // Copy URLs and native email attachments are built in. A host with an
+    // additional real sharing backend can enable Share… with this capability.
+    void setShareProviderAvailable(bool available);
+    void shareCurrent();
+    // PrintSupport is optional: compile with FINDER_PREVIEW_PRINT_SUPPORT=1
+    // and link Qt6::PrintSupport. Otherwise Print remains visibly disabled.
+    bool canPrintCurrent() const;
+    void printCurrent();
+    // Supplied printer owns settings/output; no dialog (useful for host print
+    // workflows and isolated PDF-output tests). Original image resolution is
+    // decoded separately; PDFs print every selected page, not preview pixels.
+    void printToPrinter(const std::shared_ptr<QPrinter> &printer);
     // Call for every tagChangeRequested completion, including rejected/busy
     // requests. Errors are displayed without optimistically changing tag chips.
     void tagChangeFinished(const QUrl &url, const QString &error = QString());
@@ -88,6 +110,12 @@ signals:
     // Navigation only; hosts may reflect the primary item in their selection.
     // updateQuickLook already updates the pane, so avoid echo update loops.
     void currentUrlChanged(const QUrl &url);
+    // Host may populate a real provider dialog; enabled only by capability.
+    // Contact sheet shares the complete selection, otherwise the current item.
+    void shareRequested(const QList<QUrl> &urls);
+    void actionError(const QUrl &url, const QString &message);
+    // Empty error means completed; cancellation/errors retain source identity.
+    void printFinished(const QUrl &url, const QString &error);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -124,6 +152,10 @@ private:
     void updatePreviewControls();
     void populateContactSheet();
     void loadContactThumbnails();
+    QList<QUrl> actionUrls() const;
+    void updateNativeActions();
+    void requestPrintPage();
+    void finishPrint(const QString &error);
 
     QList<QUrl> m_urls;
     int m_index = -1;
@@ -167,6 +199,15 @@ private:
     QTimer *m_contactTimer;
     QFileSystemWatcher *m_sourceWatcher;
     QTimer *m_refreshTimer;
+    QToolButton *m_nativeActions;
+    QAction *m_openWithAction;
+    QAction *m_printAction;
+    QAction *m_shareAction;
+    QAction *m_emailAction;
+    QAction *m_copyUrlsAction;
+    bool m_shareProviderAvailable = false;
+    std::shared_ptr<PreviewWorkQueue> m_printWork;
+    std::shared_ptr<PreviewPrintState> m_printState;
     bool m_gallery = false;
     QVBoxLayout *m_layout;
     QHBoxLayout *m_header;

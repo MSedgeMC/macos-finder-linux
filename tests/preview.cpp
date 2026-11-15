@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
-// Standalone target: preview.cpp/preview.h, tags.cpp, Qt Widgets/Pdf/Multimedia
+// Standalone target: preview.cpp/preview.h, tags.cpp, preferences.cpp,
+// Qt Widgets/Pdf/Multimedia (optional PrintSupport),
 // and existing KIO/FileMetaData dependencies; AUTOMOC must process preview.cpp.
 // Run only offscreen with private XDG/runtime directories and session D-Bus.
 #include "preview.h"
+#include "tags.h"
+#include <QAction>
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFile>
@@ -19,6 +22,12 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QLineEdit>
+#include <QTextEdit>
+#include <QPdfDocument>
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+#include <QPrinter>
+#endif
 #include <functional>
 #include <iostream>
 
@@ -149,7 +158,79 @@ int main(int argc, char **argv)
     check(green.save(bluePath), "external replacement fixture");
     check(waitFor([&] { return pane.originalImageSize() == green.size(); }), "file watcher refreshes external edit");
     pane.hide();
+    pane.setUrls({blueUrl}); pane.show();
+    check(waitFor([&] { return pane.originalImageSize() == green.size(); }), "native action source loads");
+    QUrl opened;
+    QObject::connect(&pane, &PreviewPane::openRequested, [&](const QUrl &url) { opened = url; });
+    pane.openCurrent(); check(opened == blueUrl, "existing open signal retains host action ownership");
+    QList<QUrl> shared;
+    QObject::connect(&pane, &PreviewPane::shareRequested, [&](const QList<QUrl> &urls) { shared = urls; });
+    pane.shareCurrent(); check(shared.isEmpty(), "provider unavailable does not emit fake share");
+    pane.setShareProviderAvailable(true); pane.shareCurrent();
+    check(shared == QList<QUrl>{blueUrl}, "real provider capability exposes share signal");
+#if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
+    int printed = 0;
+    QString printError;
+    QObject::connect(&pane, &PreviewPane::printFinished, [&](const QUrl &, const QString &error) { ++printed; printError = error; });
+    auto pdfPrinter = [&](const QString &path) {
+        auto printer = std::make_shared<QPrinter>();
+        printer->setOutputFormat(QPrinter::PdfFormat);
+        printer->setOutputFileName(path);
+        return printer;
+    };
+    pane.printToPrinter(pdfPrinter(files.filePath("printed-image.pdf")));
+    check(waitFor([&] { return printed == 1; }) && printError.isEmpty(), "original image prints to private PDF");
+    pane.setUrls({QUrl::fromLocalFile(pdfPath)});
+    check(waitFor([&] { return pages->text() == "Page 1 of 2" && content->currentWidget() == image; }), "print PDF source loads");
+    const auto printedPdf = files.filePath("printed-pages.pdf");
+    pane.printToPrinter(pdfPrinter(printedPdf));
+    check(waitFor([&] { return printed == 2; }) && printError.isEmpty(), "all PDF pages print asynchronously");
+    QPdfDocument output;
+    check(output.load(printedPdf) == QPdfDocument::Error::None && output.pageCount() == 2, "printed PDF retains both pages");
+    output.close();
+    const auto rangePdf = files.filePath("printed-range.pdf");
+    auto rangePrinter = pdfPrinter(rangePdf);
+    rangePrinter->setPrintRange(QPrinter::PageRange); rangePrinter->setFromTo(2, 2);
+    pane.printToPrinter(rangePrinter);
+    check(waitFor([&] { return printed == 3; }) && printError.isEmpty(), "PDF range prints");
+    const auto rangeError = output.load(rangePdf);
+    if (rangeError != QPdfDocument::Error::None || output.pageCount() != 1)
+        std::cerr << "Range output: error " << int(rangeError) << ", pages " << output.pageCount()
+                  << ", requested " << rangePrinter->fromPage() << '-' << rangePrinter->toPage() << '\n';
+    check(rangeError == QPdfDocument::Error::None && output.pageCount() == 1, "printed range has one page");
+    output.close();
+    pane.setUrls({redUrl});
+    check(waitFor([&] { return pane.originalImageSize() == red.size(); }), "cancel print source loads");
+    pane.printToPrinter(pdfPrinter(files.filePath("cancelled.pdf")));
+    pane.hide();
+    check(printed == 4 && !printError.isEmpty(), "hide cancels print with source error");
+    pane.show();
+    std::cout << "PASS: native print original image, complete PDF, page range, cancellation (private PDF outputs only)\n";
+#else
+    check(!pane.canPrintCurrent() && !pane.findChild<QAction *>("previewPrint")->isEnabled(), "Print disabled without backend");
+#endif
+    pane.setGallery(true);
+    pane.setUrls({blueUrl});
+    auto *tagEditor = pane.findChild<QLineEdit *>("previewTagEditor");
+    auto *tagStatus = pane.findChild<QLabel *>("previewTagStatus");
+    check(waitFor([&] { return tagEditor->isEnabled(); }), "tag read completes");
+    QUrl tagUrl;
+    QObject::connect(&pane, &PreviewPane::tagChangeRequested, [&](const QUrl &url, const QString &, int) { tagUrl = url; });
+    tagEditor->setText("Portable Test Tag");
+    tagEditor->returnPressed();
+    check(tagUrl == blueUrl && !tagEditor->isEnabled(), "tag mutation delegated without optimistic state");
+    pane.setUrls({redUrl});
+    pane.tagChangeFinished(blueUrl, "Native tag backend rejected the write.");
+    pane.setUrls({blueUrl});
+    check(waitFor([&] { return tagEditor->isEnabled(); }), "tag controls recover after failed background write");
+    check(tagStatus->text() == "Native tag backend rejected the write.", "tag error survives selection change");
+    tagEditor->setText("Portable Test Tag"); tagEditor->returnPressed();
+    pane.tagChangeFinished(blueUrl, FileTags::addTag(blueUrl, "Portable Test Tag"));
+    check(waitFor([&] { return tagEditor->isEnabled(); }), "successful native tag write refreshes");
+    check(tagStatus->text().isEmpty(), "success clears tag error");
+    pane.hide();
     std::cout << "PASS: async preview, stale cancellation, original geometry, PDF pages, hide/destruction\n";
     std::cout << "PASS: reusable lifecycle, primary selection, zoom/pan, contact sheet, slideshow, fullscreen, file freshness\n";
+    std::cout << "PASS: host open/share capabilities, deferred tag errors and native tag refresh\n";
     return 0;
 }
