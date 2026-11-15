@@ -38,6 +38,8 @@ add_executable(finder
     src/settings.cpp src/settings.h
     src/preferences.cpp src/preferences.h
     src/scroll.cpp src/scroll.h
+    src/windowframe.cpp src/windowframe.h
+    src/gestures.cpp src/gestures.h
     src/quickactions.cpp src/quickactions.h
     src/smartfolder.cpp src/smartfolder.h
     src/archives.cpp src/archives.h

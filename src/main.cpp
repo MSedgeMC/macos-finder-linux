@@ -7,6 +7,8 @@
 #include "tags.h"
 #include "settings.h"
 #include "scroll.h"
+#include "windowframe.h"
+#include "gestures.h"
 #include "quickactions.h"
 #include "smartfolder.h"
 #include "archives.h"
@@ -84,6 +86,8 @@
 #include <QMimeDatabase>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
+#include <QPointingDevice>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
@@ -109,6 +113,7 @@
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
@@ -186,6 +191,12 @@ private:
   QPixmap mask;
   bool squareMask = false;
 };
+
+static void presentWindow(QWidget *window) {
+  if (!window) return;
+  if (window->isMinimized()) window->setWindowState(window->windowState() & ~Qt::WindowMinimized);
+  window->show(); window->raise(); window->activateWindow();
+}
 
 static QIcon symbol(const QString &name) {
   QPixmap pix(40, 40);
@@ -298,8 +309,12 @@ protected:
     else QToolButton::contextMenuEvent(event);
   }
   void mousePressEvent(QMouseEvent *event) override {
-    if (kind == "maximize" && menu() && event->button() == Qt::LeftButton && !event->modifiers().testFlag(Qt::AltModifier)) {
-      menu()->popup(mapToGlobal(QPoint(0, height()))); event->accept(); return;
+    if (kind == "maximize" && menu() && event->button() == Qt::LeftButton) {
+      for (auto *action : menu()->actions()) {
+        if (action->objectName() == (event->modifiers().testFlag(Qt::AltModifier) ? "zoom" : "fullscreen")) {
+          action->trigger(); event->accept(); return;
+        }
+      }
     }
     QToolButton::mousePressEvent(event);
   }
@@ -337,11 +352,11 @@ public:
 
 protected:
   void mousePressEvent(QMouseEvent *e) override {
-    if (e->button() == Qt::LeftButton && window()->windowHandle())
+    if (e->button() == Qt::LeftButton && !window()->isFullScreen() && window()->windowHandle())
       window()->windowHandle()->startSystemMove();
   }
   void mouseDoubleClickEvent(QMouseEvent *e) override {
-    if (e->button() == Qt::LeftButton) {
+    if (e->button() == Qt::LeftButton && !window()->isFullScreen()) {
       if (window()->isMaximized())
         window()->showNormal();
       else
@@ -468,7 +483,7 @@ public:
       connect(control, &QToolButton::clicked, this, [this, name] {
         if (QString(name) == "minimize") showMinimized();
         else if (QString(name) == "maximize") {
-          if (isMaximized()) showNormal(); else showMaximized();
+          if (namedActions.contains("fullscreen")) namedActions["fullscreen"]->trigger();
         } else close();
       });
     }
@@ -478,11 +493,7 @@ public:
     hs->addWidget(sidebarButton);
     headerSidebar->setFixedWidth(244);
     hl->addWidget(headerSidebar);
-    connect(sidebarButton, &QToolButton::clicked, this, [this] {
-      sidebar->setVisible(!sidebar->isVisible());
-      layoutHeader();
-      updateMaterial();
-    });
+    connect(sidebarButton, &QToolButton::clicked, this, [this] { namedActions["sidebar"]->trigger(); });
     auto *nav = new QWidget;
     toolbarWidgets["navigation"] = nav;
     nav->setObjectName("navigationCapsule");
@@ -689,8 +700,13 @@ public:
     actionsMenu = new QMenu(more);
     more->setMenu(actionsMenu);
     more->setPopupMode(QToolButton::InstantPopup);
+    more->setObjectName("finderMoreButton");
     actionsLayout->addWidget(more);
     hl->addWidget(actionsCapsule);
+    persistentMenu = button("more", "Finder Menus", header);
+    persistentMenu->setObjectName("finderAppMenu"); persistentMenu->setMenu(actionsMenu);
+    persistentMenu->setPopupMode(QToolButton::InstantPopup); persistentMenu->hide();
+    hl->addWidget(persistentMenu);
     search = new QLineEdit;
     search->setObjectName("finderSearch");
     search->setPlaceholderText("Search this folder");
@@ -787,6 +803,7 @@ public:
     connect(newTab, &QToolButton::clicked, this, [this] { addTab(browser()->url(), true); });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) {
       saveTabSearch();
+      if (uiReady) FinderGestures::Controller::install(this)->cancel();
       ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
       if (fileSearch)
         stopSearch();
@@ -799,6 +816,7 @@ public:
       }
       refresh();
       restoreTabSearch();
+      if (uiReady) focusContent();
     });
     connect(tabs, &QTabWidget::tabCloseRequested, this, [this](int i) {
       if (tabs->count() == 1) {
@@ -885,7 +903,10 @@ public:
     rightLayout->setSpacing(0);
     rightLayout->addWidget(contentStack, 1);
     body->addWidget(rightPane);
-    connect(searchPresentation, &SearchResults::activated, this, &FinderWindow::openUrl);
+    connect(searchPresentation, &SearchResults::activated, this, [this](const QUrl &url) {
+      if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()) openFolder(url, QApplication::keyboardModifiers());
+      else openUrl(url);
+    });
     connect(searchPresentation, &SearchResults::contextMenuRequested, this,
             [this](const QPoint &p) {
               refresh();
@@ -1000,17 +1021,39 @@ public:
     connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); refreshToolbarSymbols(); header->update(); sidebar->update(); updateMaterial(); });
     addTab(initial, true);
     qApp->installEventFilter(this);
+    FinderWindowFrame::install(this);
     installScrolling(this);
     QSettings settings;
     restoreGeometry(settings.value("Window/geometry").toByteArray());
     auto sizes = settings.value("Window/sidebar", 256).toInt();
     body->setSizes({sizes, width() - sizes});
+    uiReady = true;
     QTimer::singleShot(0, this, [this] { layoutHeader(); });
   }
   Browser *browser() const {
     return qobject_cast<Browser *>(tabs->currentWidget());
   }
   void installScrolling(QWidget *root) {
+    auto *gestures = FinderGestures::Controller::install(root->window());
+    if (!gestures->property("finderHostWired").toBool()) {
+      gestures->setProperty("finderHostWired", true);
+      connect(gestures, &FinderGestures::Controller::historyRequested, this, [this](auto direction) {
+        auto *action = namedActions.value(direction == FinderGestures::Controller::HistoryDirection::Back ? "back" : "forward");
+        if (action && action->isEnabled()) action->trigger();
+      });
+      connect(gestures, &FinderGestures::Controller::zoomRequested, this, [this](QWidget *target, qreal factor, const QPointF &) {
+        if (auto *pane = qobject_cast<PreviewPane *>(target)) { pane->setZoomFactor(pane->zoomFactor() * factor); return; }
+        if (auto *b = qobject_cast<Browser *>(target)) {
+          if (b != browser() || showingSearch()) return;
+          b->setIconSize(qRound(b->iconSize() * factor)); saveView(); refresh();
+        }
+      });
+    }
+    gestures->setReducedMotion(QSettings().value("Input/reduceMotion", false).toBool());
+    gestures->setHistoryEnabled(root->window() == this);
+    if (auto *b = qobject_cast<Browser *>(root)) gestures->setZoomTarget(b);
+    for (auto *b : root->findChildren<Browser *>()) gestures->setZoomTarget(b);
+    for (auto *pane : root->findChildren<PreviewPane *>()) gestures->setZoomTarget(pane);
     const bool smooth = QSettings().value("Input/smoothScrolling", true).toBool();
     const bool reduced = QSettings().value("Input/reduceMotion", false).toBool();
     for (auto *area : root->findChildren<QAbstractScrollArea *>()) {
@@ -1020,12 +1063,13 @@ public:
       options.durationMs = smooth && !reduced ? 180 : 0;
       options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
       FinderScroll::install(area, options);
+      if (area->objectName() == "previewDetailsScroll") gestures->setTouchPanning(area);
     }
   }
   QUrl configuredNewFolder() const { return FinderPreferences::newWindowUrl(); }
   void openLaunchFolder(const QUrl &url) {
     if (QSettings().value("General/openFoldersInTabs", true).toBool()) {
-      showNormal(); show(); raise(); activateWindow(); addTab(url, true);
+      presentWindow(this); addTab(url, true);
     } else emit newWindowRequested(url);
   }
   void detachTab(int index) {
@@ -1043,7 +1087,7 @@ public:
         {"history", history}, {"historyIndex", qBound(0, state.historyIndex - qMax(0, int(state.history.size()) - 100), qMax(0, int(history.size()) - 1))}, {"selected", selection}, {"search", state.searchState}});
     }
     return {{"version", 1}, {"tabs", savedTabs}, {"current", tabs->currentIndex()}, {"geometry", QString::fromLatin1(saveGeometry().toBase64())},
-      {"sidebarWidth", sidebar->width()}, {"sidebar", !sidebar->isHidden()}, {"toolbar", !header->isHidden()}, {"tabBar", !tabs->tabBar()->autoHide()}};
+      {"sidebarWidth", sidebar->width()}, {"sidebar", !sidebar->isHidden()}, {"toolbar", namedActions["toolbar"]->isChecked()}, {"tabBar", !tabs->tabBar()->autoHide()}};
   }
   void restoreSessionState(const QJsonObject &session) {
     const auto saved = session.value("tabs").toArray(); if (session.value("version").toInt() != 1 || saved.isEmpty() || saved.size() > 100) return;
@@ -1068,8 +1112,8 @@ public:
     restoreGeometry(QByteArray::fromBase64(session.value("geometry").toString().toLatin1()));
     const int savedSidebar = qBound(120, session.value("sidebarWidth").toInt(256), qMax(120, width() - 200));
     body->setSizes({savedSidebar, qMax(200, width() - savedSidebar)});
-    header->setVisible(session.value("toolbar").toBool(true)); sidebar->setVisible(session.value("sidebar").toBool(true));
-    namedActions["toolbar"]->setChecked(!header->isHidden()); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); namedActions["tabBar"]->setChecked(session.value("tabBar").toBool());
+    sidebar->setVisible(session.value("sidebar").toBool(true));
+    namedActions["toolbar"]->setChecked(session.value("toolbar").toBool(true)); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); namedActions["tabBar"]->setChecked(session.value("tabBar").toBool());
     tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
     searchStateBrowser = browser(); restoreTabSearch(); refresh(); layoutHeader(); updateMaterial();
   }
@@ -1105,7 +1149,7 @@ public:
     destination->refresh();
     destination->restoreTabSearch();
     destination->show(); destination->raise(); destination->activateWindow();
-    destination->browser()->activeView()->setFocus();
+    destination->focusContent();
     if (tabs->count() == 0) close();
     else {
       ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
@@ -1115,11 +1159,40 @@ public:
   bool showingSearch() const {
     return contentStack && contentStack->currentWidget() == searchPage;
   }
+  void focusContent() {
+    if (auto *view = showingSearch() ? searchPresentation->activeView() : browser()->activeView()) view->setFocus(Qt::OtherFocusReason);
+  }
   QList<QUrl> selectedUrls() const {
     return showingSearch() ? searchSelection() : browser()->selectedUrls();
   }
-  void copy(bool cut = false) {
+  QWidget *editTarget() const {
     auto *focus = QApplication::focusWidget();
+    if (focus && focus->window() == this && (qobject_cast<QLineEdit *>(focus) || qobject_cast<QTextEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus))) return focus;
+    return QApplication::activePopupWidget() ? editorTarget.data() : nullptr;
+  }
+  void updateEditActions() {
+    auto *focus = editTarget();
+    bool text = false, selection = false, writable = false, undo = false;
+    if (auto *line = qobject_cast<QLineEdit *>(focus)) {
+      text = true; selection = line->hasSelectedText(); writable = !line->isReadOnly(); undo = line->isUndoAvailable();
+    } else if (auto *edit = qobject_cast<QTextEdit *>(focus)) {
+      text = true; selection = edit->textCursor().hasSelection(); writable = !edit->isReadOnly(); undo = edit->document()->isUndoAvailable();
+    } else if (auto *edit = qobject_cast<QPlainTextEdit *>(focus)) {
+      text = true; selection = edit->textCursor().hasSelection(); writable = !edit->isReadOnly(); undo = edit->document()->isUndoAvailable();
+    }
+    if (text) {
+      namedActions["copy"]->setEnabled(selection); namedActions["cut"]->setEnabled(selection && writable);
+      namedActions["paste"]->setEnabled(writable && QApplication::clipboard()->mimeData()->hasText());
+      namedActions["undo"]->setEnabled(writable && undo); namedActions["undo"]->setText("Undo");
+    } else {
+      namedActions["copy"]->setEnabled(!selectedUrls().isEmpty()); namedActions["cut"]->setEnabled(!selectedUrls().isEmpty() && !trashSelection());
+      namedActions["undo"]->setEnabled(KIO::FileUndoManager::self()->isUndoAvailable());
+      namedActions["undo"]->setText(KIO::FileUndoManager::self()->undoText());
+      namedActions["paste"]->setEnabled(writableDestination() && QApplication::clipboard()->mimeData()->hasUrls());
+    }
+  }
+  void copy(bool cut = false) {
+    auto *focus = editTarget();
     if (auto *line = qobject_cast<QLineEdit *>(focus)) {
       if (cut)
         line->cut();
@@ -1127,11 +1200,8 @@ public:
         line->copy();
       return;
     }
-    if (auto *text = qobject_cast<QTextEdit *>(focus)) {
-      if (!cut)
-        text->copy();
-      return;
-    }
+    if (auto *text = qobject_cast<QTextEdit *>(focus)) { if (cut) text->cut(); else text->copy(); return; }
+    if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) { if (cut) text->cut(); else text->copy(); return; }
     auto urls = selectedUrls();
     if (urls.isEmpty())
       return;
@@ -1276,6 +1346,7 @@ public:
     });
   }
   void navigate(const QUrl &u) {
+    FinderGestures::Controller::install(this)->cancel();
     if (openSmartFolder(u)) return;
     ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
     if (browser()) {
@@ -1325,6 +1396,7 @@ public:
       quickWindow = window; quickPane = pane;
       window->setWindowFlags(Qt::Window | Qt::FramelessWindowHint); window->setAttribute(Qt::WA_TranslucentBackground);
       window->setMinimumSize(480, 320); window->setCentralWidget(base); wirePreview(pane);
+      FinderWindowFrame::install(window);
       connect(pane, &PreviewPane::printReadinessChanged, this, [this, pane](bool ready) {
         if (ready && !printRequestedUrl.isEmpty() && pane->currentUrl() == printRequestedUrl) {
           printRequestedUrl.clear(); QTimer::singleShot(0, pane, &PreviewPane::printCurrent);
@@ -1337,6 +1409,7 @@ public:
     installScrolling(quickWindow); quickPane->show(); quickWindow->show(); quickWindow->raise(); quickWindow->activateWindow(); quickPane->setFocus();
   }
   void setMode(int m) {
+    FinderGestures::Controller::install(this)->cancel();
     if (!browser())
       return;
     m = qBound(0, m, 3);
@@ -1439,8 +1512,12 @@ public:
     connect(b, &Browser::springUrlChanged, this, [this, b](const QUrl &url) { if (b == browser()) { folderTitle->setText(title(url)); folderTitle->setToolTip(url.toDisplayString(QUrl::RemovePassword)); } });
     connect(b, &Browser::contextMenuRequested, this, [this](QMenu *menu, const KFileItemList &items) {
       refresh(); menu->addSeparator();
-      for (auto *action : menu->actions()) if (action->text() == QStringLiteral("Compress")) {
-        menu->insertAction(action, namedActions["compress"]); menu->removeAction(action); break;
+      const QHash<QString, QString> shared{{"Open", "open"}, {"Quick Look", "quickLook"}, {"New Folder", "newFolder"},
+        {"New Folder with Selection", "newFolderSelection"}, {"Rename", "rename"}, {"Copy", "copy"}, {"Cut", "cut"},
+        {"Paste", "paste"}, {"Duplicate", "duplicate"}, {"Compress", "compress"}, {"Move to Trash", "trash"}, {"Get Info", "info"}};
+      for (auto *action : menu->actions()) {
+        const auto key = shared.value(action->text());
+        if (!key.isEmpty() && namedActions.contains(key)) { menu->insertAction(action, namedActions[key]); menu->removeAction(action); }
       }
       menu->addAction(namedActions["extract"]);
       for (auto name : {"makeAlias", "showOriginal", "putBack", "deleteImmediately"})
@@ -1486,14 +1563,8 @@ public:
               }
             });
     connect(b, &Browser::quickLookRequested, this, &FinderWindow::quickLook);
-    connect(b, &Browser::folderOpenRequested, this, [this](const QUrl &url, Qt::KeyboardModifiers modifiers) {
-      if (modifiers.testFlag(Qt::MetaModifier)) {
-        if (QSettings().value("General/openFoldersInTabs", true).toBool()) addTab(url, true);
-        else emit newWindowRequested(url);
-      } else if (modifiers.testFlag(Qt::AltModifier)) { emit newWindowRequested(url); close(); }
-      else if (!header->isVisible()) emit newWindowRequested(url);
-      else navigate(url);
-    });
+    b->setProperty("finderHostFolderPolicy", true);
+    connect(b, &Browser::folderOpenRequested, this, &FinderWindow::openFolder);
     connect(b, &Browser::openRequested, this,
             [this](const QUrl &url) { openUrl(url); });
     connect(b, &Browser::countChanged, this, [this, b](int) {
@@ -1571,7 +1642,7 @@ public:
         {"count", browser()->itemCount()},
         {"selected", selected},
         {"tabs", tabs->count()},
-        {"headerHeight", header->height()},
+        {"headerHeight", header->height()}, {"toolbarVisible", namedActions["toolbar"]->isChecked()},
         {"sidebarWidth", sidebar->width()},
         {"sidebarVisible", sidebar->isVisible()},
         {"bodyY", body->y()},
@@ -1586,7 +1657,7 @@ public:
         {"width", width()},
         {"height", height()},
         {"maximized", isMaximized()},
-        {"fullscreen", isFullScreen()},
+        {"fullscreen", isFullScreen()}, {"fullscreenPreviousMaximized", wasMaximizedBeforeFullscreen},
         {"visible", isVisible()},
         {"blur", header->blur}};
   }
@@ -1679,10 +1750,18 @@ public:
     location->setFocus();
     location->selectAll();
   }
+  void openFolder(const QUrl &url, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    if (modifiers.testFlag(Qt::AltModifier)) emit replacementWindowRequested(url);
+    else if (modifiers.testFlag(Qt::MetaModifier) || modifiers.testFlag(Qt::ControlModifier)) {
+      if (QSettings().value("General/openFoldersInTabs", true).toBool()) addTab(url, true);
+      else emit newWindowRequested(url);
+    } else if (!namedActions["toolbar"]->isChecked()) emit newWindowRequested(url);
+    else navigate(url);
+  }
   void openUrl(const QUrl &url) {
     if (openSmartFolder(url)) return;
     if (url.isLocalFile() && QFileInfo(url.toLocalFile()).isDir()) {
-      navigate(url);
+      openFolder(url);
       return;
     }
     if (Archives::canExtract(url).enabled) {
@@ -1712,6 +1791,7 @@ public:
   }
 signals:
   void newWindowRequested(const QUrl &url);
+  void replacementWindowRequested(const QUrl &url);
   void quitRequested();
   void windowListRequested(QMenu *menu);
   void trashPolicyChanged();
@@ -1719,6 +1799,7 @@ signals:
   void closeAllRequested();
   void reopeningRequested(bool previousSession);
   void closing(FinderWindow *window);
+  void activated(FinderWindow *window);
   void minimizeAllRequested();
   void hideRequested();
   void hideOthersRequested();
@@ -1728,8 +1809,27 @@ signals:
   void detachRequested(FinderWindow *source, int index);
 
 protected:
+  void changeEvent(QEvent *event) override {
+    QMainWindow::changeEvent(event);
+    if (!uiReady) return;
+    if (event->type() == QEvent::WindowStateChange) {
+      if (restoreMaximizeAfterFullscreen && event->spontaneous() && !isFullScreen()) {
+        restoreMaximizeAfterFullscreen = false;
+        QTimer::singleShot(0, this, [this] { showMaximized(); });
+      }
+      if (centralWidget()->graphicsEffect()) centralWidget()->graphicsEffect()->update();
+      refresh(); updateMaterial();
+    }
+    if (event->type() == QEvent::WindowActivate) emit activated(this);
+    if (event->type() == QEvent::WindowActivate || event->type() == QEvent::WindowDeactivate)
+      for (auto *control : findChildren<QToolButton *>()) if (control->objectName().startsWith("window-")) control->update();
+  }
   void resizeEvent(QResizeEvent *e) override {
     QMainWindow::resizeEvent(e);
+    if (restoreMaximizeAfterFullscreen && !isFullScreen()) {
+      restoreMaximizeAfterFullscreen = false;
+      QTimer::singleShot(0, this, [this] { showMaximized(); });
+    }
     layoutHeader();
     updateMaterial();
   }
@@ -1753,25 +1853,6 @@ protected:
                                      !QSettings().value("Input/reduceMotion", false).toBool() ? 180 : 0;
         options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
         FinderScroll::install(area, options);
-      }
-    }
-    if (e->type() == QEvent::MouseButtonPress && !isMaximized()) {
-      auto *w = qobject_cast<QWidget *>(o);
-      auto *m = static_cast<QMouseEvent *>(e);
-      if (w && w->window() == this && m->button() == Qt::LeftButton &&
-          windowHandle()) {
-        QPoint point = mapFromGlobal(m->globalPosition().toPoint());
-        Qt::Edges edges;
-        if (point.x() < 5)
-          edges |= Qt::LeftEdge;
-        if (point.x() >= width() - 5)
-          edges |= Qt::RightEdge;
-        if (point.y() < 5)
-          edges |= Qt::TopEdge;
-        if (point.y() >= height() - 5)
-          edges |= Qt::BottomEdge;
-        if (edges && windowHandle()->startSystemResize(edges))
-          return true;
       }
     }
     if (e->type() == QEvent::KeyPress) {
@@ -1800,9 +1881,12 @@ protected:
   }
 
 private:
+  QPointer<QWidget> editorTarget;
+  bool uiReady = false;
   QSize materialContourSize;
   QRegion materialContour;
   bool materialContourSquare = false;
+  QToolButton *persistentMenu = nullptr;
   Header *header;
   Material *sidebar;
   QSplitter *body;
@@ -1858,6 +1942,7 @@ private:
   QHash<QString, QAction *> namedActions;
   bool restoring = false, explicitNavigation = false;
   bool wasMaximizedBeforeFullscreen = false;
+  bool restoreMaximizeAfterFullscreen = false;
   bool writingTags = false;
   quint64 tagGeneration = 0;
   void changeTags(QString tag, int operation) {
@@ -2014,6 +2099,7 @@ private:
       refresh();
   }
   void beginSearch() {
+    if (searchTimer) searchTimer->stop();
     pendingSearchSelection.clear();
     selectedTag.clear();
     if (!browser())
@@ -2040,19 +2126,23 @@ private:
   void layoutHeader() {
     if (!modeBox || !sidebar)
       return;
+    const bool toolbar = !namedActions.contains("toolbar") || namedActions["toolbar"]->isChecked();
+    header->show(); header->setFixedHeight(toolbar ? 52 : 40);
+    if (auto *layout = header->layout()) layout->setContentsMargins(12, toolbar ? 8 : 4, 12, toolbar ? 8 : 4);
     const bool narrow = width() < 850 || search->isVisible();
     const auto hidden = QSettings().value("Window/toolbarHidden").toStringList();
-    modeBox->setVisible(!narrow && !hidden.contains("views"));
-    modePopup->setVisible(narrow && !hidden.contains("views"));
-    toolbarWidgets.value("navigation")->setVisible(!hidden.contains("navigation"));
+    modeBox->setVisible(toolbar && !narrow && !hidden.contains("views"));
+    modePopup->setVisible(toolbar && narrow && !hidden.contains("views"));
+    toolbarWidgets.value("navigation")->setVisible(toolbar && !hidden.contains("navigation"));
     folderTitle->setVisible(!hidden.contains("title"));
-    toolbarWidgets.value("actions")->setVisible(!hidden.contains("actions"));
-    toolbarWidgets.value("search")->setVisible(!hidden.contains("search"));
+    toolbarWidgets.value("actions")->setVisible(toolbar && !hidden.contains("actions"));
+    toolbarWidgets.value("search")->setVisible(toolbar && !hidden.contains("search"));
     headerSidebar->setFixedWidth(
         sidebar->isVisible() ? qMax(94, sidebar->width() - 12) : 94);
-    arrange->setVisible(width() >= 740 && !search->isVisible() && !hidden.contains("sort"));
+    arrange->setVisible(toolbar && width() >= 740 && !search->isVisible() && !hidden.contains("sort"));
     share->setVisible(width() >= 780 && !search->isVisible());
     tagButton->setVisible(width() >= 780 && !search->isVisible());
+    if (persistentMenu) persistentMenu->setVisible(!toolbar || hidden.contains("actions"));
     header->sidebarWidth = sidebar->isVisible() ? sidebar->width() : 106;
     header->update();
   }
@@ -2345,6 +2435,7 @@ private:
     layoutHeader();
   }
   void settingsDialog() {
+    emit activated(this);
     for (auto *top : QApplication::topLevelWidgets())
       if (auto *existing = qobject_cast<FinderSettings *>(top)) { existing->show(); existing->raise(); existing->activateWindow(); return; }
     auto *dialog = new FinderSettings;
@@ -2576,7 +2667,7 @@ private:
       if (browser()->mode() == Browser::Columns) updatePreviewSelection(state.column, previewUrls, primary);
       if (browser()->previewShown()) updatePreviewSelection(state.preview, previewUrls, primary);
     }
-    if (namedActions.contains("sidebar")) { QSignalBlocker blocker(namedActions["sidebar"]); namedActions["sidebar"]->setChecked(sidebar->isVisible()); }
+    if (namedActions.contains("sidebar")) { QSignalBlocker blocker(namedActions["sidebar"]); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); }
     if (namedActions.contains("preview")) {
       QSignalBlocker block(namedActions["preview"]);
       namedActions["preview"]->setChecked(browser()->previewShown());
@@ -2641,6 +2732,7 @@ private:
       const auto urls = selectedUrls(); const auto mime = urls.size() == 1 ? QMimeDatabase().mimeTypeForFile(urls.first().fileName(), QMimeDatabase::MatchExtension) : QMimeType();
       namedActions["print"]->setEnabled(urls.size() == 1 && urls.first().isLocalFile() && (mime.inherits("text/plain") || mime.inherits("application/pdf") || mime.name().startsWith("image/")));
     }
+    updateEditActions();
     const int selected = selectedUrls().size();
     if (inspector && inspector->isVisible()) {
       auto urls = selectedUrls(); if (urls.isEmpty()) urls.append(browser()->url());
@@ -2776,6 +2868,7 @@ private:
   QAction *addAction(QMenu *m, const QString &name, const QString &text,
                      const QStringList &keys, std::function<void()> fn) {
     auto *a = m->addAction(text);
+    a->setObjectName(name);
     namedActions[name] = a;
     QList<QKeySequence> sequences;
     for (auto k : keys)
@@ -2940,14 +3033,21 @@ private:
     addAction(file, "close", "Close Tab", {"Ctrl+W", "Meta+W"},
               [this] { tabs->tabCloseRequested(tabs->currentIndex()); });
     addAction(edit, "undo", "Undo", {"Ctrl+Z", "Meta+Z"},
-              [this] { browser()->undo(); });
+              [this] {
+                auto *focus = editTarget();
+                if (auto *line = qobject_cast<QLineEdit *>(focus)) line->undo();
+                else if (auto *text = qobject_cast<QTextEdit *>(focus)) text->undo();
+                else if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) text->undo();
+                else browser()->undo();
+                updateEditActions();
+              });
     addAction(edit, "copy", "Copy", {"Ctrl+C", "Meta+C"}, [this] { copy(); });
     addAction(edit, "cut", "Cut", {"Ctrl+X", "Meta+X"}, [this] { copy(true); });
     addAction(edit, "paste", "Paste", {"Ctrl+V", "Meta+V"}, [this] {
-      if (auto *line = qobject_cast<QLineEdit *>(QApplication::focusWidget()))
-        line->paste();
-      else if (qobject_cast<QTextEdit *>(QApplication::focusWidget()))
-        return;
+      auto *focus = editTarget();
+      if (auto *line = qobject_cast<QLineEdit *>(focus)) line->paste();
+      else if (auto *text = qobject_cast<QTextEdit *>(focus)) text->paste();
+      else if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) text->paste();
       else if (!showingSearch())
         browser()->paste();
     });
@@ -2957,11 +3057,10 @@ private:
                   browser()->paste(true);
               });
     addAction(edit, "selectAll", "Select All", {"Ctrl+A", "Meta+A"}, [this] {
-      if (auto *line = qobject_cast<QLineEdit *>(QApplication::focusWidget()))
-        line->selectAll();
-      else if (auto *text =
-                   qobject_cast<QTextEdit *>(QApplication::focusWidget()))
-        text->selectAll();
+      auto *focus = editTarget();
+      if (auto *line = qobject_cast<QLineEdit *>(focus)) line->selectAll();
+      else if (auto *text = qobject_cast<QTextEdit *>(focus)) text->selectAll();
+      else if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) text->selectAll();
       else if (showingSearch())
         searchPresentation->activeView()->selectAll();
       else
@@ -2977,8 +3076,7 @@ private:
       sidebar->setVisible(namedActions["sidebar"]->isChecked()); layoutHeader(); updateMaterial();
     }); sidebarAction->setCheckable(true); sidebarAction->setChecked(true);
     auto *toolbarAction = addAction(view, "toolbar", "Show Toolbar", {"Meta+Alt+T"}, [this] {
-      header->setVisible(namedActions["toolbar"]->isChecked());
-      sidebar->setVisible(namedActions["toolbar"]->isChecked() && namedActions["sidebar"]->isChecked()); updateMaterial();
+      layoutHeader(); updateMaterial();
     }); toolbarAction->setCheckable(true); toolbarAction->setChecked(true);
     addAction(view, "customizeToolbar", "Customize Toolbar…", {}, [this] { customizeToolbar(); });
     auto *tabsAction = addAction(view, "tabBar", "Show Tab Bar", {"Meta+Shift+T"}, [this] {
@@ -3094,14 +3192,20 @@ private:
       const auto [name, rect] = layouts[i]; addAction(moveResize, "tile" + QString::number(i), name, {}, [this, rect] { tileWindow(rect.x(), rect.y(), rect.width(), rect.height()); });
     }
     auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
-      if (isFullScreen()) { if (wasMaximizedBeforeFullscreen) showMaximized(); else showNormal(); }
+      if (isFullScreen()) {
+        restoreMaximizeAfterFullscreen = wasMaximizedBeforeFullscreen;
+        showNormal();
+        if (restoreMaximizeAfterFullscreen && QGuiApplication::platformName() != "wayland") {
+          restoreMaximizeAfterFullscreen = false; showMaximized();
+        }
+      }
       else { wasMaximizedBeforeFullscreen = isMaximized(); showFullScreen(); }
       updateMaterial();
     });
     fullscreen->setCheckable(true);
     moveResize->addAction(fullscreen);
     if (auto *zoomControl = findChild<QToolButton *>("window-maximize")) {
-      zoomControl->setMenu(moveResize); zoomControl->setToolTip("Move & Resize (Option-click to fill)");
+      zoomControl->setMenu(moveResize); zoomControl->setAccessibleName("Full Screen"); zoomControl->setToolTip("Full Screen (Option-click to fill; right-click for layouts)");
     }
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
     addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
@@ -3138,11 +3242,29 @@ private:
     for (auto menu : {finder, file, edit, view, go, window, help})
       actionsMenu->addMenu(menu);
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] { refresh(); });
-    connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable,
-            namedActions["undo"], &QAction::setEnabled);
-    connect(KIO::FileUndoManager::self(),
-            &KIO::FileUndoManager::undoTextChanged, namedActions["undo"],
-            &QAction::setText);
+    connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable, this, [this] { updateEditActions(); });
+    connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoTextChanged, this, [this] { updateEditActions(); });
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *focus) {
+      if (!uiReady || QApplication::activePopupWidget()) return;
+      if (focus && focus->window() == this) {
+        editorTarget = qobject_cast<QLineEdit *>(focus) || qobject_cast<QTextEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus) ? focus : nullptr;
+        if (editorTarget && !editorTarget->property("finderEditObserved").toBool()) {
+          editorTarget->setProperty("finderEditObserved", true);
+          if (auto *line = qobject_cast<QLineEdit *>(focus)) {
+            connect(line, &QLineEdit::selectionChanged, this, &FinderWindow::updateEditActions);
+            connect(line, &QLineEdit::textChanged, this, [this] { updateEditActions(); });
+          } else if (auto *text = qobject_cast<QTextEdit *>(focus)) {
+            connect(text, &QTextEdit::selectionChanged, this, &FinderWindow::updateEditActions);
+            connect(text, &QTextEdit::textChanged, this, &FinderWindow::updateEditActions);
+          } else if (auto *text = qobject_cast<QPlainTextEdit *>(focus)) {
+            connect(text, &QPlainTextEdit::selectionChanged, this, &FinderWindow::updateEditActions);
+            connect(text, &QPlainTextEdit::textChanged, this, &FinderWindow::updateEditActions);
+          }
+        }
+      } else editorTarget.clear();
+      updateEditActions();
+    });
+    connect(edit, &QMenu::aboutToShow, this, &FinderWindow::updateEditActions);
     namedActions["undo"]->setEnabled(
         KIO::FileUndoManager::self()->isUndoAvailable());
   }
@@ -3192,6 +3314,7 @@ public:
     auto *w = new FinderWindow(u);
     windows << w;
     lastActiveWindow = w;
+    connect(w, &FinderWindow::activated, this, [this](FinderWindow *window) { lastActiveWindow = window; });
     connect(w, &FinderWindow::closing, this, [this](FinderWindow *window) {
       if (!savingQuitSession) QSettings().setValue("Session/lastClosed", QJsonDocument(window->sessionState()).toJson(QJsonDocument::Compact));
     });
@@ -3201,12 +3324,22 @@ public:
       menu->clear();
       for (const auto &window : windows) if (window) {
         const QPointer<FinderWindow> target = window;
-        auto *entry = menu->addAction(window->windowTitle(), this, [target] { if (target) { target->showNormal(); target->raise(); target->activateWindow(); } });
+        auto *entry = menu->addAction(window->windowTitle(), this, [target] { if (target) { presentWindow(target); } });
         entry->setCheckable(true); entry->setChecked(window == w);
       }
     });
     connect(w, &FinderWindow::newWindowRequested, this,
             [this](const QUrl &url) { create(url); });
+    connect(w, &FinderWindow::replacementWindowRequested, this, [this, source = QPointer<FinderWindow>(w)](const QUrl &url) {
+      auto *destination = create(url);
+      auto success = std::make_shared<bool>(true);
+      connect(destination->browser(), &Browser::errorOccurred, destination, [success](const QString &) { *success = false; });
+      auto *lister = destination->browser()->directoryModel()->dirLister();
+      connect(lister, &KDirLister::jobError, destination, [success](KIO::Job *) { *success = false; });
+      connect(lister, qOverload<>(&KDirLister::completed), destination, [source, destination, url, success] {
+        if (*success && source && destination->browser()->url().adjusted(QUrl::StripTrailingSlash) == url.adjusted(QUrl::StripTrailingSlash)) source->close();
+      }, Qt::SingleShotConnection);
+    });
     connect(w, &FinderWindow::quitRequested, this, [this] {
       QJsonArray session; for (const auto &window : windows) if (window && session.size() < 20) session.append(window->sessionState());
       QSettings().setValue("Session/previous", QJsonDocument(session).toJson(QJsonDocument::Compact)); savingQuitSession = true;
@@ -3223,7 +3356,7 @@ public:
     connect(w, &FinderWindow::hideRequested, this, [this] { for (auto &window : windows) if (window) window->hide(); });
     connect(w, &FinderWindow::hideOthersRequested, this, [this, w] { for (auto &window : windows) if (window && window != w) window->hide(); });
     connect(w, &FinderWindow::showAllRequested, this, [this] { for (auto &window : windows) if (window) window->show(); });
-    connect(w, &FinderWindow::bringAllRequested, this, [this] { for (auto &window : windows) if (window) { window->showNormal(); window->raise(); } });
+    connect(w, &FinderWindow::bringAllRequested, this, [this] { for (auto &window : windows) if (window) { presentWindow(window); } });
     connect(w, &FinderWindow::mergeRequested, this, [this, w] {
       const auto copy = windows; for (const auto &window : copy) if (window && window != w) window->transferTabsTo(w);
     });
@@ -3507,7 +3640,7 @@ public slots:
   bool activateWindow(int index) {
     int current = 0;
     for (const auto &w : m->windows) if (w) {
-      if (current++ == index) { m->lastActiveWindow = w; w->showNormal(); w->show(); w->raise(); w->activateWindow(); return true; }
+      if (current++ == index) { m->lastActiveWindow = w; presentWindow(w); return true; }
     }
     return false;
   }
@@ -3615,6 +3748,27 @@ public slots:
       return false;
     m->active()->resize(width, height);
     return true;
+  }
+  QString focusedText() {
+    if (auto *line = qobject_cast<QLineEdit *>(QApplication::focusWidget())) return line->text();
+    return {};
+  }
+  bool pinch(const QString &name, double factor) {
+    auto *window = m->active();
+    auto *target = window ? window->findChild<QWidget *>(name) : nullptr;
+    if (!target || !target->isVisible()) return false;
+    static QPointingDevice device("private pinch", 9001, QInputDevice::DeviceType::TouchPad,
+        QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 2, 0);
+    const QPointF local = target->rect().center(), global = target->mapToGlobal(local.toPoint());
+    for (auto type : {Qt::BeginNativeGesture, Qt::ZoomNativeGesture, Qt::EndNativeGesture}) {
+      QNativeGestureEvent event(type, &device, 2, local, local, global, type == Qt::ZoomNativeGesture ? factor - 1 : 0, {}, 1);
+      QApplication::sendEvent(target, &event);
+    }
+    return true;
+  }
+  int pointerCursor() {
+    auto *widget = QApplication::widgetAt(QCursor::pos());
+    return widget ? int(widget->cursor().shape()) : -1;
   }
   bool moveWindow(int x, int y) {
     if (!m->active()) return false;

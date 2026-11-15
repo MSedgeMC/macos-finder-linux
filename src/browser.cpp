@@ -1686,7 +1686,8 @@ public:
                 if (proxy->canFetchMore(index)) proxy->fetchMore(index);
                 columns->scrollTo(index);
                 selected();
-            } else q->navigate(entry.url());
+            } else if (q->property("finderHostFolderPolicy").toBool()) emit q->folderOpenRequested(entry.url(), modifiers);
+            else q->navigate(entry.url());
         } else emit q->openRequested(entry.url());
     }
 

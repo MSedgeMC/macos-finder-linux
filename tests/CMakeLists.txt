@@ -96,3 +96,9 @@ target_include_directories(finder-searchresults-test PRIVATE "${PROJECT_SOURCE_D
 target_link_libraries(finder-searchresults-test PRIVATE Qt6::Widgets KF6::KIOCore KF6::KIOGui)
 add_test(NAME finder-searchresults-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-searchresults-test>")
 set_tests_properties(finder-searchresults-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
+add_executable(finder-gestures-test gestures.cpp ../src/gestures.cpp ../src/gestures.h)
+target_include_directories(finder-gestures-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-gestures-test PRIVATE Qt6::Widgets)
+add_test(NAME finder-gestures-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-gestures-test>")
+set_tests_properties(finder-gestures-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
