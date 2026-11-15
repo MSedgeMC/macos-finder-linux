@@ -2667,7 +2667,8 @@ private:
     addAction(window, "minimize", "Minimize", {"Meta+M"}, [this] { showMinimized(); });
     addAction(window, "zoom", "Zoom", {}, [this] { isMaximized() ? showNormal() : showMaximized(); });
     auto *moveResize = window->addMenu("Move & Resize");
-    moveResize->addAction(namedActions["zoom"])->setText("Fill / Restore");
+    moveResize->addAction(namedActions["zoom"]);
+    namedActions["zoom"]->setText("Fill / Restore");
     const QList<QPair<QString, QRectF>> layouts{{"Left Half", {0,0,.5,1}}, {"Right Half", {.5,0,.5,1}},
       {"Top Half", {0,0,1,.5}}, {"Bottom Half", {0,.5,1,.5}}, {"Top Left", {0,0,.5,.5}},
       {"Top Right", {.5,0,.5,.5}}, {"Bottom Left", {0,.5,.5,.5}}, {"Bottom Right", {.5,.5,.5,.5}}};
@@ -2679,7 +2680,7 @@ private:
     });
     fullscreen->setCheckable(true);
     moveResize->addAction(fullscreen);
-    if (auto *zoomControl = findChild<WindowControl *>("window-maximize")) {
+    if (auto *zoomControl = findChild<QToolButton *>("window-maximize")) {
       zoomControl->setMenu(moveResize); zoomControl->setToolTip("Move & Resize (Option-click to fill)");
     }
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
