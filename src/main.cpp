@@ -121,30 +121,36 @@
 #include <cmath>
 #include <mutex>
 
-// Cached with widget repaints; no timer or wallpaper capture is required.
+// Continuous corner geometry shared by alpha clipping and compositor regions.
+// The 16px circular radius has a 60% smooth transition into the straight edges;
+// a superellipse exponent is not equivalent to that corner-smoothing value.
+// Parameter construction adapted from figma-squircle, Copyright 2021 Tien Pham
+// (MIT; see LICENSES/figma-squircle.txt).
 static QPainterPath windowContour(QRectF rect, qreal radius) {
   QPainterPath path;
-  if (radius <= 0) {
-    path.addRect(rect);
-    return path;
-  }
-  const qreal r = qMin(radius, qMin(rect.width(), rect.height()) / 2);
-  const QPointF centers[] = {{rect.right() - r, rect.top() + r},
-                             {rect.right() - r, rect.bottom() - r},
-                             {rect.left() + r, rect.bottom() - r},
-                             {rect.left() + r, rect.top() + r}};
-  for (int corner = 0; corner < 4; ++corner)
-    for (int step = 0; step <= 32; ++step) {
-      const double angle = (-90 + corner * 90 + step * 90.0 / 32) * M_PI / 180;
-      const double c = std::cos(angle), s = std::sin(angle);
-      QPointF point = centers[corner] +
-                      QPointF(r * std::copysign(std::pow(std::abs(c), .62), c),
-                              r * std::copysign(std::pow(std::abs(s), .62), s));
-      if (corner == 0 && step == 0)
-        path.moveTo(point);
-      else
-        path.lineTo(point);
-    }
+  if (radius <= 0) { path.addRect(rect); return path; }
+  const qreal budget = qMin(rect.width(), rect.height()) / 2;
+  const qreal r = qMin(radius, budget);
+  const qreal smoothing = qMin(qreal(.6), budget / r - 1);
+  const qreal span = (1 + smoothing) * r;
+  const qreal angle = 45 * smoothing;
+  const qreal radians = angle * M_PI / 180;
+  const qreal arcLength = std::sin((90 - 2 * angle) * M_PI / 360) * r * std::sqrt(2.0);
+  const qreal tangent = r * std::tan(radians / 2);
+  const qreal c = tangent * std::cos(radians), d = tangent * std::sin(radians);
+  const qreal b = (span - arcLength - c - d) / 3, a = 2 * b;
+  QPainterPath corner;
+  corner.moveTo(0, 0);
+  corner.cubicTo(a, 0, a + b, 0, a + b + c, d);
+  corner.arcTo(QRectF(span - 2 * r, 0, 2 * r, 2 * r), 90 - angle, -(90 - 2 * angle));
+  const QPointF end = corner.currentPosition();
+  corner.cubicTo(end + QPointF(d, c), end + QPointF(d, b + c), QPointF(span, span));
+  const QTransform transforms[] = {
+      {1, 0, 0, 1, rect.right() - span, rect.top()},
+      {0, 1, -1, 0, rect.right(), rect.bottom() - span},
+      {-1, 0, 0, -1, rect.left() + span, rect.bottom()},
+      {0, -1, 1, 0, rect.left(), rect.top() + span}};
+  for (const auto &transform : transforms) path.connectPath(transform.map(corner));
   path.closeSubpath();
   return path;
 }
@@ -257,10 +263,6 @@ protected:
       // toolbar has a quiet solid base beneath its grouped glass controls.
       p.fillRect(QRect(sidebarWidth, 0, width() - sidebarWidth, height()),
                  palette().color(QPalette::Base));
-      p.setPen(FinderAppearance::color(FinderAppearance::MaterialEdge));
-      p.drawLine(0, 0, width(), 0);
-      p.setPen(FinderAppearance::color(FinderAppearance::MaterialShadow));
-      p.drawLine(0, height() - 1, width(), height() - 1);
     }
   }
 };
@@ -1798,6 +1800,9 @@ protected:
   }
 
 private:
+  QSize materialContourSize;
+  QRegion materialContour;
+  bool materialContourSquare = false;
   Header *header;
   Material *sidebar;
   QSplitter *body;
@@ -2686,12 +2691,22 @@ private:
     header->blur = sidebar->blur = available || (supported && property("finderTestCoating").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast());
     header->update();
     sidebar->update();
-    QRegion region(QRect(0, 0, header->sidebarWidth, header->height()));
+    QRegion region;
+    if (header->isVisible()) region += QRegion(QRect(0, 0, header->sidebarWidth, header->height()));
     if (sidebar->isVisible())
       region += QRegion(
           sidebar->rect().translated(sidebar->mapTo(this, QPoint(0, 0))));
-    KWindowEffects::enableBlurBehind(windowHandle(), available, region);
-    KWindowEffects::enableBackgroundContrast(windowHandle(), available, 1.04, 1.10, 1.0, region);
+    // KWin applies blur/contrast even to fully transparent client pixels. Keep
+    // their logical-coordinate region inside the same contour as our alpha.
+    // The contour is cached until geometry/state changes, never sampled at idle.
+    const bool square = isMaximized() || isFullScreen();
+    if (materialContourSize != size() || materialContourSquare != square) {
+      materialContour = QRegion(windowContour(QRectF(rect()), square ? 0 : 16).toFillPolygon().toPolygon());
+      materialContourSize = size(); materialContourSquare = square;
+    }
+    region &= materialContour;
+    KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
+    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.04, 1.10, 1.0, region);
   }
   void applyStyle() {
     QString sheet = R"(

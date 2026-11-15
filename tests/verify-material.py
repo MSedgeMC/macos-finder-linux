@@ -86,9 +86,38 @@ try:
     assert api.moveWindow(100,20)
     QTest.qWait(300)
     assert api.setMaterialBlur(True)
+    assert api.capture(str(out/'window-alpha.png'))
     blurred=capture('blurred')
     assert api.setMaterialBlur(False)
     sharp=capture('unblurred')
+    # Locate the real compositor position using the lossless close-control fill.
+    # Wayland clients cannot choose an absolute screen position via QWidget.move.
+    alpha = Image.open(out/'window-alpha.png').convert('RGBA')
+    def red_bounds(image):
+        pixels=image.load()
+        points=[(x,y) for y in range(image.height) for x in range(image.width)
+                if pixels[x,y][:3] == (255,95,87)]
+        assert points, 'close control not visible'
+        return min(x for x,y in points), min(y for x,y in points)
+    clientRed=red_bounds(alpha); screenRed=red_bounds(blurred)
+    origin=(screenRed[0]-clientRed[0],screenRed[1]-clientRed[1])
+    assert origin[0]>=0 and origin[1]>=0, origin
+    radius=26 # 16px radius plus continuous-corner transition span
+    samples=changedOutside=0; maxOutsideDelta=0
+    for sx,sy in ((0,0),(alpha.width-radius,0),(0,alpha.height-radius),
+                  (alpha.width-radius,alpha.height-radius)):
+        for y in range(sy,sy+radius):
+            for x in range(sx,sx+radius):
+                if alpha.getpixel((x,y))[3] != 0: continue
+                point=(origin[0]+x,origin[1]+y)
+                delta=max(abs(a-b) for a,b in zip(blurred.getpixel(point),sharp.getpixel(point)))
+                samples+=1; maxOutsideDelta=max(maxOutsideDelta,delta)
+                changedOutside+=delta>2
+    assert samples>40, samples
+    assert changedOutside==0, ('compositor effect outside rounded alpha',changedOutside,samples,maxOutsideDelta)
+    # Header/sidebar must join without a separately painted shadow line.
+    assert alpha.getpixel((80,50)) == alpha.getpixel((80,51)) == alpha.getpixel((80,52)), 'painted header shadow'
+    blurred.crop((origin[0]-8,origin[1]-8,origin[0]+80,origin[1]+80)).save(out/'corner-composited.png')
     inside=(128,590,330,650)
     def detail(image):
         crop=image.crop(inside)
@@ -103,7 +132,7 @@ try:
     changed=capture('backdrop-changed')
     delta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(inside),changed.crop(inside))).mean)/3
     assert delta>10,delta
-    result={'passed':True,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,
+    result={'passed':True,'cornerTransparentSamples':samples,'cornerChangedOutside':changedOutside,'cornerMaximumDelta':maxOutsideDelta,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,
             'sharpDetail':sharp_detail,'detailRatio':blurred_detail/sharp_detail,
             'backdropColorDelta':delta,'opaqueFilePaneUnchanged':True,
             'privateWayland':True,'noWorkingDesktopInput':True}
