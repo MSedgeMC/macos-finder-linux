@@ -108,3 +108,8 @@ target_include_directories(finder-browser-folder-test PRIVATE "${PROJECT_SOURCE_
 target_link_libraries(finder-browser-folder-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
 add_test(NAME finder-browser-folder-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-folder-test>")
 set_tests_properties(finder-browser-folder-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")
+
+add_executable(finder-browser-performance browser-performance.cpp ../src/browser.cpp ../src/browser.h ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp ../src/appearance.cpp ../src/appearance.h ../src/batchrename.cpp ../src/batchrename.h ../src/filedetails.cpp ../src/filedetails.h)
+target_include_directories(finder-browser-performance PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-browser-performance PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
+# Diagnostic executable: timings are measured, never asserted as macOS parity.

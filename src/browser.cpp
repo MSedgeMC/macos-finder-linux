@@ -555,7 +555,7 @@ public:
 protected:
     bool subSortLessThan(const QModelIndex &left, const QModelIndex &right) const override {
         const int column = left.column();
-        if (column != KDirModel::Type && column != KDirModel::Size && column < KDirModel::ColumnCount)
+        if (column != KDirModel::Type && column != KDirModel::Size && column != KDirModel::ModifiedTime && column < KDirModel::ColumnCount)
             return KDirSortFilterProxyModel::subSortLessThan(left, right);
         const auto a = left.data(KDirModel::FileItemRole).value<KFileItem>();
         const auto b = right.data(KDirModel::FileItemRole).value<KFileItem>();
@@ -566,7 +566,18 @@ protected:
         // can sniff file contents. The lister's delayed MIME types are enough
         // for ordering; native thumbnail delivery can refine them afterwards.
         int result = 0;
-        if (column >= KDirModel::ColumnCount || column == KDirModel::Size) {
+        if (column == KDirModel::ModifiedTime) {
+            // Compare provider timestamps directly. KFileItem::time creates
+            // localized QDateTime values for every comparison in a large sort.
+            const auto ae = a.entry(), be = b.entry();
+            const auto field = KIO::UDSEntry::UDS_MODIFICATION_TIME;
+            const bool av = ae.contains(field), bv = be.contains(field);
+            if (av != bv) return av == ascending;
+            if (av) {
+                const auto at = ae.numberValue(field), bt = be.numberValue(field);
+                result = at < bt ? -1 : at > bt ? 1 : 0;
+            }
+        } else if (column >= KDirModel::ColumnCount || column == KDirModel::Size) {
             const auto raw = [this, column](const QModelIndex &index, const KFileItem &item) -> QVariant {
                 if (column == Browser::TagsColumn) return tagCache.contains(item.url()) && !tagErrors.contains(item.url()) ?
                     QVariant(tagCache.value(item.url())) : QVariant();
