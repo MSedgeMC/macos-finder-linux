@@ -85,6 +85,7 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegion>
 #include <QSettings>
@@ -1803,6 +1804,7 @@ private:
   QMenu *actionsMenu;
   QuickActions *quickActions = nullptr;
   Archives *archives = nullptr;
+  QPointer<QProgressDialog> archiveProgress;
   SmartFolderReader *smartFolderReader = nullptr;
   quint64 navigationGeneration = 0;
   QHash<QString, QWidget *> toolbarWidgets;
@@ -2671,11 +2673,28 @@ private:
     smartFolderReader = new SmartFolderReader(this);
     quickActions = new QuickActions(this);
     archives = new Archives(this);
-    connect(archives, &Archives::statusChanged, this, [this](const QString &message) { status->setText(message); });
-    connect(archives, &Archives::errorOccurred, this, [this](const QString &message) { status->setText(message); });
-    connect(archives, &Archives::busyChanged, this, [this](bool) { refresh(); });
+    connect(archives, &Archives::statusChanged, this, [this](const QString &message) { status->setText(message); if (archiveProgress) archiveProgress->setLabelText(message); });
+    connect(archives, &Archives::errorOccurred, this, [this](const QString &message) {
+      status->setText(message);
+      auto *dialog = new QMessageBox(QMessageBox::Warning, "Archive Operation", message, QMessageBox::Close, this);
+      dialog->setTextFormat(Qt::PlainText); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+    });
+    connect(archives, &Archives::busyChanged, this, [this](bool busy) {
+      if (busy) {
+        archiveProgress = new QProgressDialog("Preparing archive…", "Cancel", 0, 0, this);
+        archiveProgress->setWindowTitle("Archive Operation"); archiveProgress->setObjectName("finderArchiveProgress");
+        archiveProgress->setAttribute(Qt::WA_DeleteOnClose); archiveProgress->setMinimumDuration(250);
+        archiveProgress->setAutoClose(false); archiveProgress->setAutoReset(false);
+        connect(archiveProgress, &QProgressDialog::canceled, archives, &Archives::cancel);
+      } else if (archiveProgress) { archiveProgress->close(); archiveProgress = nullptr; }
+      refresh();
+    });
     connect(archives, &Archives::progressChanged, this, [this](qint64 done, qint64 total) {
       status->setText(total > 0 ? QString("Archive: %1%").arg(done * 100 / total) : QString("Archive: %1 bytes").arg(done));
+      if (archiveProgress && total > 0) { archiveProgress->setRange(0, 100); archiveProgress->setValue(int(done * 100 / total)); }
+    });
+    connect(archives, &Archives::publicationProgressChanged, this, [this](int percent) {
+      if (archiveProgress) { archiveProgress->setLabelText("Saving archive output…"); archiveProgress->setRange(0, 100); archiveProgress->setValue(percent); }
     });
     connect(archives, &Archives::outputsCreated, this, [this](const QList<QUrl> &urls) {
       if (showingSearch()) beginSearch();
