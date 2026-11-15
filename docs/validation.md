@@ -79,6 +79,22 @@ above.
 
 ## Repeating GUI checks safely
 
+### Sidebar boundary regression
+
+On 2026-11-15, the original capture contained a fully transparent pixel column
+at x256 across all 620 body rows. The corrected layout eliminates this strip
+and keeps the content-side boundary opaque. Fourteen isolated native Wayland
+captures passed at both 1× and 1.5× scaling: all four views, wider/narrower
+sidebar drags, minimum/restored window sizes, sidebar hide/show, a visible tab
+bar, search results, and maximize/restore. Native resize events changed the
+sidebar width while preserving adjoining panes. The final screenshots also
+measured the 73×36 navigation and 142×36 view capsules; no working-desktop input
+or GUI previews were used.
+
+These are boundary and geometry checks, not proof of complete macOS parity.
+The generic-kit comparison and remaining differences are described in
+[design and platform scope](design.md).
+
 The development workspace used its headless virtual-screen runner for GUI
 checks. To repeat them elsewhere, provide a compositor session with private
 Wayland, D-Bus, runtime and XDG directories. Never attach test windows

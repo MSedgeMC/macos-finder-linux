@@ -13,6 +13,12 @@ tags, actions and search share that toolbar. At narrow widths the view controls
 collapse into a popup. The file pane stays opaque; glass is reserved for the
 header and sidebar. A continuous outer contour is approximated locally.
 
+The sidebar and content adjoin without a reserved splitter strip. The native
+resize handle overlaps the panes, retaining its grab area without exposing the
+desktop between them. The content stack has an opaque base across both folder
+and search pages. Navigation and four-view capsules measure 73×36 and 142×36
+logical pixels respectively, matching the audited generic window-kit targets.
+
 Icons, List, Columns and Gallery are separate native views. List exposes real
 sortable metadata columns and expandable directories. Columns retains a real
 folder hierarchy with keyboard navigation. Gallery combines a large preview,
@@ -95,6 +101,14 @@ implemented. Search results currently use a metadata List. Native remote
 directory support depends on installed KIO workers, and blur depends on KWin.
 No lossless comparison with identical files, geometry, scale, typography and
 backdrop has established pixel parity.
+
+A component comparison on 2026-11-15 confirmed the 52-pixel toolbar,
+256-pixel initial sidebar, content origin at (256, 52), the capsule dimensions
+above, 32-pixel medium sidebar rows, and `#1e1e1e` opaque dark content. These
+matches concern generic kit primitives. Section headers retain native KDE hit
+geometry (31 pixels with the tested font versus the kit's 18-pixel allocation),
+and the documented typography, controls, material and platform differences
+remain. This comparison does not establish whole-window 1:1 Finder equality.
 
 This repository does not bundle Apple fonts, Apple kit images or proprietary
 icon assets. Qt/KDE dependencies and any separately installed icon theme retain
