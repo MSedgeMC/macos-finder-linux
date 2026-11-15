@@ -12,6 +12,7 @@
 #include <KFilePlacesView>
 #include <KIO/ApplicationLauncherJob>
 #include <KIO/CopyJob>
+#include <KIO/EmptyTrashJob>
 #include <KIO/FileUndoManager>
 #include <KIO/JobUiDelegateFactory>
 #include <KIO/OpenUrlJob>
@@ -51,6 +52,7 @@
 #include <QMenuBar>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -592,7 +594,7 @@ public:
     });
     tagMenu->addAction("Remove All Tags", this,
                        [this] { changeTags(QString(), 3); });
-    connect(tagMenu, &QMenu::aboutToShow, this, [this] { updateTags(); });
+    connect(tagMenu, &QMenu::aboutToShow, this, [this] { updateTags(true); });
     auto *more = button("more", "Actions", actionsCapsule);
     actionsMenu = new QMenu(more);
     more->setMenu(actionsMenu);
@@ -700,6 +702,22 @@ public:
       tabs->removeTab(i);
       w->deleteLater();
       refresh();
+    });
+    tabs->tabBar()->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tabs->tabBar(), &QWidget::customContextMenuRequested, this, [this](const QPoint &point) {
+      const int index = tabs->tabBar()->tabAt(point);
+      if (index < 0) return;
+      QMenu menu(this);
+      menu.addAction("Close Tab", this, [this, index] { tabs->tabCloseRequested(index); });
+      menu.addAction("Close Other Tabs", this, [this, index] {
+        auto *keep = tabs->widget(index);
+        for (int i = tabs->count() - 1; i >= 0; --i)
+          if (tabs->widget(i) != keep) tabs->tabCloseRequested(i);
+      })->setEnabled(tabs->count() > 1);
+      menu.addAction("Move Tab to New Window", this, [this, index] {
+        detachTab(index);
+      })->setEnabled(tabs->count() > 1);
+      menu.exec(tabs->tabBar()->mapToGlobal(point));
     });
     body->addWidget(sidebar);
     contentStack = new QStackedWidget;
@@ -854,6 +872,35 @@ public:
   }
   Browser *browser() const {
     return qobject_cast<Browser *>(tabs->currentWidget());
+  }
+  QUrl configuredNewFolder() const {
+    return QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString());
+  }
+  void openLaunchFolder(const QUrl &url) {
+    if (QSettings().value("General/openFoldersInTabs", true).toBool()) {
+      showNormal(); show(); raise(); activateWindow(); addTab(url, true);
+    } else emit newWindowRequested(url);
+  }
+  void detachTab(int index) {
+    if (index >= 0 && index < tabs->count() && tabs->count() > 1) emit detachRequested(this, index);
+  }
+  void transferTabsTo(FinderWindow *destination, int only = -1) {
+    if (!destination || destination == this) return;
+    QList<QWidget *> moving;
+    for (int i = 0; i < tabs->count(); ++i)
+      if (only < 0 || only == i) moving << tabs->widget(i);
+    for (auto *widget : moving) {
+      auto *b = qobject_cast<Browser *>(widget);
+      const auto urls = b->selectedUrls();
+      const int mode = int(b->mode());
+      saveView();
+      destination->addTab(b->url(), true);
+      destination->setMode(mode);
+      destination->browser()->selectUrls(urls);
+      if (tabs->count() > 1) tabs->tabCloseRequested(tabs->indexOf(widget));
+      else { close(); break; }
+    }
+    destination->showNormal(); destination->raise(); destination->activateWindow();
   }
   bool showingSearch() const {
     return contentStack && contentStack->currentWidget() == searchPage;
@@ -1227,6 +1274,13 @@ public:
   }
 signals:
   void newWindowRequested(const QUrl &url);
+  void quitRequested();
+  void hideRequested();
+  void hideOthersRequested();
+  void showAllRequested();
+  void bringAllRequested();
+  void mergeRequested();
+  void detachRequested(FinderWindow *source, int index);
 
 protected:
   void resizeEvent(QResizeEvent *e) override {
@@ -1796,7 +1850,25 @@ private:
     });
     addAction(finder, "settings", "Settings…", {"Meta+,", "Ctrl+,"}, [this] { settingsDialog(); });
     finder->addSeparator();
-    addAction(finder, "quit", "Quit Finder", {"Ctrl+Q", "Meta+Q"}, [this] { close(); });
+    addAction(finder, "hide", "Hide Finder", {"Meta+H"}, [this] { emit hideRequested(); });
+    addAction(finder, "hideOthers", "Hide Others", {"Meta+Alt+H"}, [this] { emit hideOthersRequested(); });
+    addAction(finder, "showAll", "Show All", {}, [this] { emit showAllRequested(); });
+    addAction(finder, "emptyTrash", "Empty Trash…", {"Meta+Shift+Backspace"}, [this] {
+      auto empty = [this] {
+        auto *job = KIO::emptyTrash();
+        job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+        connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Trash emptied"); });
+      };
+      if (!QSettings().value("Advanced/warnEmptyTrash", true).toBool()) { empty(); return; }
+      auto *warning = new QMessageBox(QMessageBox::Warning, "Empty Trash", "Are you sure you want to permanently erase the items in the Trash?",
+          QMessageBox::Cancel | QMessageBox::Yes, this);
+      warning->setAttribute(Qt::WA_DeleteOnClose);
+      warning->setDefaultButton(QMessageBox::Cancel);
+      warning->button(QMessageBox::Yes)->setText("Empty Trash");
+      connect(warning, &QMessageBox::finished, this, [empty](int result) { if (result == QMessageBox::Yes) empty(); });
+      warning->open();
+    });
+    addAction(finder, "quit", "Quit Finder", {"Ctrl+Q", "Meta+Q"}, [this] { emit quitRequested(); });
     addAction(file, "newWindow", "New Finder Window", {"Ctrl+N", "Meta+N"},
               [this] {
                 emit newWindowRequested(QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString()));
@@ -1933,6 +2005,24 @@ private:
                 tabs->setCurrentIndex(
                     (tabs->currentIndex() + tabs->count() - 1) % tabs->count());
               });
+    addAction(window, "minimize", "Minimize", {"Meta+M"}, [this] { showMinimized(); });
+    addAction(window, "zoom", "Zoom", {}, [this] { isMaximized() ? showNormal() : showMaximized(); });
+    auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
+      isFullScreen() ? showNormal() : showFullScreen(); updateMaterial();
+    });
+    fullscreen->setCheckable(true);
+    addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
+    addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
+    addAction(window, "detachTab", "Move Tab to New Window", {}, [this] { detachTab(tabs->currentIndex()); });
+    addAction(window, "closeOtherTabs", "Close Other Tabs", {"Meta+Alt+W"}, [this] {
+      auto *keep = tabs->currentWidget();
+      for (int i = tabs->count() - 1; i >= 0; --i)
+        if (tabs->widget(i) != keep) tabs->tabCloseRequested(i);
+    });
+    connect(window, &QMenu::aboutToShow, this, [this] {
+      namedActions["detachTab"]->setEnabled(tabs->count() > 1);
+      namedActions["closeOtherTabs"]->setEnabled(tabs->count() > 1);
+    });
     for (auto n : {"newFolder", "open", "quickLook", "rename", "duplicate", "compress",
                    "trash", "info"})
       actionsMenu->addAction(namedActions[n]);
@@ -1967,6 +2057,22 @@ public:
     windows << w;
     connect(w, &FinderWindow::newWindowRequested, this,
             [this](const QUrl &url) { create(url); });
+    connect(w, &FinderWindow::quitRequested, this, [this] {
+      const auto copy = windows; for (const auto &window : copy) if (window) window->close();
+      if (!daemon) QCoreApplication::quit();
+    });
+    connect(w, &FinderWindow::hideRequested, this, [this] { for (auto &window : windows) if (window) window->hide(); });
+    connect(w, &FinderWindow::hideOthersRequested, this, [this, w] { for (auto &window : windows) if (window && window != w) window->hide(); });
+    connect(w, &FinderWindow::showAllRequested, this, [this] { for (auto &window : windows) if (window) window->show(); });
+    connect(w, &FinderWindow::bringAllRequested, this, [this] { for (auto &window : windows) if (window) { window->showNormal(); window->raise(); } });
+    connect(w, &FinderWindow::mergeRequested, this, [this, w] {
+      const auto copy = windows; for (const auto &window : copy) if (window && window != w) window->transferTabsTo(w);
+    });
+    connect(w, &FinderWindow::detachRequested, this, [this](FinderWindow *source, int index) {
+      auto *destination = create(source->browser()->url());
+      source->transferTabsTo(destination, index);
+      destination->action("closeOtherTabs")->trigger();
+    });
     connect(w, &QObject::destroyed, this, [this] {
       if (!daemon && windowCount() == 0)
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
@@ -1996,6 +2102,12 @@ public slots:
     for (auto path : paths)
       create(
           QUrl::fromUserInput(path, QDir::homePath(), QUrl::AssumeLocalFile));
+  }
+  void openFolders(const QStringList &paths) {
+    for (const auto &path : paths) {
+      const auto url = QUrl::fromUserInput(path, QDir::homePath(), QUrl::AssumeLocalFile);
+      if (auto *window = active()) window->openLaunchFolder(url); else create(url);
+    }
   }
   void showItems(const QStringList &paths) {
     if (paths.isEmpty())
@@ -2373,7 +2485,7 @@ int main(int argc, char **argv) {
         "org.local.Finder", "/Finder", "org.local.Finder",
         quick    ? "quickLook"
         : select ? "showItems"
-                 : "showFolders");
+                 : "openFolders");
     if (paths.isEmpty() && !manager.daemon)
       paths << QDir::homePath();
     if (!paths.isEmpty()) {
