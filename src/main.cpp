@@ -11,6 +11,7 @@
 #include "smartfolder.h"
 #include "archives.h"
 #include "criteriaeditor.h"
+#include "appearance.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -244,15 +245,16 @@ public:
 protected:
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
-    p.fillRect(rect(), QColor(34, 34, 37, blur ? 120 : 255));
+    QColor tint = FinderAppearance::materialTint(); if (!blur) tint.setAlpha(255);
+    p.fillRect(rect(), tint);
     if (objectName() == "finderHeader") {
       // The sidebar material continues through its titlebar; the content
       // toolbar has a quiet solid base beneath its grouped glass controls.
       p.fillRect(QRect(sidebarWidth, 0, width() - sidebarWidth, height()),
-                 QColor(30, 30, 30));
-      p.setPen(QColor(255, 255, 255, 26));
+                 palette().color(QPalette::Base));
+      p.setPen(FinderAppearance::color(FinderAppearance::MaterialEdge));
       p.drawLine(0, 0, width(), 0);
-      p.setPen(QColor(0, 0, 0, 60));
+      p.setPen(FinderAppearance::color(FinderAppearance::MaterialShadow));
       p.drawLine(0, height() - 1, width(), height() - 1);
     }
   }
@@ -974,6 +976,7 @@ public:
     makeActions();
     applyToolbarOrder();
     applyStyle();
+    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); header->update(); sidebar->update(); updateMaterial(); });
     addTab(initial, true);
     qApp->installEventFilter(this);
     installScrolling(this);
@@ -2265,6 +2268,7 @@ private:
       if (auto *existing = qobject_cast<FinderSettings *>(top)) { existing->show(); existing->raise(); existing->activateWindow(); return; }
     auto *dialog = new FinderSettings;
     connect(dialog, &FinderSettings::preferencesChanged, dialog, [dialog] {
+      FinderAppearance::apply(qApp);
       for (auto *window : QApplication::topLevelWidgets()) {
         auto *finder = qobject_cast<FinderWindow *>(window);
         if (!finder) continue;
@@ -2589,7 +2593,7 @@ private:
     if (!windowHandle() || !sidebar)
       return;
     const bool supported = KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
-    const bool available = supported && !property("finderDisableBlur").toBool();
+    const bool available = supported && !property("finderDisableBlur").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast();
     header->blur = sidebar->blur = available;
     header->update();
     sidebar->update();
@@ -2601,7 +2605,7 @@ private:
     KWindowEffects::enableBackgroundContrast(windowHandle(), available, 1.04, 1.10, 1.0, region);
   }
   void applyStyle() {
-    setStyleSheet(R"(
+    QString sheet = R"(
         QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
         #navigationCapsule,#modeCapsule,#actionsCapsule{background:rgba(255,255,255,12);border:1px solid rgba(255,255,255,25);border-radius:18px;}
@@ -2619,7 +2623,22 @@ private:
         QScrollBar:vertical{background:transparent;width:9px;margin:2px;} QScrollBar::handle:vertical{background:#ffffff38;border-radius:3px;min-height:30px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}
         QScrollBar:horizontal{background:transparent;height:9px;margin:2px;} QScrollBar::handle:horizontal{background:#ffffff38;border-radius:3px;min-width:30px;} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}
         #finderSearchResults{background:#1e1e1e;border:0;alternate-background-color:#252525;}
-    )");
+    )";
+    const auto palette = FinderAppearance::palette();
+    const auto css = [](QColor color) { return color.alpha() == 255 ? color.name() : QString("rgba(%1,%2,%3,%4)").arg(color.red()).arg(color.green()).arg(color.blue()).arg(color.alpha()); };
+    const QHash<QString, QColor> colors{{"#ededf2", palette.color(QPalette::Text)}, {"#1e1e1e", palette.color(QPalette::Base)},
+      {"#252525", palette.color(QPalette::AlternateBase)}, {"#343438", palette.color(QPalette::Button)},
+      {"#55555b", FinderAppearance::color(FinderAppearance::Border)}, {"#aaaab1", FinderAppearance::color(FinderAppearance::SecondaryText)},
+      {"#bbbbc0", FinderAppearance::color(FinderAppearance::SecondaryText)}, {"#277cef", palette.color(QPalette::Highlight)},
+      {"#27272b", FinderAppearance::color(FinderAppearance::Header)}, {"#3b3b3f", palette.color(QPalette::Button)},
+      {"#303035", palette.color(QPalette::Window)}, {"#36363a", FinderAppearance::color(FinderAppearance::Border)},
+      {"#333337", palette.color(QPalette::Button)}, {"#4e4e54", FinderAppearance::color(FinderAppearance::Border)},
+      {"#424248", palette.color(QPalette::Button).lighter(115)}, {"#ffffff38", FinderAppearance::color(FinderAppearance::ScrollHandle)}};
+    for (auto it = colors.cbegin(); it != colors.cend(); ++it) sheet.replace(it.key(), css(it.value()));
+    if (!FinderAppearance::dark()) { sheet.replace("rgba(255,255,255,", "rgba(0,0,0,"); sheet.replace("color:white", "color:" + css(palette.color(QPalette::Text))); }
+    sheet += QString("QToolButton:focus,QPushButton:focus,QLineEdit:focus,QComboBox:focus{border:1px solid %1;} QCheckBox:focus{outline:1px solid %1;} QToolButton:disabled{color:%2;}").arg(css(FinderAppearance::color(FinderAppearance::Focus)), css(palette.color(QPalette::Disabled, QPalette::Text)));
+    if (FinderAppearance::highContrast()) sheet += QString("#navigationCapsule,#modeCapsule,#actionsCapsule,QMenu,QHeaderView::section{border:1px solid %1;} QScrollBar::handle{background:%1;}").arg(css(FinderAppearance::color(FinderAppearance::Border)));
+    setStyleSheet(sheet);
   }
   QAction *addAction(QMenu *m, const QString &name, const QString &text,
                      const QStringList &keys, std::function<void()> fn) {
@@ -2924,6 +2943,8 @@ private:
     }
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
     addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
+    addAction(window, "reopenWindow", "Reopen Last Closed Window", {"Meta+Shift+N"}, [this] { emit reopeningRequested(false); });
+    addAction(window, "reopenSession", "Reopen Previous Session", {}, [this] { emit reopeningRequested(true); });
     addAction(window, "detachTab", "Move Tab to New Window", {}, [this] { detachTab(tabs->currentIndex()); });
     addAction(window, "closeOtherTabs", "Close Other Tabs", {}, [this] {
       auto *keep = tabs->currentWidget();
@@ -3486,17 +3507,7 @@ int main(int argc, char **argv) {
   font.setPixelSize(13);
   font.setWeight(QFont::Normal);
   app.setFont(font);
-  QPalette pal;
-  pal.setColor(QPalette::Window, QColor("#26262a"));
-  pal.setColor(QPalette::WindowText, QColor("#ededf2"));
-  pal.setColor(QPalette::Base, QColor("#1e1e1e"));
-  pal.setColor(QPalette::AlternateBase, QColor("#252525"));
-  pal.setColor(QPalette::Text, QColor("#ededf2"));
-  pal.setColor(QPalette::Button, QColor("#343438"));
-  pal.setColor(QPalette::ButtonText, QColor("#ededf2"));
-  pal.setColor(QPalette::Highlight, QColor("#3478f6"));
-  pal.setColor(QPalette::HighlightedText, Qt::white);
-  app.setPalette(pal);
+  FinderAppearance::apply(&app);
   Manager manager;
   const QStringList args = app.arguments();
   manager.daemon = args.contains("--daemon");
