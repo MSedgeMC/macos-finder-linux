@@ -145,7 +145,7 @@ def deployment_files():
         DATA / "applications/org.local.dolphin-original.desktop": (fallback, 0o644),
         CONFIG / "systemd/user/plasma-dolphin.service.d/60-finder-native.conf": (service, 0o644),
         DATA / "dbus-1/services/org.kde.dolphin.FileManager1.service": (dbus_service, 0o644),
-        MIME: (mime_contents(), 0o644),
+        MIME: (mime_contents(), MIME.stat().st_mode & 0o777 if MIME.exists() else 0o644),
     }
 
 
@@ -303,7 +303,17 @@ def load_state(state):
             checked_path(expected, state)
     for item in manifest["proposed"]:
         expected = state / "proposed" / Path(item["path"]).relative_to(HOME)
-        if Path(item["staged"]) != expected or item["mode"] != allowed[item["path"]]:
+        modes = {allowed[item["path"]]}
+        if item["path"] == str(MIME):
+            previous = next(record for record in manifest["files"] if record["path"] == str(MIME))
+            if previous["existed"]:
+                mode = previous["mode"]
+                if not isinstance(mode, int) or not 0 <= mode <= 0o777:
+                    raise RuntimeError("Invalid original MIME file mode")
+                # Keep schema-2 backups that normalized this file to 0644
+                # readable while preserving its permissions in new installs.
+                modes.add(mode)
+        if Path(item["staged"]) != expected or item["mode"] not in modes:
             raise RuntimeError("Unexpected prepared contents location or mode")
         checked_path(expected, state)
     proposals = {item["path"]: item for item in manifest["proposed"]}

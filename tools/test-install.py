@@ -145,6 +145,7 @@ class InstallerTests(unittest.TestCase):
         installer.apply(state)
         report = installer.verify(state)
         self.assertTrue(report["passed"])
+        self.assertEqual(installer.MIME.stat().st_mode & 0o777, 0o640)
         self.assertEqual(report["window_count"], 0)
         text = installer.MIME.read_text()
         self.assertIn(self.original_mime.decode().split("[Added Associations]")[0], text)
@@ -312,6 +313,20 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(original=original):
                 installer.MIME.write_bytes(original)
                 self.assertEqual(installer.mime_contents(), expected)
+
+    def test_existing_finder_preferences_keep_mode_and_reject_added_permissions(self):
+        self.write(installer.MIME, b"[Default Applications]\ninode/directory=org.local.finder.desktop;\n", 0o664)
+        state = installer.prepare()
+        manifest = json.loads((state / "manifest.json").read_text())
+        proposal = next(item for item in manifest["proposed"] if item["path"] == str(installer.MIME))
+        self.assertEqual(proposal["mode"], 0o664)
+        self.assertEqual(Path(proposal["staged"]).read_bytes(), installer.MIME.read_bytes())
+        installer.apply(state)
+        self.assertEqual(installer.MIME.stat().st_mode & 0o777, 0o664)
+        proposal["mode"] = 0o666
+        installer.save_manifest(state, manifest)
+        with self.assertRaisesRegex(RuntimeError, "Unexpected prepared contents"):
+            installer.load_state(state)
 
 
 if __name__ == "__main__":
