@@ -3067,6 +3067,7 @@ class Manager : public QObject {
   Q_CLASSINFO("D-Bus Interface", "org.local.Finder")
 public:
   QList<QPointer<FinderWindow>> windows;
+  QPointer<FinderWindow> lastActiveWindow;
   bool testing = false;
   bool daemon = false;
   bool savingQuitSession = false;
@@ -3104,6 +3105,7 @@ public:
   FinderWindow *create(QUrl u) {
     auto *w = new FinderWindow(u);
     windows << w;
+    lastActiveWindow = w;
     connect(w, &FinderWindow::closing, this, [this](FinderWindow *window) {
       if (!savingQuitSession) QSettings().setValue("Session/lastClosed", QJsonDocument(window->sessionState()).toJson(QJsonDocument::Compact));
     });
@@ -3156,10 +3158,10 @@ public:
     // A sheet or Quick Look owns focus while its Finder window is inactive.
     // Resolve that parent before falling back to another open Finder window.
     for (auto *widget = QApplication::activeWindow(); widget; widget = widget->parentWidget())
-      if (auto *finder = qobject_cast<FinderWindow *>(widget)) return finder;
+      if (auto *finder = qobject_cast<FinderWindow *>(widget)) { lastActiveWindow = finder; return finder; }
     for (auto &w : windows)
-      if (w && w->isActiveWindow())
-        return w;
+      if (w && w->isActiveWindow()) { lastActiveWindow = w; return w; }
+    if (lastActiveWindow) return lastActiveWindow;
     for (auto &w : windows)
       if (w)
         return w;
@@ -3419,7 +3421,7 @@ public slots:
   bool activateWindow(int index) {
     int current = 0;
     for (const auto &w : m->windows) if (w) {
-      if (current++ == index) { w->showNormal(); w->show(); w->raise(); w->activateWindow(); return true; }
+      if (current++ == index) { m->lastActiveWindow = w; w->showNormal(); w->show(); w->raise(); w->activateWindow(); return true; }
     }
     return false;
   }
