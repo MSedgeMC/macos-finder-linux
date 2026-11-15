@@ -111,9 +111,20 @@ try:
         assert pts
         return min(x for x,y in pts),min(y for x,y in pts)
     def image_bounds(im):
-        pts=[(x,y) for y in range(im.height) for x in range(im.width) if im.getpixel((x,y))[:3]==(40,198,221)]
-        assert pts,'lossless preview marker absent'
-        return min(x for x,y in pts),min(y for x,y in pts)
+        # The same file also has a thumbnail in the Finder underneath. Locate
+        # the broad decoded image, rather than the first matching pixel.
+        runs=[];pixels=im.load()
+        for y in range(im.height):
+            start=None
+            for x in range(im.width+1):
+                matched=x<im.width and pixels[x,y][:3]==(40,198,221)
+                if matched and start is None: start=x
+                if not matched and start is not None:
+                    runs.append((x-start,start,y));start=None
+        assert runs,'lossless preview marker absent'
+        longest=max(length for length,x,y in runs)
+        broad=[(x,y) for length,x,y in runs if length>=longest*.9]
+        return min(x for x,y in broad),min(y for x,y in broad)
     cr=image_bounds(alpha);sr=image_bounds(first);origin=(sr[0]-cr[0],sr[1]-cr[1])
     crop=(origin[0]+26,origin[1]+26,origin[0]+alpha.width-26,origin[1]+alpha.height-26)
     assert ImageChops.difference(first.crop(crop),second.crop(crop)).getbbox() is None,'backdrop visible through preview'
