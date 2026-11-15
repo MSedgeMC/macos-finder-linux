@@ -269,12 +269,10 @@ private:
         auto result = std::make_shared<QHash<QUrl, QStringList>>();
         auto errors = std::make_shared<QHash<QUrl, QString>>();
         auto *worker = QThread::create([urls, result, errors] {
-            for (const auto &url : urls) {
-                if (QThread::currentThread()->isInterruptionRequested()) break;
-                QString error;
-                result->insert(url, FileTags::tags(url, &error));
-                if (!error.isEmpty()) errors->insert(url, error);
-            }
+            // The native batch helper snapshots mount metadata once per
+            // bounded batch, instead of reparsing mountinfo for every inode.
+            if (!QThread::currentThread()->isInterruptionRequested())
+                *result = FileTags::tagsForUrls(urls, errors.get());
         });
         tagWorker = worker;
         QObject::connect(worker, &QThread::finished, this, [this, revision, urls, result, errors] {
