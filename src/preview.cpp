@@ -516,6 +516,10 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_nativeActions->setAccessibleName(tr("Open, Print and Share actions"));
     m_nativeActions->setPopupMode(QToolButton::InstantPopup);
     auto *nativeMenu = new QMenu(m_nativeActions);
+    auto *quickActions = nativeMenu->addMenu(tr("Quick Actions"));
+    connect(quickActions, &QMenu::aboutToShow, this, [this, quickActions] {
+        emit quickActionsMenuRequested(quickActions, actionUrls());
+    });
     m_openWithAction = nativeMenu->addAction(tr("Open With…"));
     m_openWithAction->setObjectName(QStringLiteral("previewOpenWith"));
     connect(m_openWithAction, &QAction::triggered, this, &PreviewPane::openWithCurrent);
@@ -1370,6 +1374,10 @@ void PreviewPane::createGallery()
             ? url.toLocalFile() : url.toDisplayString(QUrl::RemovePassword));
     });
     menu->addAction(m_rotateCopy);
+    auto *quickActions = menu->addMenu(tr("Quick Actions"));
+    connect(quickActions, &QMenu::aboutToShow, this, [this, quickActions] {
+        emit quickActionsMenuRequested(quickActions, actionUrls());
+    });
     m_moreActions->setMenu(menu);
     actionsLayout->addWidget(m_moreActions, 1);
     details->addWidget(actions);

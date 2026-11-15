@@ -39,3 +39,9 @@ target_compile_definitions(finder-preview-test PRIVATE FINDER_PREVIEW_PRINT_SUPP
 target_link_libraries(finder-preview-test PRIVATE Qt6::Widgets Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::PrintSupport KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::FileMetaData KF6::Service)
 add_test(NAME finder-preview-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-preview-test>")
 set_tests_properties(finder-preview-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
+add_executable(finder-quickactions-test quickactions.cpp ../src/quickactions.cpp ../src/quickactions.h)
+target_include_directories(finder-quickactions-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-quickactions-test PRIVATE Qt6::Widgets Qt6::Pdf KF6::KIOCore KF6::KIOGui KF6::KIOWidgets)
+add_test(NAME finder-quickactions-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-quickactions-test>")
+set_tests_properties(finder-quickactions-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")

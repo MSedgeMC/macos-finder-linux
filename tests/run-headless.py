@@ -19,4 +19,4 @@ with tempfile.TemporaryDirectory(prefix="finder-headless-") as temporary:
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["XDG_CONFIG_DIRS"] = str(root / "config")
     env["XDG_DATA_DIRS"] = "/usr/local/share:/usr/share"
-    raise SystemExit(subprocess.call(sys.argv[1:], env=env))
+    raise SystemExit(subprocess.call(["dbus-run-session", "--", *sys.argv[1:]], env=env))

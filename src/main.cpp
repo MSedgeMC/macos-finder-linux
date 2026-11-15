@@ -7,6 +7,7 @@
 #include "tags.h"
 #include "settings.h"
 #include "scroll.h"
+#include "quickactions.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -370,6 +371,8 @@ protected:
   }
 };
 static std::mutex tagWrites;
+// Main-thread membership survives tab transfers and closed Finder windows.
+static QSet<QUrl> discoveredTagUrls;
 class TagsJob : public QThread {
   Q_OBJECT
 public:
@@ -1008,8 +1011,8 @@ public:
     if (!browser() || showingSearch() || browser()->url().scheme() == "trash") return false;
     const auto url = browser()->url();
     if (!KProtocolManager::supportsWriting(url) || !KProtocolManager::supportsMakeDir(url)) return false;
-    const auto root = browser()->directoryModel()->dirLister()->rootItem();
-    return root.isNull() ? !url.isLocalFile() || QFileInfo(url.toLocalFile()).isWritable() : root.isWritable();
+    const auto item = browser()->directoryModel()->dirLister()->findByUrl(url);
+    return !item.isNull() && item.isDir() && item.isWritable();
   }
   void renameSelection() {
     const auto urls = selectedUrls();
@@ -1185,6 +1188,9 @@ public:
   }
   void prepareTagMenu() { updateTags(true); }
   void wirePreview(PreviewPane *p) {
+      connect(p, &PreviewPane::quickActionsMenuRequested, this, [this](QMenu *menu, const QList<QUrl> &urls) {
+        menu->clear(); quickActions->populateMenu(menu, urls);
+      });
       connect(p, &PreviewPane::actionError, this, [this](const QUrl &, const QString &error) { status->setText(error); });
     connect(p, &PreviewPane::openRequested, this,
               [this](const QUrl &url) { openUrl(url); });
@@ -1211,18 +1217,19 @@ public:
           if (!rotated.save(staged, "PNG"))
             *error = "Could not write the rotated image copy.";
         });
-        connect(worker, &QThread::finished, this, [this, url, staged, error, temporary] {
-          if (!error->isEmpty()) { status->setText(*error); return; }
+        QPointer<FinderWindow> owner(this);
+        connect(worker, &QThread::finished, qApp, [owner, url, staged, error, temporary] {
+          if (!error->isEmpty()) { if (owner) owner->status->setText(*error); return; }
           const QFileInfo original(url.toLocalFile());
           const QString stem = original.completeBaseName() + " rotated";
           QString destination = original.dir().filePath(stem + ".png");
           int number = 2;
           while (QFileInfo::exists(destination)) destination = original.dir().filePath(stem + " " + QString::number(number++) + ".png");
           auto *job = KIO::copyAs(QUrl::fromLocalFile(staged), QUrl::fromLocalFile(destination));
-          job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+          job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, owner));
           KIO::FileUndoManager::self()->recordCopyJob(job);
-          connect(job, &KJob::result, this, [this, temporary](KJob *finished) {
-            status->setText(finished->error() ? finished->errorText() : "Rotated copy created");
+          connect(job, &KJob::result, job, [owner, temporary](KJob *finished) {
+            if (owner) owner->status->setText(finished->error() ? finished->errorText() : "Rotated copy created");
           });
         });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
@@ -1232,12 +1239,16 @@ public:
         writingTags = true; ++tagGeneration;
         auto *job = new TagsJob; job->urls = {url}; job->tag = tag; job->operation = operation;
         QPointer<PreviewPane> pane(p);
-        connect(job, &TagsJob::done, this, [this, pane, url](QString error, QStringList) {
-          writingTags = false; discoverTags({url}, true);
+        QPointer<FinderWindow> owner(this);
+        connect(job, &TagsJob::done, qApp, [owner, pane, url](QString error, QStringList) {
+          if (owner) owner->writingTags = false;
           if (pane) pane->tagChangeFinished(url, error);
-          for (auto &state : states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
-          if (browser()) browser()->refreshTags();
-          updateTags(true);
+          for (auto *top : QApplication::topLevelWidgets()) if (auto *window = qobject_cast<FinderWindow *>(top)) {
+            window->discoverTags({url}, true);
+            for (auto &state : window->states) { state.gallery->refreshTags(); state.column->refreshTags(); state.preview->refreshTags(); }
+            if (window->browser()) window->browser()->refreshTags();
+            window->updateTags(true);
+          }
         });
         connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
       });
@@ -1617,6 +1628,7 @@ private:
   QActionGroup *modeActions, *sortGroup, *groupActions;
   QAction *descending;
   QMenu *actionsMenu;
+  QuickActions *quickActions = nullptr;
   QToolButton *tagButton;
   QMenu *tagMenu;
   QList<QAction *> tagActions;
@@ -1654,6 +1666,7 @@ private:
   QList<QUrl> pendingTagDiscovery;
   QPointer<QThread> tagDiscovery;
   void discoverTags(const QList<QUrl> &urls, bool force = false) {
+    for (const auto &url : urls) if (url.isLocalFile() && discoveredTagUrls.size() < 10000) discoveredTagUrls.insert(url);
     for (const auto &url : urls) if (url.isLocalFile() && (force || !knownTagUrls.contains(url)) && knownTagUrls.size() < 10000) {
       knownTagUrls.insert(url); if (!pendingTagDiscovery.contains(url)) pendingTagDiscovery << url;
     }
@@ -1940,12 +1953,13 @@ private:
     for (auto *top : QApplication::topLevelWidgets())
       if (auto *existing = qobject_cast<FinderSettings *>(top)) { existing->show(); existing->raise(); existing->activateWindow(); return; }
     auto *dialog = new FinderSettings;
-    connect(dialog, &FinderSettings::preferencesChanged, dialog, [] {
+    connect(dialog, &FinderSettings::preferencesChanged, dialog, [dialog] {
       for (auto *window : QApplication::topLevelWidgets()) {
         auto *finder = qobject_cast<FinderWindow *>(window);
         if (!finder) continue;
         finder->places->refreshPreferences(); finder->rebuildTagMenu();
         finder->installScrolling(finder);
+        finder->installScrolling(dialog);
         if (finder->quickWindow) finder->installScrolling(finder->quickWindow);
         for (auto *b : finder->states.keys()) {
           b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool()); b->refreshPreferences();
@@ -1955,9 +1969,9 @@ private:
     });
     connect(dialog, &FinderSettings::tagMetadataChangeRequested, dialog,
       [dialog](const QString &requestId, const QString &, const QString &oldName, const QString &newName) {
-        QSet<QUrl> urls;
-        for (auto *window : QApplication::topLevelWidgets()) if (auto *finder = qobject_cast<FinderWindow *>(window))
-          for (auto it = finder->knownTagValues.cbegin(); it != finder->knownTagValues.cend(); ++it) if (it.value().contains(oldName)) urls.insert(it.key());
+        // Re-read all discovered URLs under the write lock. A stale display
+        // snapshot must never exclude files from a consecutive rename.
+        const auto urls = discoveredTagUrls;
         auto error = std::make_shared<QString>();
         auto *worker = QThread::create([urls, oldName, newName, error] {
           std::unique_lock<std::mutex> lock(tagWrites);
@@ -2260,6 +2274,13 @@ private:
     return a;
   }
   void makeActions() {
+    quickActions = new QuickActions(this);
+    connect(quickActions, &QuickActions::statusChanged, this, [this](const QString &message) { status->setText(message); });
+    connect(quickActions, &QuickActions::errorOccurred, this, [this](const QString &message) { status->setText(message); });
+    connect(quickActions, &QuickActions::outputsCreated, this, [this](const QList<QUrl> &urls) {
+      if (showingSearch()) beginSearch();
+      else if (!urls.isEmpty() && urls.first().adjusted(QUrl::RemoveFilename).adjusted(QUrl::StripTrailingSlash) == browser()->url().adjusted(QUrl::StripTrailingSlash)) browser()->selectUrls(urls);
+    });
     auto *finder = menuBar()->addMenu("Finder");
     auto *file = menuBar()->addMenu("File");
     auto *edit = menuBar()->addMenu("Edit");
@@ -2339,6 +2360,12 @@ private:
               [this] { if (trashSelection()) restoreSelection(); else selectedOperation("trash"); });
     addAction(file, "print", "Print…", {"Meta+P", "Ctrl+P"}, [this] { printSelection(); });
     file->addMenu(share->menu())->setText("Share"); file->addMenu(tagMenu)->setText("Tags");
+    auto *quickMenu = file->addMenu("Quick Actions");
+    quickMenu->setObjectName("finderQuickActionsMenu");
+    connect(quickMenu, &QMenu::aboutToShow, this, [this, quickMenu] {
+      quickMenu->clear(); quickActions->populateMenu(quickMenu, orderedPreviewUrls(selectedUrls()));
+    });
+    actionsMenu->addMenu(quickMenu);
     addAction(file, "info", "Get Info", {"Ctrl+I", "Meta+I"}, [this] {
       auto urls = selectedUrls();
       if (urls.isEmpty()) urls << browser()->url();

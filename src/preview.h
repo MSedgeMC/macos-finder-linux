@@ -31,6 +31,7 @@ class QListWidget;
 class QTimer;
 class QFileSystemWatcher;
 class QPrinter;
+class QMenu;
 namespace KIO { class PreviewJob; }
 struct PreviewRaster;
 struct PreviewWorkQueue;
@@ -116,6 +117,8 @@ signals:
     void actionError(const QUrl &url, const QString &message);
     // Empty error means completed; cancellation/errors retain source identity.
     void printFinished(const QUrl &url, const QString &error);
+    // Host supplies genuine file actions for the current preview selection.
+    void quickActionsMenuRequested(QMenu *menu, const QList<QUrl> &urls);
 
 protected:
     void resizeEvent(QResizeEvent *event) override;

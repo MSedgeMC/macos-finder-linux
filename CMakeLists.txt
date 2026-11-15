@@ -37,6 +37,7 @@ add_executable(finder
     src/settings.cpp src/settings.h
     src/preferences.cpp src/preferences.h
     src/scroll.cpp src/scroll.h
+    src/quickactions.cpp src/quickactions.h
 )
 target_link_libraries(finder PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Network
