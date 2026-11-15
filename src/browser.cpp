@@ -1304,7 +1304,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     for (int number = 0; number < modes.size(); ++number) {
         const auto saved = modes[number].toObject();
         auto &options = d->viewOptions[number];
-        options.size = number == Columns ? 18 : number == List ? qBound(16, saved.value("iconSize").toInt(18), 64) :
+        options.size = number == Columns ? 18 : number == List ? qBound(16, saved.value("iconSize").toInt(18), 32) :
             qBound(32, saved.value("iconSize").toInt(64), 256);
         options.sort = qBound(0, saved.value("sort").toInt(), int(KDirModel::ColumnCount) - 1);
         options.ascending = saved.value("ascending").toBool(true);
@@ -1443,7 +1443,7 @@ void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(
 void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); d->scheduleThumbnails(); }
 void Browser::setIconSize(int size) {
     if (mode() == Columns) return;
-    size = mode() == List ? qBound(16, size, 64) : qBound(32, size, 256);
+    size = mode() == List ? qBound(16, size, 32) : qBound(32, size, 256);
     if (iconSize() == size) return;
     auto *view = activeView();
     view->setIconSize(QSize(size, size));
