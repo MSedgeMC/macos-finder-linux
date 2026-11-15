@@ -532,6 +532,20 @@ public:
     using View::View;
     DropHandler handler;
 protected:
+    QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex &index, const QEvent *event = nullptr) const override {
+        if (event && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease ||
+                      event->type() == QEvent::MouseButtonDblClick)) {
+            const auto *mouse = static_cast<const QMouseEvent *>(event);
+            if (mouse->modifiers().testFlag(Qt::MetaModifier)) {
+                // Qt's Linux extended selection uses Control. Translate only
+                // this selection query; activation retains the real modifiers.
+                QMouseEvent command(mouse->type(), mouse->position(), mouse->globalPosition(), mouse->button(), mouse->buttons(),
+                                    (mouse->modifiers() & ~Qt::MetaModifier) | Qt::ControlModifier, mouse->pointingDevice());
+                return View::selectionCommand(index, &command);
+            }
+        }
+        return View::selectionCommand(index, event);
+    }
     void dropEvent(QDropEvent *event) override {
         auto index = this->indexAt(event->position().toPoint());
         if (!index.isValid()) index = this->rootIndex();
@@ -801,10 +815,14 @@ public:
         else emit q->previewRequested({});
     }
 
-    void activate(const QModelIndex &index) {
+    void activate(const QModelIndex &index, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
         const auto entry = item(index);
         if (entry.isNull()) return;
         if (entry.isDir()) {
+            if (modifiers & (Qt::MetaModifier | Qt::ControlModifier | Qt::AltModifier)) {
+                emit q->folderOpenRequested(entry.url(), modifiers);
+                return;
+            }
             if (currentMode == Columns) {
                 columnSelection->setCurrentIndex(index.siblingAtColumn(0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
                 if (proxy->canFetchMore(index)) proxy->fetchMore(index);
@@ -1371,6 +1389,20 @@ void Browser::drop(QDropEvent *event, QUrl destination) {
     d->job(job, "Transferring…"); event->acceptProposedAction();
 }
 bool Browser::eventFilter(QObject *object, QEvent *event) {
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        auto *view = qobject_cast<QAbstractItemView *>(object->parent());
+        if (mouse->button() == Qt::LeftButton && view && object == view->viewport() &&
+            (mouse->modifiers() & (Qt::MetaModifier | Qt::ControlModifier | Qt::AltModifier))) {
+            const auto index = view->indexAt(mouse->position().toPoint());
+            if (d->item(index).isDir()) {
+                // Capture the input event before Qt emits doubleClicked or a
+                // queued action can lose the user's actual modifier state.
+                d->activate(index, mouse->modifiers());
+                return true;
+            }
+        }
+    }
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         (object == d->icons->viewport() || object == d->strip->viewport())) d->scheduleThumbnails();
     if (event->type() == QEvent::Resize && object == d->strip->viewport()) {

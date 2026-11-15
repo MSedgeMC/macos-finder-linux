@@ -77,6 +77,7 @@ signals:
     void previewRequested(const QUrl &url);
     void quickLookRequested(const QList<QUrl> &urls);
     void openRequested(const QUrl &url);
+    void folderOpenRequested(const QUrl &url, Qt::KeyboardModifiers modifiers);
     void statusMessage(const QString &message);
     void errorOccurred(const QString &message);
 protected:
