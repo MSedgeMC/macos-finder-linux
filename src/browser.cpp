@@ -1269,6 +1269,9 @@ public:
     QUrl springRestoreColumns;
     Mode currentMode = Icons;
     QList<QUrl> pendingSelection;
+    QUrl pendingRename;
+    quint64 folderCreationGeneration = 0;
+    bool creatingFolder = false;
     bool changing = false;
     bool previews = true;
     bool sidePreview = false;
@@ -1711,6 +1714,18 @@ public:
         activeSelection()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
         q->activeView()->scrollTo(current);
         if (complete) springRestoreColumns = QUrl();
+        if (complete && !pendingRename.isEmpty() && item(current).url() == pendingRename) {
+            pendingRename = QUrl();
+            QTimer::singleShot(0, q, [this, index = QPersistentModelIndex(current)] {
+                if (!index.isValid() || !q->isVisible()) return;
+                auto *view = q->activeView();
+                if (currentMode == Columns) {
+                    for (auto *column : columns->findChildren<QListView *>())
+                        if (column->isVisible() && column->rootIndex() == index.parent()) { view = column; break; }
+                }
+                view->setFocus(); view->edit(index);
+            });
+        }
     }
 
     void job(KIO::Job *job, const QString &message) {
@@ -2338,7 +2353,8 @@ void Browser::navigateValidated(const QUrl &requested) {
     const QUrl target = Private::normalized(requested);
     d->springRestoreColumns = QUrl();
     d->changing = true;
-    d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear();
+    d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear(); d->pendingRename = QUrl();
+    ++d->folderCreationGeneration; d->creatingFolder = false;
     d->rootUrl = target; d->currentUrl = target;
     d->resetThumbnailRequests();
     refreshMetadata();
@@ -2568,16 +2584,36 @@ void Browser::renameSelected() {
     view->setCurrentIndex(index); view->scrollTo(index); view->edit(index);
 }
 void Browser::newFolder() {
-    if (!url().isValid()) return;
-    bool ok = false;
-    const auto name = QInputDialog::getText(window(), "New Folder", "Name:", QLineEdit::Normal, "Untitled Folder", &ok);
-    if (!ok) return;
-    if (!validName(name)) { emit errorOccurred("Enter a valid folder name without a slash."); return; }
-    const auto destination = childUrl(url(), name);
-    auto *job = KIO::mkdir(destination);
-    KIO::FileUndoManager::self()->recordJob(KIO::FileUndoManager::Mkdir, {}, destination, job);
-    d->job(job, "Creating folder…");
-    connect(job, &KJob::result, this, [this, destination](KJob *job) { if (!job->error()) selectUrls({destination}); });
+    if (!url().isValid() || url().scheme() == "trash" || d->creatingFolder) return;
+    const auto parent = url();
+    QSet<QString> occupied;
+    for (const auto &entry : d->model->dirLister()->itemsForDir(parent, KDirLister::AllItems)) occupied.insert(entry.name());
+    auto candidate = std::make_shared<int>(1);
+    while (occupied.contains(*candidate == 1 ? QStringLiteral("Untitled Folder") : QString("Untitled Folder %1").arg(*candidate))) ++*candidate;
+    d->creatingFolder = true;
+    const auto generation = ++d->folderCreationGeneration;
+    auto attempt = std::make_shared<std::function<void()>>();
+    *attempt = [this, parent, candidate, generation, weak = std::weak_ptr<std::function<void()>>(attempt)] {
+        if (generation != d->folderCreationGeneration || url() != parent) return;
+        const auto name = *candidate == 1 ? QStringLiteral("Untitled Folder") : QString("Untitled Folder %1").arg(*candidate);
+        const auto destination = childUrl(parent, name);
+        auto *job = KIO::mkdir(destination, -1);
+        KIO::FileUndoManager::self()->recordJob(KIO::FileUndoManager::Mkdir, {}, destination, job);
+        emit statusMessage(QStringLiteral("Creating folder…"));
+        auto keep = weak.lock();
+        connect(job, &KJob::result, this, [this, parent, destination, candidate, generation, keep](KJob *done) {
+            if (generation != d->folderCreationGeneration) return;
+            if ((done->error() == KIO::ERR_DIR_ALREADY_EXIST || done->error() == KIO::ERR_FILE_ALREADY_EXIST) && ++*candidate <= 10000) {
+                if (keep) QTimer::singleShot(0, this, [keep] { (*keep)(); });
+                return;
+            }
+            d->creatingFolder = false;
+            if (done->error()) { emit errorOccurred(done->errorString()); return; }
+            emit statusMessage(QStringLiteral("Folder created"));
+            if (url() == parent) { d->pendingRename = destination; selectUrls({destination}); }
+        });
+    };
+    (*attempt)();
 }
 void Browser::newFolderWithSelection() {
     if (!canNewFolderWithSelection()) return;

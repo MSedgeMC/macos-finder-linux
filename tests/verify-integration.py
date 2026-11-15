@@ -462,7 +462,7 @@ try:
         record("nativeUndoRename")
 
         trigger("newFolder")
-        until(lambda: any(w["class"] == "QInputDialog" for w in top_levels()), "new folder dialog")
+        until(lambda: (artwork / "Untitled Folder").is_dir(), "new folder inline rename")
         assert api.dialogText("New Test Folder", timeout=3)
         created = artwork / "New Test Folder"
         until(created.is_dir, "native new folder")

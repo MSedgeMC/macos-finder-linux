@@ -102,3 +102,9 @@ target_include_directories(finder-gestures-test PRIVATE "${PROJECT_SOURCE_DIR}/s
 target_link_libraries(finder-gestures-test PRIVATE Qt6::Widgets)
 add_test(NAME finder-gestures-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-gestures-test>")
 set_tests_properties(finder-gestures-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
+
+add_executable(finder-browser-folder-test browser-folder.cpp ../src/browser.cpp ../src/browser.h ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp ../src/appearance.cpp ../src/appearance.h)
+target_include_directories(finder-browser-folder-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-browser-folder-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
+add_test(NAME finder-browser-folder-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-folder-test>")
+set_tests_properties(finder-browser-folder-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")
