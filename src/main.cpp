@@ -1773,6 +1773,14 @@ private:
     if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(previewUrls);
     if (browser()->mode() == Browser::Columns) state.column->setUrls(previewUrls);
     if (browser()->previewShown()) state.preview->setUrls(previewUrls);
+    if (namedActions.contains("preview")) {
+      QSignalBlocker block(namedActions["preview"]);
+      namedActions["preview"]->setChecked(browser()->previewShown());
+    }
+    if (namedActions.contains("fullscreen")) {
+      namedActions["fullscreen"]->setChecked(isFullScreen());
+      namedActions["fullscreen"]->setText(isFullScreen() ? "Exit Full Screen" : "Enter Full Screen");
+    }
     for (auto *action : groupActions->actions()) action->setChecked(action->data().toInt() == int(browser()->group()));
     if (namedActions.contains("compress")) namedActions["compress"]->setEnabled(!showingSearch() && browser()->canCompressSelection());
     {
@@ -1805,6 +1813,8 @@ private:
     if (!capacityText.isEmpty())
       text += " · " + capacityText;
     status->setText(text);
+    if (crumbs->property("finderUrl").toUrl() == u) return;
+    crumbs->setProperty("finderUrl", u);
     while (auto *item = crumbLayout->takeAt(0)) {
       if (item->widget())
         item->widget()->deleteLater();
