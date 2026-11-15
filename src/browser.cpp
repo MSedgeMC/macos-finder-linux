@@ -36,6 +36,7 @@
 #include <QPushButton>
 #include <QQueue>
 #include <QScrollBar>
+#include <QScopedValueRollback>
 #include <QSettings>
 #include <QSet>
 #include <QStandardPaths>
@@ -552,9 +553,19 @@ public:
     using View::View;
     DropHandler handler;
 protected:
+    void mousePressEvent(QMouseEvent *event) override {
+        QScopedValueRollback<bool> handling(handlingPress, true);
+        QScopedValueRollback<Qt::KeyboardModifiers> modifiers(pressModifiers, event->modifiers());
+        View::mousePressEvent(event);
+    }
     QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex &index, const QEvent *event = nullptr) const override {
+        // currentChanged() re-enters this query with no event while Qt handles
+        // a press. Use that press's modifiers so the range anchor survives,
+        // including programmatic input whose global keyboard state is empty.
+        if (!event && handlingPress && pressModifiers.testFlag(Qt::ShiftModifier))
+            return QItemSelectionModel::SelectCurrent | QItemSelectionModel::Rows;
         if (event && (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonRelease ||
-                      event->type() == QEvent::MouseButtonDblClick)) {
+                      event->type() == QEvent::MouseButtonDblClick || event->type() == QEvent::MouseMove)) {
             const auto *mouse = static_cast<const QMouseEvent *>(event);
             if (mouse->modifiers().testFlag(Qt::MetaModifier)) {
                 // Qt's Linux extended selection uses Control. Translate only
@@ -572,6 +583,9 @@ protected:
         if (handler) handler(event, index);
         else View::dropEvent(event);
     }
+private:
+    bool handlingPress = false;
+    Qt::KeyboardModifiers pressModifiers = Qt::NoModifier;
 };
 
 class FinderListView : public DropView<QTreeView> {
@@ -591,7 +605,7 @@ public:
 protected:
     void mousePressEvent(QMouseEvent *event) override {
         if (onHeading(event->position().toPoint())) { event->accept(); return; }
-        QTreeView::mousePressEvent(event);
+        DropView::mousePressEvent(event);
     }
     void mouseReleaseEvent(QMouseEvent *event) override {
         if (onHeading(event->position().toPoint())) {
