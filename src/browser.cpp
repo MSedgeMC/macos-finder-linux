@@ -858,38 +858,47 @@ public:
     }
 
     void scheduleThumbnails() {
-        if (previews && (currentMode == Icons || currentMode == Gallery) && !thumbnailTimer.isActive())
+        if (previews && !thumbnailTimer.isActive())
             thumbnailTimer.start();
     }
 
     void updateVisibleThumbnails() {
-        if (thumbnailJob || !previews || (currentMode != Icons && currentMode != Gallery)) return;
-        auto *view = currentMode == Icons ? static_cast<QListView *>(icons) : strip;
-        const QRect viewport = view->viewport()->rect();
-        if (!view->isVisible() || viewport.isEmpty()) return;
-        const QSize grid = view->gridSize();
-        const int dx = qMax(16, grid.width() / 2);
-        const int dy = qMax(16, grid.height() / 2);
+        if (thumbnailJob || !previews || !q->isVisible()) return;
+        QList<QAbstractItemView *> views;
+        if (currentMode == Columns) {
+            for (auto *column : columns->findChildren<QListView *>())
+                if (column->isVisible()) views.append(column);
+        } else views.append(q->activeView());
         KFileItemList visible;
         QSet<QUrl> sampled;
         // Sample viewport cells rather than walking every model row. Half-cell
         // steps also cover partially visible tiles and categorized headings.
-        for (int y = 1; y < viewport.height() && visible.size() < 16; y += dy) {
-            for (int x = 1; x < viewport.width() && visible.size() < 16; x += dx) {
-                const auto index = view->indexAt(QPoint(x, y));
-                if (!index.isValid()) continue;
-                const auto entry = item(index);
-                if (entry.isNull() || thumbnailRequests.contains(entry.url()) || sampled.contains(entry.url())) continue;
-                sampled.insert(entry.url()); visible.append(entry);
+        for (auto *view : views) {
+            const QRect viewport = view->viewport()->rect();
+            if (!view->isVisible() || viewport.isEmpty()) continue;
+            const bool tiles = currentMode == Icons || currentMode == Gallery;
+            const QSize grid = tiles ? static_cast<QListView *>(view)->gridSize() : QSize();
+            const int dx = tiles ? qMax(16, grid.width() / 2) : viewport.width();
+            const int dy = tiles ? qMax(16, grid.height() / 2) :
+                qMax(8, qMax(view->fontMetrics().height() + 6, view->iconSize().height() + 6) / 2);
+            for (int y = 1; y < viewport.height() && visible.size() < 16; y += dy) {
+                for (int x = 1; x < viewport.width() && visible.size() < 16; x += dx) {
+                    const auto index = view->indexAt(QPoint(x, y));
+                    if (!index.isValid()) continue;
+                    const auto entry = item(index);
+                    if (entry.isNull() || thumbnailRequests.contains(entry.url()) || sampled.contains(entry.url())) continue;
+                    sampled.insert(entry.url()); visible.append(entry);
+                }
             }
+            if (visible.size() >= 16) break;
         }
         if (visible.isEmpty()) return; // A stationary view has no timer loop.
         for (const auto &entry : visible) thumbnailRequests.insert(entry.url());
         const auto revision = thumbnailRevision;
-        const auto extent = view->iconSize();
+        const auto extent = q->activeView()->iconSize();
         const auto plugins = KIO::PreviewJob::defaultPlugins();
         auto *operation = KIO::filePreview(visible, extent, &plugins);
-        operation->setDevicePixelRatio(view->devicePixelRatioF());
+        operation->setDevicePixelRatio(q->activeView()->devicePixelRatioF());
         thumbnailJob = operation;
         QObject::connect(operation, &KIO::PreviewJob::gotPreview, q,
             [this, revision](const KFileItem &entry, const QPixmap &pixmap) {
@@ -1097,10 +1106,8 @@ public:
         view->setItemDelegate(delegate);
         view->installEventFilter(q);
         view->viewport()->installEventFilter(q);
-        if (view == icons || view == strip) {
-            QObject::connect(view->verticalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
-            QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
-        }
+        QObject::connect(view->verticalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
+        QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
         // QColumnView already forwards its child columns' activation signals.
         if (!childColumn) QObject::connect(view, &QAbstractItemView::doubleClicked, q, [this](const auto &index) { activate(index); });
         QObject::connect(view, &QWidget::customContextMenuRequested, q, [this, view](const auto &point) { context(view, point); });
@@ -1193,6 +1200,8 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     // precision is 1000; -1 would visit the entire folder on each fit.
     d->list->header()->setResizeContentsPrecision(200);
     connect(d->list->header(), &QHeaderView::sectionHandleDoubleClicked, this, &Browser::autoSizeListColumns);
+    connect(d->list, &QTreeView::expanded, this, [this] { d->scheduleThumbnails(); });
+    connect(d->list, &QTreeView::collapsed, this, [this] { d->scheduleThumbnails(); });
     d->list->header()->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(d->list->header(), &QWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         QMenu menu(d->list->header());
@@ -1686,8 +1695,14 @@ bool Browser::eventFilter(QObject *object, QEvent *event) {
             }
         }
     }
-    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
-        (object == d->icons->viewport() || object == d->strip->viewport())) d->scheduleThumbnails();
+    if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+        auto *view = qobject_cast<QAbstractItemView *>(object->parent());
+        if (view && object == view->viewport()) d->scheduleThumbnails();
+    }
+    if (event->type() == QEvent::DevicePixelRatioChange) {
+        d->proxy->decorationScale = activeView()->devicePixelRatioF();
+        d->resetThumbnailRequests();
+    }
     if (event->type() == QEvent::Resize && object == d->strip->viewport()) {
         // Defer until Qt has established the viewport geometry; no animation
         // loop or background polling is needed for a stationary filmstrip.
