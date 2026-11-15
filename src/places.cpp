@@ -128,7 +128,7 @@ public:
         p->setRenderHint(QPainter::Antialiasing);
         const bool reverse = option.direction == Qt::RightToLeft;
         if (index.data(HeadingRole).toBool()) {
-            QFont font(option.font); font.setPointSizeF(11); font.setWeight(QFont::Bold);
+            QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Bold);
             p->setFont(font);
             QColor text = option.palette.color(QPalette::WindowText); text.setAlphaF(0.55);
             p->setPen(text);
