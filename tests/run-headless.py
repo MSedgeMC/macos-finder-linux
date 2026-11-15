@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import signal
 from pathlib import Path
 with tempfile.TemporaryDirectory(prefix="finder-headless-") as temporary:
     root = Path(temporary)
@@ -19,4 +20,14 @@ with tempfile.TemporaryDirectory(prefix="finder-headless-") as temporary:
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["XDG_CONFIG_DIRS"] = str(root / "config")
     env["XDG_DATA_DIRS"] = "/usr/local/share:/usr/share"
-    raise SystemExit(subprocess.call(["dbus-run-session", "--", *sys.argv[1:]], env=env))
+    # Session activation helpers can outlive the executable. Exit with the
+    # test result, then terminate only this private session's process group.
+    process = subprocess.Popen(["dbus-run-session", "--", *sys.argv[1:]], env=env, start_new_session=True)
+    try:
+        result = process.wait()
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    raise SystemExit(result)
