@@ -180,3 +180,12 @@ Its detail ratio was **0.118**, the live backdrop color delta was **28.83**, and
 the opaque file pane remained unchanged. The sidebar boundary suite passed
 **22 captures at 1× and 22 at 1.5×**. Component totals overlap and must not be
 added together as a count of unique functions.
+
+
+The installed KDE 6.24 directory watcher can discard a DELETE received within
+the same timestamp second. Plain native KDirModel reproduced that fault. The
+app now observes loaded local directories with Qt's event-driven watcher and
+coalesces changes into the public KIO incremental directory update. Native KIO
+retains row/selection changes; no idle polling is added. Six repeated external
+create/select/delete cycles with pinned directory timestamps passed, alongside
+the metadata and arrangement/spring-loading suites.
