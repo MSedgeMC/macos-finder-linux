@@ -893,10 +893,24 @@ public:
       auto *b = qobject_cast<Browser *>(widget);
       const auto urls = b->selectedUrls();
       const int mode = int(b->mode());
+      const auto history = states.value(b);
       saveView();
       destination->addTab(b->url(), true);
       destination->setMode(mode);
-      destination->browser()->selectUrls(urls);
+      auto *replacement = destination->browser();
+      replacement->setIconSize(b->iconSize());
+      replacement->setSort(b->sortColumn(), b->sortAscending());
+      replacement->setGroup(b->group());
+      replacement->setGridSpacing(b->gridSpacing());
+      replacement->setTextSize(b->textSize());
+      replacement->setLabelPosition(b->labelPosition());
+      replacement->setIconPreviewsShown(b->iconPreviewsShown());
+      replacement->setPreviewShown(b->previewShown());
+      auto &newState = destination->states[replacement];
+      newState.history = history.history; newState.historyIndex = history.historyIndex;
+      if (auto *tree = b->findChild<QTreeView *>("finderListView"))
+        replacement->findChild<QTreeView *>("finderListView")->header()->restoreState(tree->header()->saveState());
+      replacement->selectUrls(urls);
       if (tabs->count() > 1) tabs->tabCloseRequested(tabs->indexOf(widget));
       else { close(); break; }
     }
