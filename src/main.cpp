@@ -52,6 +52,7 @@
 #include <QSaveFile>
 #include <QScrollArea>
 #include <QSortFilterProxyModel>
+#include <QScopedValueRollback>
 #include <QSet>
 #include <QFileDialog>
 #include <QDBusConnection>
@@ -861,6 +862,7 @@ public:
     searchPresentation->setModel(searchModel);
     searchGallery = attachPreview(searchPresentation->galleryHost()); searchGallery->setGallery(true);
     connect(searchPresentation, &SearchResults::selectionChanged, this, [this] {
+      if (!applyingSearchSelectionRestore) pendingSearchSelection.clear();
       const auto ordered = orderedPreviewUrls(searchSelection());
       updatePreviewSelection(searchGallery, ordered, ordered.isEmpty() ? QUrl() : ordered.first());
       if (showingSearch() && quickWindow && quickWindow->isVisible() && !searchSelection().isEmpty()) {
@@ -914,12 +916,17 @@ public:
                     QFileInfo(u.toLocalFile()).absolutePath()));
                 searchModel->appendRow({name, kind, path});
               }
+              if (!pendingSearchSelection.isEmpty()) {
+                QScopedValueRollback<bool> restoring(applyingSearchSelectionRestore, true);
+                searchPresentation->setUrls(pendingSearchSelection, pendingSearchPrimary);
+              }
               searchSummary->setText(QString("Searching %1 — %2 results")
                                          .arg(title(searchRoot))
                                          .arg(searchModel->rowCount()));
             });
     connect(fileSearch, &LocalFileSearch::finished, this,
             [this](quint64, int count, bool limited, int skipped) {
+              pendingSearchSelection.clear();
               searchSummary->setText(
                   QString("%1 results in %2%3%4")
                       .arg(count)
@@ -1840,6 +1847,9 @@ private:
   QList<QAction *> tagActions;
   QHash<Browser *, TabState> states;
   QPointer<Browser> searchStateBrowser;
+  QList<QUrl> pendingSearchSelection;
+  QUrl pendingSearchPrimary;
+  bool applyingSearchSelectionRestore = false;
   QHash<QString, QAction *> namedActions;
   bool restoring = false, explicitNavigation = false;
   bool wasMaximizedBeforeFullscreen = false;
@@ -1974,8 +1984,16 @@ private:
       LocalFileSearch::Options options; options.requiredTag = selectedTag; options.showHidden = true; options.preferredPath = browser()->url().toLocalFile();
       searchSummary->setText("Tags: " + selectedTag + " — Searching…"); places->setTag(selectedTag); fileSearch->start(searchRoot, QString(), options);
     } else if (search->isVisible()) beginSearch();
+    if (showingSearch()) {
+      for (const auto &entry : state.value("selectedResults").toArray()) {
+        const QUrl url(entry.toString());
+        if (pendingSearchSelection.size() < 2000 && url.isValid() && !url.isRelative() && url.password().isEmpty()) pendingSearchSelection.append(url);
+      }
+      pendingSearchPrimary = QUrl(state.value("primaryResult").toString());
+    }
   }
   void stopSearch() {
+    pendingSearchSelection.clear();
     selectedTag.clear();
     if (fileSearch)
       fileSearch->cancel();
@@ -1991,6 +2009,7 @@ private:
       refresh();
   }
   void beginSearch() {
+    pendingSearchSelection.clear();
     selectedTag.clear();
     if (!browser())
       return;
@@ -2263,10 +2282,13 @@ private:
     }); dialog->resize(720, 460); dialog->open();
   }
   QJsonObject searchDefinition() const {
+    QJsonArray selection;
+    if (showingSearch()) for (const auto &url : searchSelection().mid(0, 2000)) selection.append(url.toString(QUrl::RemovePassword));
+    const auto primary = showingSearch() ? searchPresentation->selectionModel()->currentIndex().data(Qt::UserRole).toUrl() : QUrl();
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
       {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
       {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter},
-      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}, {"resultsMode", searchPresentation->mode()}, {"resultsSort", searchPresentation->proxyModel()->sortColumn()}, {"resultsDescending", searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder}};
+      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}, {"selectedResults", selection}, {"primaryResult", primary.toString(QUrl::RemovePassword)}, {"resultsMode", searchPresentation->mode()}, {"resultsSort", searchPresentation->proxyModel()->sortColumn()}, {"resultsDescending", searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder}};
   }
   void saveSmartFolder() {
     auto *dialog = new QFileDialog(this, "Save Smart Folder", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), "Finder Smart Folder (*.finder-search)");
