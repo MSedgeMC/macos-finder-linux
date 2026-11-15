@@ -1966,7 +1966,8 @@ private:
     options.preferredPath = browser()->url().isLocalFile() ? browser()->url().toLocalFile() : QDir::homePath();
     options.kind = searchKind->currentData().toString(); options.contentText = searchContent->text();
     options.minimumSize = searchMinimumSize; options.maximumSize = searchMaximumSize; options.modifiedAfter = searchModifiedAfter;
-    options.criteria = searchCriteria; options.parseKeywords = searchParseKeywords; options.provider = searchProvider;
+    options.criteria = searchCriteria; options.parseKeywords = searchParseKeywords;
+    options.provider = searchScope->currentData().toString() == "computer" && searchProvider == LocalFileSearch::Options::Provider::Local ? LocalFileSearch::Options::Provider::PreferIndex : searchProvider;
     fileSearch->start(searchRoot, search->text().trimmed(), options);
     refresh();
   }
@@ -3414,7 +3415,7 @@ public slots:
     for (auto *w : windows)
       if (w->isVisible())
         for (auto *b : w->findChildren<QPushButton *>())
-          if (b->isVisible() && b->isEnabled() && b->text().remove('&') == text) {
+          if (b->isVisible() && b->isEnabled() && (b->text().remove('&') == text || b->objectName() == text)) {
             b->click();
             return true;
           }
