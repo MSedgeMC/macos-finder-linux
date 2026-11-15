@@ -3,17 +3,55 @@
 #include "places.h"
 
 #include <KFilePlacesModel>
+#include <KProtocolInfo>
 #include <QAbstractItemDelegate>
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QDir>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QHeaderView>
+#include <QKeyEvent>
 #include <QMap>
+#include <QMenu>
+#include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPersistentModelIndex>
+#include <QScrollBar>
+#include <QStandardItemModel>
 #include <QStandardPaths>
-#include <QStyle>
 #include <QStyleOptionViewItem>
+#include <QTimer>
+#include <QTreeView>
+#include <functional>
 
 namespace {
+enum Role {
+    HeadingRole = Qt::UserRole + 1,
+    KeyRole,
+    SourceRole,
+    UrlRole,
+    GlyphRole,
+    TagRole,
+    TagColorRole,
+    BusyRole,
+    EjectRole,
+    HiddenRole,
+};
+constexpr int RowHeight = 32;
+constexpr int HeadingHeight = 18;
+constexpr int IconSize = 20;
+
+QRect actionRect(const QRect &row, Qt::LayoutDirection direction) {
+    // Painting and pointer handling use this exact rectangle. The device
+    // action has its own 24px hit target; section headers have none.
+    return direction == Qt::RightToLeft ? QRect(row.left() + 4, row.top(), 24, row.height())
+                                       : QRect(row.right() - 27, row.top(), 24, row.height());
+}
+
 const QMap<QString, QPainterPath> &placeGlyphs() {
     static const QMap<QString, QPainterPath> paths = [] {
         QMap<QString, QPainterPath> all;
@@ -43,18 +81,23 @@ const QMap<QString, QPainterPath> &placeGlyphs() {
         p = {}; p.moveTo(4.5, 5); p.lineTo(15.5, 5); p.lineTo(18, 13); p.lineTo(18, 16.5); p.lineTo(2, 16.5); p.lineTo(2, 13); p.closeSubpath();
         p.moveTo(2, 13); p.lineTo(18, 13); p.moveTo(14.5, 14.8); p.lineTo(16, 14.8); all["device"] = p;
         p = {}; p.moveTo(2.5, 6); p.lineTo(2.5, 3.5); p.lineTo(8, 3.5); p.lineTo(10, 6); p.lineTo(17.5, 6); p.lineTo(17.5, 16.5); p.lineTo(2.5, 16.5); p.closeSubpath(); all["folder"] = p;
-        p = {}; p.moveTo(4, 16.5); p.lineTo(10, 3); p.lineTo(16, 16.5); p.moveTo(6.5, 11.5); p.lineTo(13.5, 11.5); all["applications"] = p;
+        p = {}; p.moveTo(4, 17); p.lineTo(11, 3); p.moveTo(9, 3); p.lineTo(16, 17);
+        p.moveTo(2.5, 13); p.lineTo(17.5, 13); all["applications"] = p;
+        p = {}; p.moveTo(2, 7); p.lineTo(2, 3.5); p.lineTo(8, 3.5); p.lineTo(10, 6); p.lineTo(18, 6);
+        p.moveTo(2, 7); p.lineTo(2, 17); p.lineTo(10, 17); p.moveTo(2, 9); p.lineTo(12, 9);
+        p.addEllipse(QRectF(13, 9, 4, 4)); p.moveTo(11, 18); p.cubicTo(11, 13, 19, 13, 19, 18); all["shared"] = p;
         return all;
     }();
     return paths;
 }
 
-QString glyphFor(const KFilePlacesModel *model, const QModelIndex &index) {
+
+QString glyphFor(KFilePlacesModel *model, const QModelIndex &index) {
     const QUrl url = model->url(index);
     if (model->isDevice(index)) return QStringLiteral("device");
     if (url.scheme() == "trash") return QStringLiteral("trash");
     if (url.scheme() == "recentlyused" || url.scheme() == "timeline") return QStringLiteral("recent");
-    if (url.scheme() == "remote" || url.scheme() == "network") return QStringLiteral("network");
+    if (url.scheme() == "remote" || url.scheme() == "network" || url.scheme() == "smb") return QStringLiteral("network");
     if (url.isLocalFile()) {
         const QString path = QDir::cleanPath(url.toLocalFile());
         if (path == QDir::homePath()) return QStringLiteral("home");
@@ -64,133 +107,608 @@ QString glyphFor(const KFilePlacesModel *model, const QModelIndex &index) {
                  {QStandardPaths::PicturesLocation, "pictures"}, {QStandardPaths::MoviesLocation, "videos"}}) {
             if (path == QDir::cleanPath(QStandardPaths::writableLocation(place.first))) return place.second;
         }
-        if (path == "/usr/share/applications" || path == "/Applications") return QStringLiteral("applications");
-        if (model->groupType(index) == KFilePlacesModel::PlacesType) return QStringLiteral("folder");
+        if (path == "/usr/share/applications") return QStringLiteral("applications");
+        if (path == "/") return QStringLiteral("device");
     }
-    return {};
+    return QStringLiteral("folder");
 }
 
-class PlacesDelegate : public QAbstractItemDelegate {
+class PlacesDelegate final : public QAbstractItemDelegate {
 public:
-    PlacesDelegate(FinderPlacesView *view, QAbstractItemDelegate *native)
-        : QAbstractItemDelegate(view), m_view(view), m_native(native) {}
-
-    bool hasHeader(const QModelIndex &index) const {
-        if (!index.isValid() || m_view->isRowHidden(index.row())) return false;
-        const auto group = index.data(KFilePlacesModel::GroupRole).toString();
-        for (int row = index.row() - 1; row >= 0; --row) {
-            if (!m_view->isRowHidden(row))
-                return group != index.model()->index(row, 0).data(KFilePlacesModel::GroupRole).toString();
-        }
-        return !group.isEmpty();
-    }
-
-    int headerHeight(const QModelIndex &index) const {
-        // The base view's private watcher uses its original delegate for
-        // header/eject hit testing. Match KF6 6.24's public view geometry here.
-        return hasHeader(index) ? m_view->fontMetrics().height() + 12 : 0;
-    }
+    explicit PlacesDelegate(QTreeView *view) : QAbstractItemDelegate(view) {}
+    int busyAngle = 0;
 
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &index) const override {
-        return QSize(m_view->viewport()->width(), 32 + headerHeight(index));
+        return QSize(180, index.data(HeadingRole).toBool() ? HeadingHeight : RowHeight);
     }
 
-    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        const auto *model = qobject_cast<const KFilePlacesModel *>(index.model());
-        if (!model) return;
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
+    void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
         const bool reverse = option.direction == Qt::RightToLeft;
-        const int header = headerHeight(index);
-        if (header) {
-            QFont font(option.font); font.setPointSizeF(11); font.setWeight(QFont::DemiBold);
-            painter->setFont(font);
+        if (index.data(HeadingRole).toBool()) {
+            QFont font(option.font); font.setPointSizeF(11); font.setWeight(QFont::Bold);
+            p->setFont(font);
             QColor text = option.palette.color(QPalette::WindowText); text.setAlphaF(0.55);
-            painter->setPen(text);
-            QString group = index.data(KFilePlacesModel::GroupRole).toString();
-            if (model->groupType(index) == KFilePlacesModel::PlacesType) group = QStringLiteral("Favorites");
-            if (model->isGroupHidden(index)) group += QStringLiteral(" (hidden)");
-            QRect label = option.rect.adjusted(10, 0, -10, 0);
-            label.setHeight(header - 5);
-            painter->drawText(label, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignBottom,
-                              QFontMetrics(font).elidedText(group, Qt::ElideRight, label.width()));
+            p->setPen(text);
+            const QRect label = option.rect.adjusted(10, 0, -10, 0);
+            p->drawText(label, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
+                        QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, label.width()));
+            p->restore();
+            return;
         }
-        QRect row = option.rect;
-        row.setTop(row.top() + header);
-        QRectF selection = row.adjusted(4, 1, -4, -1);
-        QPainterPath contour; contour.addRoundedRect(selection, 8, 8);
+        const QRect row = option.rect;
+        QPainterPath contour; contour.addRoundedRect(QRectF(row.adjusted(4, 1, -4, -1)), 8, 8);
         if (option.state & QStyle::State_Selected) {
             QColor fill = option.palette.color(QPalette::WindowText); fill.setAlphaF(0.11);
-            painter->fillPath(contour, fill);
+            p->fillPath(contour, fill);
         } else if (option.state & QStyle::State_MouseOver) {
             QColor fill = option.palette.color(QPalette::WindowText); fill.setAlphaF(0.045);
-            painter->fillPath(contour, fill);
+            p->fillPath(contour, fill);
         }
-        if (model->isHidden(index)) painter->setOpacity(0.6);
-        const int leading = reverse ? row.right() - 29 : row.left() + 10;
-        const QRect iconRect(leading, row.top() + (row.height() - 20) / 2, 20, 20);
-        const QString glyph = glyphFor(model, index);
-        if (glyph.isEmpty()) model->icon(index).paint(painter, iconRect, Qt::AlignCenter,
-                                option.state & QStyle::State_Enabled ? QIcon::Normal : QIcon::Disabled);
-        else {
-            painter->save(); painter->translate(iconRect.topLeft());
-            painter->setPen(QPen(glyph == "trash" || glyph == "device" ? QColor("#d2d2d7") : QColor("#529dff"),
-                                1.35, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter->setBrush(Qt::NoBrush); painter->drawPath(placeGlyphs().value(glyph)); painter->restore();
+        if (index.data(HiddenRole).toBool()) p->setOpacity(0.6);
+        const QRect iconRect(reverse ? row.right() - 29 : row.left() + 10,
+                             row.top() + (row.height() - IconSize) / 2, IconSize, IconSize);
+        const auto color = index.data(TagColorRole).value<QColor>();
+        if (color.isValid()) {
+            p->setPen(Qt::NoPen); p->setBrush(color);
+            p->drawEllipse(QRectF(iconRect).adjusted(4, 4, -4, -4));
+        } else {
+            p->save(); p->translate(iconRect.topLeft());
+            const QString glyph = index.data(GlyphRole).toString();
+            const bool gray = glyph == "trash" || glyph == "device";
+            p->setPen(QPen(gray ? option.palette.color(QPalette::PlaceholderText) : QColor("#007aff"),
+                           1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setBrush(Qt::NoBrush); p->drawPath(placeGlyphs().value(glyph)); p->restore();
         }
-
-        // Reserve the native eject/busy region even on fixed devices. Keeping
-        // the same trailing24px as its watcher prevents decorative hit targets.
-        const int actionWidth = 8 + QApplication::style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_view);
-        QRect textRect = row.adjusted(reverse ? actionWidth : 34, 0, reverse ? -34 : -actionWidth, 0);
-        painter->setFont(option.font);
-        painter->setPen(option.palette.color(option.state & QStyle::State_Enabled ? QPalette::Active : QPalette::Disabled,
-                                            QPalette::Text));
-        painter->drawText(textRect, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
-                          option.fontMetrics.elidedText(model->text(index), Qt::ElideRight, textRect.width()));
-
-        // Let the original delegate render real eject/mount/trash progress.
-        // Its view remains alive and receives native device animation signals.
-        painter->save(); painter->setOpacity(1);
-        QRect actionRect = row;
-        if (reverse) actionRect.setWidth(actionWidth);
-        else actionRect.setLeft(row.right() - actionWidth + 1);
-        painter->setClipRect(actionRect);
-        painter->setClipPath(contour, Qt::IntersectClip);
-        QStyleOptionViewItem nativeOption(option);
-        nativeOption.state &= ~(QStyle::State_Selected | QStyle::State_MouseOver | QStyle::State_HasFocus);
-        const auto state = model->deviceAccessibility(index);
-        if (model->isTeardownOverlayRecommended(index) || state == KFilePlacesModel::SetupInProgress ||
-            state == KFilePlacesModel::TeardownInProgress || model->url(index).scheme() == "trash")
-            m_native->paint(painter, nativeOption, index);
-        painter->restore();
+        const bool hasAction = index.data(EjectRole).toBool() || index.data(BusyRole).toBool();
+        const int trailing = hasAction ? 32 : 10;
+        QRect textRect = row.adjusted(reverse ? trailing : 34, 0, reverse ? -34 : -trailing, 0);
+        QFont font(option.font);
+        font.setWeight(option.state & QStyle::State_Selected ? QFont::Bold : QFont::Normal);
+        p->setFont(font);
+        p->setPen(option.palette.color(option.state & QStyle::State_Enabled ? QPalette::Active : QPalette::Disabled,
+                                        QPalette::Text));
+        p->drawText(textRect, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
+                    QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, textRect.width()));
+        if (hasAction) {
+            const QPointF center = actionRect(row, option.direction).center();
+            p->save(); p->setOpacity(1); p->translate(center);
+            p->setPen(QPen(option.palette.color(QPalette::Text), 1.25, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setBrush(Qt::NoBrush);
+            if (index.data(BusyRole).toBool()) {
+                p->rotate(busyAngle); p->drawArc(QRectF(-6, -6, 12, 12), 0, 260 * 16);
+            } else {
+                QPainterPath eject;
+                eject.moveTo(-5, 2); eject.lineTo(0, -4); eject.lineTo(5, 2); eject.closeSubpath();
+                p->drawPath(eject); p->drawLine(QPointF(-5, 5), QPointF(5, 5));
+            }
+            p->restore();
+        }
         if (option.state & QStyle::State_HasFocus) {
             QColor focus = option.palette.color(QPalette::Highlight); focus.setAlphaF(0.8);
-            painter->setPen(QPen(focus, 1)); painter->drawPath(contour);
+            p->setPen(QPen(focus, 1)); p->setBrush(Qt::NoBrush); p->drawPath(contour);
         }
-        painter->restore();
+        p->restore();
+    }
+};
+
+// This view never inherits or invokes KFilePlacesView's private event watcher.
+// Headers are real nonselectable model rows, so 18px geometry is safe for
+// mouse, keyboard, context menus, eject targets, and drops alike.
+class SidebarTree final : public QTreeView {
+public:
+    explicit SidebarTree(QWidget *parent) : QTreeView(parent) {
+        setObjectName(QStringLiteral("finderPlacesPresentation"));
+        setAccessibleName(QStringLiteral("Sidebar"));
+        setAccessibleDescription(QStringLiteral("Recents, shared locations, favorites, disks, network, trash and file tags"));
+        setHeaderHidden(true); setRootIsDecorated(false); setIndentation(0);
+        setItemsExpandable(false); setExpandsOnDoubleClick(false); setAllColumnsShowFocus(true);
+        setEditTriggers(QAbstractItemView::NoEditTriggers); setSelectionMode(QAbstractItemView::SingleSelection);
+        setFrameShape(QFrame::NoFrame); setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded); setMouseTracking(true);
+        setAutoFillBackground(false); viewport()->setAutoFillBackground(false);
+        viewport()->setAttribute(Qt::WA_OpaquePaintEvent, false);
+        setStyleSheet(QStringLiteral("QTreeView { background: transparent; border: 0; }"));
+        setDragEnabled(true); setAcceptDrops(true); setDropIndicatorShown(false);
+        setDragDropMode(QAbstractItemView::DragDrop);
+        m_hoverTimer.setSingleShot(true);
+        connect(&m_hoverTimer, &QTimer::timeout, this, [this] {
+            if (m_hover.isValid() && activate) activate(m_hover, Qt::NoModifier, Qt::LeftButton);
+        });
     }
 
+    std::function<void(QModelIndex, Qt::KeyboardModifiers, Qt::MouseButton)> activate;
+    std::function<void(QModelIndex)> eject;
+    std::function<void(QModelIndex, QPoint)> menu;
+    std::function<bool(QModelIndex, QDropEvent *, bool)> drop;
+    std::function<int()> hoverDelay;
+    std::function<bool()> dropOnPlace;
+    std::function<QMimeData *(QModelIndex)> dragData;
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override {
+        const QModelIndex index = indexAt(event->position().toPoint());
+        m_pressed = QPersistentModelIndex(); m_action = false;
+        if (index.isValid() && !index.data(HeadingRole).toBool()) {
+            m_pressed = index; m_button = event->button();
+            m_action = event->button() == Qt::LeftButton && (index.data(EjectRole).toBool() || index.data(BusyRole).toBool())
+                && actionRect(visualRect(index), layoutDirection()).contains(event->position().toPoint());
+            if (m_action || event->button() == Qt::MiddleButton) {
+                event->accept(); return;
+            }
+        }
+        QTreeView::mousePressEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        const QModelIndex index = indexAt(event->position().toPoint());
+        const bool matches = m_pressed.isValid() && m_pressed == index && event->button() == m_button;
+        if (matches && m_action) {
+            if (actionRect(visualRect(index), layoutDirection()).contains(event->position().toPoint()) && eject)
+                eject(index);
+            event->accept();
+        } else {
+            QTreeView::mouseReleaseEvent(event);
+            if (matches && (event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton) && activate)
+                activate(index, event->modifiers(), event->button());
+        }
+        m_pressed = QPersistentModelIndex(); m_action = false;
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        // One sidebar click already navigates; a double click has no second
+        // navigation or tree expansion side effect.
+        event->accept();
+    }
+    void keyPressEvent(QKeyEvent *event) override {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Space)
+            && currentIndex().isValid()) {
+            if (activate) activate(currentIndex(), event->modifiers(), Qt::LeftButton);
+            event->accept(); return;
+        }
+        QTreeView::keyPressEvent(event);
+    }
+    void contextMenuEvent(QContextMenuEvent *event) override {
+        const QModelIndex index = event->reason() == QContextMenuEvent::Keyboard ? currentIndex() : indexAt(event->pos());
+        if (menu) menu(index, event->globalPos());
+        event->accept();
+    }
+    void startDrag(Qt::DropActions) override {
+        if (!dragData || !currentIndex().isValid()) return;
+        QMimeData *mime = dragData(currentIndex());
+        if (!mime) return;
+        m_pressed = QPersistentModelIndex(); m_action = false;
+        QDrag drag(this); drag.setMimeData(mime);
+        // A bookmark drag is a link/copy, never a move of the actual folder.
+        drag.exec(Qt::CopyAction | Qt::LinkAction, Qt::LinkAction);
+    }
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        bool bookmark = false;
+        for (const QString &format : event->mimeData()->formats()) bookmark |= format.startsWith("application/x-kfileplacesmodel-");
+        if (event->mimeData()->hasUrls() || bookmark) event->acceptProposedAction();
+        else event->ignore();
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override {
+        const QModelIndex index = indexAt(event->position().toPoint());
+        const bool target = index.isValid() && !index.data(HeadingRole).toBool() && index.data(TagRole).toString().isEmpty();
+        if (!target) { stopHover(); event->ignore(); return; }
+        const QRect row = visualRect(index);
+        bool bookmark = false;
+        for (const QString &format : event->mimeData()->formats()) bookmark |= format.startsWith("application/x-kfileplacesmodel-");
+        const bool onPlace = dropOnPlace && dropOnPlace() && !bookmark
+            && event->position().y() >= row.top() + 4 && event->position().y() <= row.bottom() - 4;
+        if (!onPlace) stopHover();
+        else if (m_hover != index) {
+            stopHover(); m_hover = index;
+            const int delay = hoverDelay ? hoverDelay() : 0;
+            if (delay > 0) m_hoverTimer.start(delay);
+        }
+        event->acceptProposedAction();
+    }
+    void dragLeaveEvent(QDragLeaveEvent *event) override {
+        stopHover(); QTreeView::dragLeaveEvent(event);
+    }
+    void dropEvent(QDropEvent *event) override {
+        stopHover();
+        const QModelIndex index = indexAt(event->position().toPoint());
+        const QRect row = visualRect(index);
+        const bool onPlace = dropOnPlace && dropOnPlace() && index.isValid() && !index.data(HeadingRole).toBool()
+            && event->position().y() >= row.top() + 4 && event->position().y() <= row.bottom() - 4;
+        if (drop && drop(index, event, onPlace)) event->acceptProposedAction();
+        else event->ignore();
+    }
 private:
-    FinderPlacesView *m_view;
-    QAbstractItemDelegate *m_native;
+    void stopHover() { m_hoverTimer.stop(); m_hover = QPersistentModelIndex(); }
+    QPersistentModelIndex m_pressed, m_hover;
+    Qt::MouseButton m_button = Qt::NoButton;
+    bool m_action = false;
+    QTimer m_hoverTimer;
 };
 }
 
-FinderPlacesView::FinderPlacesView(QWidget *parent) : KFilePlacesView(parent) {
+class FinderPlacesView::Private {
+public:
+    explicit Private(FinderPlacesView *view) : q(view) {
+        tree = new SidebarTree(q->viewport());
+        rows = new QStandardItemModel(tree);
+        tree->setModel(rows);
+        delegate = new PlacesDelegate(tree);
+        tree->setItemDelegate(delegate);
+        rebuildTimer.setSingleShot(true);
+        QObject::connect(&rebuildTimer, &QTimer::timeout, q, [this] { rebuild(); });
+        busyTimer.setInterval(80);
+        QObject::connect(&busyTimer, &QTimer::timeout, q, [this] {
+            delegate->busyAngle = (delegate->busyAngle + 24) % 360;
+            tree->viewport()->update();
+        });
+        tree->activate = [this](const QModelIndex &index, Qt::KeyboardModifiers modifiers, Qt::MouseButton button) {
+            activate(index, modifiers, button);
+        };
+        tree->eject = [this](const QModelIndex &index) {
+            const auto source = sourceIndex(index);
+            if (!model || !source.isValid() || index.data(BusyRole).toBool()) return;
+            if (model->isEjectAllowed(source)) model->requestEject(source);
+            else if (model->isTeardownAllowed(source)) {
+                if (teardown) teardown(source);
+                else model->requestTeardown(source);
+            }
+        };
+        tree->menu = [this](const QModelIndex &index, const QPoint &position) { contextMenu(index, position); };
+        tree->drop = [this](const QModelIndex &index, QDropEvent *event, bool onPlace) { return handleDrop(index, event, onPlace); };
+        tree->hoverDelay = [this] { return q->dragAutoActivationDelay(); };
+        tree->dropOnPlace = [this] { return q->isDropOnPlaceEnabled(); };
+        tree->dragData = [this](const QModelIndex &index) -> QMimeData * {
+            const auto source = sourceIndex(index);
+            if (model && source.isValid()) return model->mimeData({source});
+            const QUrl url = index.data(UrlRole).toUrl();
+            if (url.isEmpty() || !index.data(TagRole).toString().isEmpty()) return nullptr;
+            auto *mime = new QMimeData; mime->setUrls({url}); return mime;
+        };
+        QObject::connect(q, &KFilePlacesView::allPlacesShownChanged, q, [this] { schedule(); });
+        QObject::connect(q, &KFilePlacesView::urlChanged, q, [this](const QUrl &url) {
+            currentUrl = url; selectedTag.clear(); selectCurrent();
+        });
+    }
+    ~Private() {
+        for (const auto &connection : connections) QObject::disconnect(connection);
+        delete tree;
+    }
+
+    FinderPlacesView *q;
+    SidebarTree *tree;
+    QStandardItemModel *rows;
+    PlacesDelegate *delegate;
+    KFilePlacesModel *model = nullptr;
+    QList<QMetaObject::Connection> connections;
+    QTimer rebuildTimer, busyTimer;
+    QUrl currentUrl;
+    QString selectedTag, preferredKey;
+    bool nativeMenu = false;
+    TeardownFunction teardown;
+    QPersistentModelIndex pendingMount;
+    enum Activation { Current, Tab, ActiveTab, Window };
+    Activation pendingActivation = Current;
+
+    QModelIndex sourceIndex(const QModelIndex &index) const { return index.data(SourceRole).value<QPersistentModelIndex>(); }
+    void schedule() { if (!rebuildTimer.isActive()) rebuildTimer.start(0); }
+
+    void attach(KFilePlacesModel *source) {
+        for (const auto &connection : connections) QObject::disconnect(connection);
+        connections.clear(); pendingMount = QPersistentModelIndex(); model = source;
+        if (model) {
+            const auto update = [this] { schedule(); };
+            connections << QObject::connect(model, &QAbstractItemModel::rowsInserted, q, update)
+                        << QObject::connect(model, &QAbstractItemModel::rowsRemoved, q, update)
+                        << QObject::connect(model, &QAbstractItemModel::rowsMoved, q, update)
+                        << QObject::connect(model, &QAbstractItemModel::modelReset, q, update)
+                        << QObject::connect(model, &QAbstractItemModel::layoutChanged, q, update)
+                        << QObject::connect(model, &QAbstractItemModel::dataChanged, q, update)
+                        << QObject::connect(model, &KFilePlacesModel::reloaded, q, update)
+                        << QObject::connect(model, &KFilePlacesModel::groupHiddenChanged, q, update)
+                        << QObject::connect(model, &KFilePlacesModel::errorMessage, q, &FinderPlacesView::errorMessage)
+                        << QObject::connect(model, &KFilePlacesModel::setupDone, q, [this](const QModelIndex &index, bool success) {
+                            if (pendingMount != index) return;
+                            const Activation activation = pendingActivation;
+                            pendingMount = QPersistentModelIndex();
+                            if (success) emitActivation(KFilePlacesModel::convertedUrl(model->url(index)), activation);
+                        })
+                        << QObject::connect(model, &QObject::destroyed, q, [this] { model = nullptr; schedule(); });
+            // This also tracks calls made through the existing KFilePlacesView*
+            // member in older main.cpp, whose setUrl is nonvirtual.
+            connections << QObject::connect(q->selectionModel(), &QItemSelectionModel::selectionChanged, q, [this] {
+                if (nativeMenu) return;
+                selectedTag.clear();
+                const auto selected = q->selectionModel()->selectedIndexes();
+                if (!selected.isEmpty() && model) currentUrl = model->url(selected.first());
+                selectCurrent(selected.isEmpty());
+            });
+        }
+        rebuild();
+    }
+
+    void rebuild() {
+        const int scroll = tree->verticalScrollBar()->value();
+        rows->clear();
+        if (!model) { busyTimer.stop(); return; }
+        QList<QModelIndex> available;
+        for (int row = 0; row < model->rowCount(); ++row) {
+            const QModelIndex index = model->index(row, 0);
+            if (q->allPlacesShown() || !model->isHidden(index) || model->url(index).matches(currentUrl, QUrl::StripTrailingSlash))
+                available.append(index);
+        }
+        QList<QModelIndex> used;
+        auto find = [&](const QUrl &url) {
+            for (const auto &index : available)
+                if (model->url(index).matches(url, QUrl::StripTrailingSlash)) { used.append(index); return index; }
+            return QModelIndex();
+        };
+        auto append = [&](const QString &key, const QString &label, const QUrl &url, const QString &glyph, const QModelIndex &source = QModelIndex()) {
+            auto *item = new QStandardItem(label);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+            item->setData(key, KeyRole); item->setData(url, UrlRole); item->setData(glyph, GlyphRole);
+            item->setData(QVariant::fromValue(QPersistentModelIndex(source)), SourceRole);
+            item->setData(url.toDisplayString(QUrl::PreferLocalFile), Qt::ToolTipRole);
+            if (source.isValid()) {
+                const auto state = model->deviceAccessibility(source);
+                item->setData(state == KFilePlacesModel::SetupInProgress || state == KFilePlacesModel::TeardownInProgress, BusyRole);
+                item->setData(model->isTeardownOverlayRecommended(source)
+                    && (model->isEjectAllowed(source) || model->isTeardownAllowed(source)), EjectRole);
+                item->setData(model->isHidden(source), HiddenRole);
+            }
+            rows->appendRow(item);
+            return item;
+        };
+        auto section = [&](const QString &name) {
+            auto *item = new QStandardItem(name);
+            item->setData(true, HeadingRole); item->setData("section:" + name, KeyRole);
+            item->setFlags(Qt::NoItemFlags); rows->appendRow(item);
+        };
+        QUrl recent("recentlyused:/files");
+        if (!KProtocolInfo::isKnownProtocol("recentlyused"))
+            recent = QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/RecentDocuments");
+        append("recents", "Recents", recent, "recent", find(recent));
+        const QUrl shared(KProtocolInfo::isKnownProtocol("smb") ? "smb:/" : "remote:/");
+        auto *sharedItem = append("shared", "Shared", shared, "shared");
+        sharedItem->setToolTip(shared.scheme() == "smb" ? "Browse shared folders on the Linux SMB network."
+                                                      : "Browse saved Linux network folders. Add a shared folder using Go to Folder.");
+        section("Favorites");
+        const QUrl applications = QUrl::fromLocalFile("/usr/share/applications");
+        append("applications", "Applications", applications, "applications", find(applications));
+        for (const auto &place : QList<QPair<QStandardPaths::StandardLocation, QString>>{
+                 {QStandardPaths::DesktopLocation, "Desktop"}, {QStandardPaths::DocumentsLocation, "Documents"},
+                 {QStandardPaths::DownloadLocation, "Downloads"}}) {
+            const QUrl url = QUrl::fromLocalFile(QStandardPaths::writableLocation(place.first));
+            append(place.second.toLower(), place.second, url, place.second.toLower(), find(url));
+        }
+        // Keep real local bookmarks and useful saved queries, in source order.
+        // Presentation defaults do not reorder or write KDE's shared bookmarks.
+        for (const auto &index : available) {
+            if (used.contains(index) || model->isDevice(index)) continue;
+            const auto group = model->groupType(index);
+            const QUrl url = model->url(index);
+            if (url.scheme() == "trash" || group == KFilePlacesModel::RemoteType || group == KFilePlacesModel::TagsType) continue;
+            if (url.scheme() == "recentlyused" && url.path() == "/files") continue;
+            if (url.isLocalFile() && url.toLocalFile() == "/") continue;
+            append("place:" + url.toString(), model->text(index), url, glyphFor(model, index), index);
+            used.append(index);
+        }
+        section("Locations");
+        bool hasRootDisk = false;
+        for (const auto &index : available) {
+            if (!model->isDevice(index)) continue;
+            const QUrl url = model->url(index);
+            hasRootDisk |= url.isLocalFile() && url.toLocalFile() == "/";
+            append("device:" + model->deviceForIndex(index).udi(), model->text(index), url, "device", index);
+            used.append(index);
+        }
+        if (!hasRootDisk) {
+            const QUrl root = QUrl::fromLocalFile("/");
+            append("filesystem", "Linux Filesystem", root, "device", find(root));
+        }
+        const QUrl network("remote:/");
+        append("network", "Network", network, "network", find(network));
+        for (const auto &index : available) {
+            if (used.contains(index) || model->groupType(index) != KFilePlacesModel::RemoteType || model->url(index) == shared) continue;
+            append("remote:" + model->url(index).toString(), model->text(index), model->url(index), glyphFor(model, index), index);
+            used.append(index);
+        }
+        const QUrl trash("trash:/");
+        append("trash", "Trash", trash, "trash", find(trash));
+        section("Tags");
+        const QList<QPair<QString, QColor>> colors{{"Red", QColor("#ff3b30")}, {"Orange", QColor("#ff9500")},
+            {"Yellow", QColor("#ffcc00")}, {"Green", QColor("#34c759")}, {"Blue", QColor("#007aff")},
+            {"Purple", QColor("#af52de")}, {"Gray", QColor("#8e8e93")}};
+        QStringList colorNames;
+        for (const auto &color : colors) {
+            colorNames.append(color.first);
+            auto *item = append("tag:" + color.first, color.first, {}, {});
+            item->setData(color.first, TagRole); item->setData(color.second, TagColorRole);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            item->setToolTip("Show local files tagged " + color.first + ".");
+        }
+        for (const auto &index : available) {
+            if (model->groupType(index) != KFilePlacesModel::TagsType || colorNames.contains(model->text(index))) continue;
+            const QString tag = model->text(index);
+            if (model->url(index).path().isEmpty() || model->url(index).path() == "/") continue;
+            auto *item = append("tag:" + tag, tag, {}, {}, index);
+            item->setData(tag, TagRole); item->setData(QColor("#8e8e93"), TagColorRole);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        }
+        bool busy = false;
+        for (int row = 0; row < rows->rowCount(); ++row) busy |= rows->index(row, 0).data(BusyRole).toBool();
+        if (busy && !busyTimer.isActive()) busyTimer.start();
+        if (!busy) busyTimer.stop();
+        selectCurrent();
+        tree->verticalScrollBar()->setValue(scroll);
+    }
+
+    void selectCurrent(bool clear = false) {
+        QModelIndex selected;
+        if (!clear) {
+            for (int row = 0; row < rows->rowCount(); ++row) {
+                const QModelIndex index = rows->index(row, 0);
+                const QString tag = index.data(TagRole).toString();
+                const bool matches = !selectedTag.isEmpty() ? tag == selectedTag
+                    : tag.isEmpty() && !currentUrl.isEmpty() && index.data(UrlRole).toUrl().matches(currentUrl, QUrl::StripTrailingSlash);
+                if (matches) {
+                    selected = index;
+                    if (index.data(KeyRole).toString() == preferredKey) break;
+                }
+            }
+        }
+        tree->selectionModel()->setCurrentIndex(selected, QItemSelectionModel::ClearAndSelect);
+    }
+
+    Activation activationFor(Qt::KeyboardModifiers modifiers, Qt::MouseButton button) const {
+        const bool newTab = button == Qt::MiddleButton || modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
+        if (newTab) return modifiers.testFlag(Qt::ShiftModifier) ? ActiveTab : Tab;
+        return modifiers.testFlag(Qt::ShiftModifier) ? Window : Current;
+    }
+    void emitActivation(const QUrl &url, Activation activation) {
+        if (url.isEmpty()) return;
+        if (activation == Current) {
+            currentUrl = url; selectedTag.clear();
+            q->KFilePlacesView::setUrl(url); selectCurrent();
+            emit q->urlChanged(url); emit q->placeActivated(url);
+        } else if (activation == Tab) emit q->tabRequested(url);
+        else if (activation == ActiveTab) emit q->activeTabRequested(url);
+        else emit q->newWindowRequested(url);
+    }
+    void activate(const QModelIndex &index, Qt::KeyboardModifiers modifiers, Qt::MouseButton button) {
+        if (!index.isValid() || index.data(HeadingRole).toBool() || index.data(BusyRole).toBool()) return;
+        preferredKey = index.data(KeyRole).toString();
+        const QString tag = index.data(TagRole).toString();
+        if (!tag.isEmpty()) {
+            selectedTag = tag; selectCurrent(); emit q->tagActivated(tag); return;
+        }
+        const Activation activation = activationFor(modifiers, button);
+        const QModelIndex source = sourceIndex(index);
+        if (source.isValid() && model->setupNeeded(source)) {
+            pendingMount = source; pendingActivation = activation;
+            model->requestSetup(source); return;
+        }
+        emitActivation(KFilePlacesModel::convertedUrl(index.data(UrlRole).toUrl()), activation);
+    }
+
+    void contextMenu(const QModelIndex &index, const QPoint &global) {
+        const QString tag = index.data(TagRole).toString();
+        if (!tag.isEmpty()) {
+            QMenu menu(tree); menu.addAction("Show Files Tagged " + tag, q, [this, tag] {
+                selectedTag = tag; selectCurrent(); emit q->tagActivated(tag);
+            });
+            menu.exec(global); return;
+        }
+        const QModelIndex source = sourceIndex(index);
+        if (source.isValid()) {
+            // Native bookmark editing, hide/show, device actions, Empty Trash
+            // confirmation and properties remain in KDE. Map only the source
+            // row and use the actual visible pointer position for menu placement.
+            nativeMenu = true;
+            q->selectionModel()->setCurrentIndex(source, QItemSelectionModel::ClearAndSelect);
+            q->scrollTo(source); q->doItemsLayout();
+            const QRect nativeRow = q->visualRect(source);
+            QContextMenuEvent event(QContextMenuEvent::Mouse,
+                QPoint(nativeRow.center().x(), nativeRow.bottom() - 4), global);
+            q->KFilePlacesView::contextMenuEvent(&event);
+            nativeMenu = false;
+            selectCurrent();
+            schedule(); return;
+        }
+        QMenu menu(tree);
+        if (index.isValid() && !index.data(HeadingRole).toBool()) {
+            const QUrl url = index.data(UrlRole).toUrl();
+            menu.addAction("Open", q, [this, url] { emitActivation(url, Current); });
+            menu.addAction("Open in New Tab", q, [this, url] { emitActivation(url, Tab); });
+            menu.addAction("Open in New Window", q, [this, url] { emitActivation(url, Window); });
+            if (!url.isEmpty()) menu.addAction("Add to Favorites", q, [this, index, url] {
+                model->addPlace(index.data().toString(), url);
+            });
+        } else {
+            QAction *showAll = menu.addAction("Show Hidden Places");
+            showAll->setCheckable(true); showAll->setChecked(q->allPlacesShown());
+            QObject::connect(showAll, &QAction::toggled, q, &KFilePlacesView::setShowAll);
+        }
+        emit q->contextMenuAboutToShow(source, &menu);
+        menu.exec(global);
+    }
+
+    bool handleDrop(const QModelIndex &index, QDropEvent *event, bool onPlace) {
+        if (!model || !index.data(TagRole).toString().isEmpty()) return false;
+        const QModelIndex source = sourceIndex(index);
+        // KFilePlacesModel owns its private bookmark MIME type. Let its public
+        // drop API recognize bookmark reordering before treating external URLs
+        // as a file-operation drop.
+        bool bookmarkDrag = false;
+        for (const QString &format : model->mimeTypes())
+            if (format != "text/uri-list") bookmarkDrag |= event->mimeData()->hasFormat(format);
+        if (bookmarkDrag || !onPlace) {
+            const int destination = source.isValid() ? source.row() + (event->position().y() > tree->visualRect(index).center().y() ? 1 : 0) : model->rowCount();
+            return model->dropMimeData(event->mimeData(), event->proposedAction(), destination, 0, {});
+        }
+        const QUrl url = index.data(UrlRole).toUrl();
+        if (!event->mimeData()->hasUrls()) return false;
+        if (source.isValid()) {
+            // The original wrapper owns deferred drops: it copies the event,
+            // requests a mount, then emits urlsDropped only on successful setup.
+            // It also retains KIO's original error/conflict/Undo flow.
+            q->scrollTo(source); q->doItemsLayout();
+            const QRect nativeRow = q->visualRect(source);
+            QMimeData mime;
+            for (const QString &format : event->mimeData()->formats())
+                mime.setData(format, event->mimeData()->data(format));
+            QDropEvent nativeEvent(QPointF(nativeRow.center().x(), nativeRow.bottom() - 16),
+                event->possibleActions(), &mime, event->buttons(), event->modifiers());
+            nativeEvent.setDropAction(event->dropAction());
+            q->KFilePlacesView::dropEvent(&nativeEvent);
+            return nativeEvent.isAccepted();
+        }
+        if (url.isEmpty()) return false;
+        emit q->urlsDropped(url, event, tree);
+        return event->isAccepted();
+    }
+};
+
+FinderPlacesView::FinderPlacesView(QWidget *parent) : KFilePlacesView(parent), d(std::make_unique<Private>(this)) {
     setObjectName(QStringLiteral("finderPlaces"));
     setAccessibleName(QStringLiteral("Sidebar"));
-    setAccessibleDescription(QStringLiteral("Favorites, network locations, mounted devices, and tags"));
-    setAutoResizeItemsEnabled(false);
-    setIconSize(QSize(20, 20));
-    setSpacing(0);
-    setUniformItemSizes(false);
-    setTextElideMode(Qt::ElideRight);
+    setAccessibleDescription(d->tree->accessibleDescription());
+    setAutoResizeItemsEnabled(false); setIconSize(QSize(IconSize, IconSize));
+    setFrameShape(QFrame::NoFrame);
+    // Only the presentation scrolls. The backing view remains fully laid out
+    // for public native context-menu APIs, covered by the transparent tree.
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    viewport()->setAutoFillBackground(false);
-    // The native event watcher casts itemDelegate() to its private type during
-    // pointer input. Keep that default installed; Qt's per-column override
-    // supplies our presentation without replacing its native input delegate.
-    setItemDelegateForColumn(0, new PlacesDelegate(this, itemDelegate()));
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setAutoFillBackground(false); viewport()->setAutoFillBackground(false);
+    viewport()->setAttribute(Qt::WA_OpaquePaintEvent, false);
+    setFocusProxy(d->tree);
+}
+FinderPlacesView::~FinderPlacesView() = default;
+void FinderPlacesView::setModel(QAbstractItemModel *model) {
+    auto *places = qobject_cast<KFilePlacesModel *>(model);
+    if (!places) { emit errorMessage("The sidebar requires a native KFilePlacesModel."); return; }
+    KFilePlacesView::setModel(model); d->attach(places);
+}
+QTreeView *FinderPlacesView::presentationView() const { return d->tree; }
+void FinderPlacesView::setTeardownFunction(TeardownFunction teardown) {
+    d->teardown = teardown; KFilePlacesView::setTeardownFunction(std::move(teardown));
+}
+void FinderPlacesView::setUrl(const QUrl &url) {
+    d->currentUrl = url; d->selectedTag.clear();
+    KFilePlacesView::setUrl(url); d->selectCurrent();
+}
+void FinderPlacesView::setTag(const QString &tag) {
+    d->selectedTag = tag; d->selectCurrent();
+}
+void FinderPlacesView::resizeEvent(QResizeEvent *event) {
+    KFilePlacesView::resizeEvent(event);
+    d->tree->setGeometry(viewport()->rect());
+}
+void FinderPlacesView::paintEvent(QPaintEvent *) {
+    // The native delegate's capacity/group drawing is deliberately not painted
+    // behind this transparent presentation; the parent supplies the material.
+}
+void FinderPlacesView::showEvent(QShowEvent *event) {
+    // QWidget show handling avoids native capacity polling for covered rows.
+    // Device animation in the presentation runs only during an actual request.
+    QListView::showEvent(event);
+    d->tree->setGeometry(viewport()->rect()); d->tree->show();
 }
