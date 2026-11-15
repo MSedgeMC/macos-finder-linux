@@ -1090,7 +1090,11 @@ public:
     destination->restoreTabSearch();
     destination->show(); destination->raise(); destination->activateWindow();
     destination->browser()->activeView()->setFocus();
-    if (tabs->count() == 0) close(); else refresh();
+    if (tabs->count() == 0) close();
+    else {
+      ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
+      stopSearch(); restoreTabSearch(); refresh();
+    }
   }
   bool showingSearch() const {
     return contentStack && contentStack->currentWidget() == searchPage;
