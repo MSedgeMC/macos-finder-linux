@@ -343,6 +343,7 @@ struct TabState {
   int historyIndex = -1;
   bool navigatingHistory = false;
   bool viewRestored = false;
+  QJsonObject searchState;
   PreviewPane *gallery = nullptr, *column = nullptr, *preview = nullptr;
 };
 class CapacityProbe : public QThread {
@@ -759,6 +760,7 @@ public:
     tabs->setCornerWidget(newTab, Qt::TopRightCorner);
     connect(newTab, &QToolButton::clicked, this, [this] { addTab(browser()->url(), true); });
     connect(tabs, &QTabWidget::currentChanged, this, [this](int) {
+      saveTabSearch();
       ++navigationGeneration; if (smartFolderReader) smartFolderReader->cancel();
       if (fileSearch)
         stopSearch();
@@ -770,6 +772,7 @@ public:
         }
       }
       refresh();
+      restoreTabSearch();
     });
     connect(tabs, &QTabWidget::tabCloseRequested, this, [this](int i) {
       if (tabs->count() == 1) {
@@ -991,7 +994,7 @@ public:
     QList<Browser *> moving;
     for (int i = 0; i < tabs->count(); ++i)
       if (only < 0 || only == i) moving << qobject_cast<Browser *>(tabs->widget(i));
-    saveView();
+    saveView(); saveTabSearch(); destination->saveTabSearch();
     if (auto *panel = findChild<QDialog *>("finderViewOptions")) panel->close();
     {
       QSignalBlocker sourceSignals(tabs), destinationSignals(destination->tabs);
@@ -1016,6 +1019,7 @@ public:
     }
     destination->stopSearch();
     destination->refresh();
+    destination->restoreTabSearch();
     destination->show(); destination->raise(); destination->activateWindow();
     destination->browser()->activeView()->setFocus();
     if (tabs->count() == 0) close(); else refresh();
@@ -1715,6 +1719,7 @@ private:
   QMenu *tagMenu;
   QList<QAction *> tagActions;
   QHash<Browser *, TabState> states;
+  QPointer<Browser> searchStateBrowser;
   QHash<QString, QAction *> namedActions;
   bool restoring = false, explicitNavigation = false;
   bool wasMaximizedBeforeFullscreen = false;
@@ -1826,6 +1831,28 @@ private:
     for (auto i : searchResults->selectionModel()->selectedRows())
       urls << i.data(Qt::UserRole).toUrl();
     return urls;
+  }
+  void saveTabSearch() {
+    if (!searchStateBrowser || !states.contains(searchStateBrowser) || !fileSearch) return;
+    auto state = searchDefinition(); state["visible"] = search->isVisible(); state["tag"] = selectedTag;
+    state["root"] = searchStateBrowser->url().toString(); states[searchStateBrowser].searchState = state;
+  }
+  void restoreTabSearch() {
+    if (!browser() || !fileSearch) return;
+    searchStateBrowser = browser(); const auto state = states[browser()].searchState;
+    { QSignalBlocker name(search), content(searchContent), kind(searchKind), scope(searchScope);
+      search->setText(state.value("name").toString()); searchContent->setText(state.value("content").toString());
+      searchKind->setCurrentIndex(qMax(0, searchKind->findData(state.value("kind").toString())));
+      searchScope->setCurrentIndex(state.value("scope").toString(FinderPreferences::initialSearchScope()) == "current" ? 1 : 0);
+      searchMinimumSize = state.value("minimumSize").toInteger(-1); searchMaximumSize = state.value("maximumSize").toInteger(-1);
+      searchModifiedAfter = state.value("modifiedAfter").toInteger(-1);
+    }
+    selectedTag = state.value("tag").toString(); search->setVisible(state.value("visible").toBool()); layoutHeader();
+    if (!selectedTag.isEmpty()) {
+      searchRoot = QUrl::fromLocalFile(QDir::homePath()); searchModel->removeRows(0, searchModel->rowCount()); contentStack->setCurrentWidget(searchPage);
+      LocalFileSearch::Options options; options.requiredTag = selectedTag; options.showHidden = true; options.preferredPath = browser()->url().toLocalFile();
+      searchSummary->setText("Tags: " + selectedTag + " — Searching…"); places->setTag(selectedTag); fileSearch->start(searchRoot, QString(), options);
+    } else if (search->isVisible()) beginSearch();
   }
   void stopSearch() {
     selectedTag.clear();
