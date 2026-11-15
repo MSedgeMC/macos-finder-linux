@@ -15,6 +15,7 @@
 #include <QDateTime>
 #include <QLocale>
 #include <QDir>
+#include <QDrag>
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -52,6 +53,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QTreeView>
+#include <QUuid>
 #include <QTextEdit>
 #include <QTextLayout>
 #include <QVBoxLayout>
@@ -976,12 +978,16 @@ template <class View> class DropView : public View {
 public:
     using View::View;
     DropHandler handler;
+    std::function<void(QMimeData *, const QPoint &)> prepareDrag;
+    std::function<void()> dragFinished;
+    void endDragState() { this->stopAutoScroll(); this->setState(QAbstractItemView::NoState); this->viewport()->update(); }
     bool keepRangeAnchor = false;
 protected:
     void mousePressEvent(QMouseEvent *event) override {
         QScopedValueRollback<bool> handling(handlingPress, true);
         QScopedValueRollback<Qt::KeyboardModifiers> modifiers(pressModifiers, event->modifiers());
         const auto target = this->indexAt(event->position().toPoint());
+        if (event->button() == Qt::LeftButton) dragOrigin = event->position().toPoint();
         const bool range = keepRangeAnchor && event->button() == Qt::LeftButton &&
             event->modifiers().testFlag(Qt::ShiftModifier) && rangeAnchor.isValid() && target.isValid() &&
             rangeAnchor.parent() == target.parent();
@@ -1028,13 +1034,64 @@ protected:
         if (!index.isValid()) index = this->rootIndex();
         if (handler) handler(event, index);
         else View::dropEvent(event);
+        endDragState();
+    }
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        View::dragEnterEvent(event);
+        if (event->mimeData()->hasUrls()) event->acceptProposedAction();
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override {
+        // Retain Qt's edge auto-scroll and hover/drop indication. The browser
+        // filter tracks spring dwell, while native Drop remains KIO-owned.
+        View::dragMoveEvent(event);
+        if (!event->mimeData()->hasUrls()) return;
+        if (event->modifiers().testFlag(Qt::MetaModifier))
+            event->setDropAction(event->modifiers().testFlag(Qt::AltModifier) ? Qt::LinkAction : Qt::MoveAction);
+        else if (event->modifiers().testFlag(Qt::AltModifier)) event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+    void startDrag(Qt::DropActions supported) override {
+        // Qt's default Move result may remove rows at the source, and QListView
+        // can consume an icon move before KIO sees it. Use native URL MIME and
+        // QDrag, with the actual transfer owned exclusively by KIO::drop.
+        const auto indexes = this->selectionModel()->selectedRows(0);
+        if (indexes.isEmpty()) return;
+        auto *mime = this->model()->mimeData(indexes);
+        if (!mime) return;
+        if (prepareDrag) prepareDrag(mime, dragOrigin);
+        auto *drag = new QDrag(this); // The platform drag manager owns its lifetime.
+        drag->setMimeData(mime);
+        const auto icon = indexes.first().data(Qt::DecorationRole).template value<QIcon>();
+        if (!icon.isNull()) {
+            drag->setPixmap(icon.pixmap(this->iconSize()));
+            drag->setHotSpot(QPoint(this->iconSize().width() / 2, this->iconSize().height() / 2));
+        }
+        const QPointer<QWidget> alive(this);
+        drag->exec(supported, this->defaultDropAction());
+        if (!alive) return;
+        endDragState();
+        if (dragFinished) dragFinished();
     }
 private:
+    QPoint dragOrigin;
     bool handlingPress = false;
     Qt::KeyboardModifiers pressModifiers = Qt::NoModifier;
     QPersistentModelIndex rangeAnchor;
     QPersistentModelIndex rangeTarget;
     bool rangeAdditive = false;
+};
+
+class FinderIconView : public DropView<KCategorizedView> {
+public:
+    using DropView::DropView;
+    std::function<void()> arrangedLayout;
+    void place(const QModelIndex &index, const QPoint &point) { setPositionForIndex(point, index); }
+    QPoint position(const QModelIndex &index) const { return rectForIndex(index).topLeft(); }
+    void fitPositions(const QSize &size) { resizeContents(size.width(), size.height()); }
+    void doItemsLayout() override {
+        KCategorizedView::doItemsLayout();
+        if (arrangedLayout) arrangedLayout();
+    }
 };
 
 class FinderListView : public DropView<QTreeView> {
@@ -1119,6 +1176,8 @@ protected:
         column->setUniformItemSizes(true);
         column->setSpacing(0);
         column->handler = handler;
+        column->prepareDrag = prepareDrag;
+        column->dragFinished = dragFinished;
         if (prepare) prepare(column);
         if (model()->canFetchMore(index)) model()->fetchMore(index);
         return column;
@@ -1150,7 +1209,7 @@ public:
     QItemSelectionModel *selection;
     QItemSelectionModel *columnSelection;
     QStackedWidget *stack;
-    DropView<KCategorizedView> *icons;
+    FinderIconView *icons;
     FinderListView *list;
     ColumnsView *columns;
     DropView<QListView> *strip;
@@ -1180,6 +1239,26 @@ public:
     ~Private() { if (sizeWorker) sizeWorker->requestInterruption(); }
     QUrl rootUrl;
     QUrl currentUrl;
+    QHash<QUrl, QHash<QUrl, QPoint>> arrangements;
+    bool gridSnap = false;
+    bool applyingArrangement = false;
+    bool sortingArrangement = false;
+    bool arrangementQueued = false;
+    const QByteArray dragToken = QUuid::createUuid().toByteArray();
+    QTimer springTimer;
+    QTimer springLeaveTimer;
+    bool springEnabled = true;
+    bool springActive = false;
+    bool springNavigating = false;
+    QUrl springHover;
+    QPointer<QAbstractItemView> springView;
+    QPointer<const QMimeData> springMime;
+    QMetaObject::Connection springMimeDestroyed;
+    QUrl springOriginRoot;
+    QUrl springOriginCurrent;
+    QList<QUrl> springOriginSelection;
+    QByteArray springOriginState;
+    QUrl springRestoreColumns;
     Mode currentMode = Icons;
     QList<QUrl> pendingSelection;
     bool changing = false;
@@ -1230,6 +1309,189 @@ public:
         thumbnailTimer.setSingleShot(true);
         thumbnailTimer.setInterval(120);
         QObject::connect(&thumbnailTimer, &QTimer::timeout, q, [this] { updateVisibleThumbnails(); });
+        springTimer.setSingleShot(true); springTimer.setInterval(650);
+        springLeaveTimer.setSingleShot(true); springLeaveTimer.setInterval(0);
+        QObject::connect(&springTimer, &QTimer::timeout, q, [this] { springOpen(); });
+        QObject::connect(&springLeaveTimer, &QTimer::timeout, q, [this] { finishSpring(false); });
+    }
+
+    static QUrl normalized(QUrl url) {
+        return url.adjusted(QUrl::NormalizePathSegments | QUrl::StripTrailingSlash);
+    }
+    bool manualIcons() const {
+        return currentMode == Icons && viewOptions[Icons].sort == -1 && proxy->grouping == GroupNone;
+    }
+    QPoint boundedPosition(QPoint point) const {
+        point.setX(qBound(0, point.x(), 1000000));
+        point.setY(qBound(0, point.y(), 1000000));
+        return point;
+    }
+    QPoint snapped(QPoint point) const {
+        const auto grid = icons->gridSize().expandedTo(QSize(1, 1));
+        point = boundedPosition(point);
+        return QPoint(qRound(double(point.x()) / grid.width()) * grid.width(),
+                      qRound(double(point.y()) / grid.height()) * grid.height());
+    }
+    static quint64 cellKey(int x, int y) { return (quint64(quint32(y)) << 32) | quint32(x); }
+    void occupy(QSet<quint64> &cells, const QPoint &point) const {
+        const auto grid = icons->gridSize().expandedTo(QSize(1, 1));
+        const QRect rect(point, grid);
+        for (int y = rect.top() / grid.height(); y <= rect.bottom() / grid.height(); ++y)
+            for (int x = rect.left() / grid.width(); x <= rect.right() / grid.width(); ++x)
+                cells.insert(cellKey(x, y));
+    }
+    QPoint vacant(QSet<quint64> &cells, QPoint start = {}) const {
+        const auto grid = icons->gridSize().expandedTo(QSize(1, 1));
+        const int columns = qMax(1, icons->viewport()->width() / grid.width());
+        int x = start.x() / grid.width(), y = start.y() / grid.height();
+        while (cells.contains(cellKey(x, y))) { if (++x >= columns) { x = 0; ++y; } }
+        const QPoint result(x * grid.width(), y * grid.height());
+        occupy(cells, result);
+        return result;
+    }
+    void applyArrangement() {
+        if (!manualIcons() || applyingArrangement || rootUrl.isEmpty()) return;
+        QScopedValueRollback<bool> guard(applyingArrangement, true);
+        auto &positions = arrangements[normalized(rootUrl)];
+        QSet<quint64> occupied;
+        // Reserve hidden/filtered positions too: new files must not silently
+        // occupy the location of a file that is temporarily out of view.
+        for (const auto &point : positions) occupy(occupied, point);
+        QSize extent = icons->viewport()->size();
+        QPoint nextVacancy;
+        bool added = false;
+        for (int row = 0; row < proxy->rowCount(); ++row) {
+            const auto index = proxy->index(row, 0);
+            const auto url = normalized(item(index).url());
+            if (!positions.contains(url)) {
+                nextVacancy = vacant(occupied, nextVacancy);
+                positions.insert(url, nextVacancy); added = true;
+            }
+            const auto point = positions.value(url);
+            icons->place(index, point);
+            extent = extent.expandedTo(QSize(point.x() + icons->gridSize().width(), point.y() + icons->gridSize().height()));
+        }
+        icons->fitPositions(extent);
+        if (added) emit q->iconArrangementChanged();
+    }
+    void scheduleArrangement() {
+        if (arrangementQueued || !manualIcons() || applyingArrangement) return;
+        arrangementQueued = true;
+        QTimer::singleShot(0, q, [this] {
+            arrangementQueued = false;
+            if (manualIcons()) icons->doItemsLayout();
+        });
+    }
+    void updateArrangementMode() {
+        if (sortingArrangement) return;
+        icons->setMovement(manualIcons() ? (gridSnap ? QListView::Snap : QListView::Free) : QListView::Static);
+        // QListView movement/view-mode setters change drag/drop flags too.
+        // Sorted Icons remain a native transfer destination/source.
+        icons->setDragDropMode(QAbstractItemView::DragDrop);
+        icons->viewport()->setAcceptDrops(true);
+        icons->setResizeMode(manualIcons() ? QListView::Fixed : QListView::Adjust);
+        icons->doItemsLayout();
+        scheduleArrangement();
+    }
+    void writeDrag(QAbstractItemView *view, QMimeData *mime, const QPoint &origin) {
+        QJsonObject points;
+        for (const auto &index : view->selectionModel()->selectedRows(0)) {
+            const QPoint point = view == icons ? icons->position(index) : view->visualRect(index).topLeft() +
+                QPoint(view->horizontalScrollBar()->value(), view->verticalScrollBar()->value());
+            points.insert(normalized(item(index).url()).toString(QUrl::FullyEncoded), QJsonArray{point.x(), point.y()});
+        }
+        const QPoint contentOrigin = origin + QPoint(view->horizontalScrollBar()->value(), view->verticalScrollBar()->value());
+        mime->setData("application/x-finder-icon-arrangement", QJsonDocument(QJsonObject{
+            {"token", QString::fromLatin1(dragToken)}, {"directory", normalized(rootUrl).toString(QUrl::FullyEncoded)},
+            {"origin", QJsonArray{contentOrigin.x(), contentOrigin.y()}}, {"positions", points}}).toJson(QJsonDocument::Compact));
+    }
+    bool arrangeDrop(QDropEvent *event, const QModelIndex &target) {
+        if (!manualIcons() || event->modifiers() != Qt::NoModifier || item(target).isDir()) return false;
+        const auto payload = QJsonDocument::fromJson(event->mimeData()->data("application/x-finder-icon-arrangement")).object();
+        if (payload.value("token").toString().toLatin1() != dragToken ||
+            normalized(QUrl(payload.value("directory").toString())) != normalized(rootUrl)) return false;
+        const auto points = payload.value("positions").toObject();
+        const auto urls = KUrlMimeData::urlsFromMimeData(event->mimeData(), KUrlMimeData::PreferLocalUrls);
+        if (urls.isEmpty() || points.size() != urls.size()) return false;
+        for (const auto &url : urls) {
+            if (normalized(parentUrl(url)) != normalized(rootUrl) ||
+                !points.contains(normalized(url).toString(QUrl::FullyEncoded))) return false;
+            const auto point = points.value(normalized(url).toString(QUrl::FullyEncoded)).toArray();
+            if (point.size() != 2 || !point[0].isDouble() || !point[1].isDouble()) return false;
+        }
+        const auto origin = payload.value("origin").toArray();
+        if (origin.size() != 2) return false;
+        const QPoint dropPoint = event->position().toPoint() + QPoint(icons->horizontalScrollBar()->value(), icons->verticalScrollBar()->value());
+        const QPoint delta = dropPoint - QPoint(origin[0].toInt(), origin[1].toInt());
+        auto &positions = arrangements[normalized(rootUrl)];
+        for (const auto &url : urls) {
+            const auto point = points.value(normalized(url).toString(QUrl::FullyEncoded)).toArray();
+            QPoint moved = boundedPosition(QPoint(point[0].toInt(), point[1].toInt()) + delta);
+            positions.insert(normalized(url), gridSnap ? snapped(moved) : moved);
+        }
+        applyArrangement();
+        event->setDropAction(Qt::MoveAction); event->accept();
+        emit q->iconArrangementChanged();
+        return true;
+    }
+    void beginSpring(QAbstractItemView *view, const QMimeData *mime) {
+        springLeaveTimer.stop();
+        if (springActive || !springEnabled || !mime || !mime->hasUrls()) return;
+        springActive = true;
+        springOriginRoot = rootUrl; springOriginCurrent = currentUrl;
+        springOriginSelection = q->selectedUrls(); springOriginState = q->saveViewState();
+        springView = view; springMime = mime;
+        // Destruction also handles drags dropped into another widget/app. A
+        // deferred leave handles cancellation of external native drags whose
+        // platform MIME object may remain alive until the next drag.
+        springMimeDestroyed = QObject::connect(mime, &QObject::destroyed, q, [this, mime] {
+            if (springMime.isNull() || springMime.data() == mime) finishSpring(false);
+        });
+        emit q->springLoadingChanged(true);
+    }
+    void hoverSpring(QAbstractItemView *view, QDragMoveEvent *event) {
+        beginSpring(view, event->mimeData());
+        if (!springActive) return;
+        const auto entry = item(view->indexAt(event->position().toPoint()));
+        QUrl target = entry.isDir() ? normalized(entry.url()) : QUrl();
+        const auto sources = KUrlMimeData::urlsFromMimeData(event->mimeData(), KUrlMimeData::PreferLocalUrls);
+        for (const auto &source : sources) {
+            const auto url = normalized(source);
+            if (url == target || url.isParentOf(target)) { target = QUrl(); break; }
+        }
+        if (target == normalized(rootUrl)) target = QUrl();
+        if (springHover == target && springView == view) return;
+        springTimer.stop(); springView = view; springHover = target;
+        if (!target.isEmpty()) springTimer.start();
+    }
+    void springOpen() {
+        if (!springActive || springHover.isEmpty() || !springView || !springMime || !springView->isVisible()) return;
+        const QUrl target = springHover; springHover = QUrl();
+        QScopedValueRollback<bool> guard(springNavigating, true);
+        // KFileItem has already identified the hovered directory. Listing is
+        // asynchronous; there is no QFileInfo/network stat in the hover path.
+        q->navigateValidated(target);
+    }
+    void finishSpring(bool commit) {
+        springTimer.stop(); springLeaveTimer.stop(); springHover = QUrl();
+        if (!springActive) return;
+        const bool changed = normalized(rootUrl) != normalized(springOriginRoot);
+        springActive = false;
+        QObject::disconnect(springMimeDestroyed);
+        springView = nullptr; springMime = nullptr;
+        if (changed && !commit) {
+            QScopedValueRollback<bool> guard(springNavigating, true);
+            q->navigateValidated(springOriginRoot);
+            q->restoreViewState(springOriginState);
+            if (currentMode == Columns && springOriginCurrent != springOriginRoot) springRestoreColumns = springOriginCurrent;
+            q->selectUrls(springOriginSelection);
+            if (!springRestoreColumns.isEmpty()) {
+                model->expandToUrl(springOriginCurrent);
+                for (const auto &url : springOriginSelection) model->expandToUrl(url);
+            }
+        } else if (!commit) q->selectUrls(springOriginSelection);
+        if (changed && commit) emit q->urlChanged(currentUrl);
+        emit q->springLoadingChanged(false);
     }
 
     void layoutIcons() {
@@ -1255,6 +1517,7 @@ public:
         if (strip->gridSize() != stripGrid) strip->setGridSize(stripGrid);
         strip->setFixedHeight(stripGrid.height() + 16);
         strip->viewport()->update();
+        scheduleArrangement();
     }
 
     void updatePreviewVisibility() {
@@ -1362,7 +1625,8 @@ public:
             if (!current.isNull()) active = current.isDir() ? current.url() : parentUrl(current.url());
             if (active != currentUrl) {
                 currentUrl = active;
-                emit q->urlChanged(currentUrl);
+                if (springActive || springNavigating || !springRestoreColumns.isEmpty()) emit q->springUrlChanged(currentUrl);
+                else emit q->urlChanged(currentUrl);
                 count();
             }
         }
@@ -1407,6 +1671,7 @@ public:
         activeSelection()->select(selected, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         activeSelection()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
         q->activeView()->scrollTo(current);
+        if (complete) springRestoreColumns = QUrl();
     }
 
     void job(KIO::Job *job, const QString &message) {
@@ -1517,7 +1782,14 @@ public:
         view->setAcceptDrops(true);
         view->setDropIndicatorShown(true);
         view->setDragDropMode(QAbstractItemView::DragDrop);
+        view->viewport()->setAcceptDrops(true);
         view->setDefaultDropAction(Qt::CopyAction);
+        const auto dragPrepare = [this, view](QMimeData *mime, const QPoint &point) { writeDrag(view, mime, point); };
+        const auto dragDone = [this] { finishSpring(false); };
+        if (view == icons) { icons->prepareDrag = dragPrepare; icons->dragFinished = dragDone; }
+        else if (view == list) { list->prepareDrag = dragPrepare; list->dragFinished = dragDone; }
+        else if (view == columns) { columns->prepareDrag = dragPrepare; columns->dragFinished = dragDone; }
+        else { auto *native = static_cast<DropView<QListView> *>(view); native->prepareDrag = dragPrepare; native->dragFinished = dragDone; }
         view->setEditTriggers(QAbstractItemView::NoEditTriggers);
         view->setContextMenuPolicy(Qt::CustomContextMenu);
         FileDelegate *delegate = view == icons || view == strip ? new IconDelegate(static_cast<QListView *>(view), &iconOptions, view == strip) :
@@ -1571,11 +1843,14 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         d->sidePreviewWidth = width;
         QSettings().setValue("View/previewWidth", width);
     });
-    d->icons = new DropView<KCategorizedView>(d->stack); d->icons->setObjectName("finderIconView");
+    d->icons = new FinderIconView(d->stack); d->icons->setObjectName("finderIconView");
     d->icons->setViewMode(QListView::IconMode); d->icons->setResizeMode(QListView::Adjust);
     d->icons->setMovement(QListView::Static); d->icons->setIconSize({64, 64});
+    d->icons->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    d->icons->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     d->icons->setWordWrap(true); d->icons->setUniformItemSizes(true); d->icons->setCategoryDrawer(new FinderCategoryDrawer(d->icons));
     d->icons->setCategorySpacing(8); d->icons->setCollapsibleBlocks(false);
+    d->icons->arrangedLayout = [this] { d->applyArrangement(); };
     d->list = new FinderListView(d->stack); d->list->setObjectName("finderListView");
     d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(true);
     d->list->setIconSize({18, 18}); d->list->setSortingEnabled(true);
@@ -1598,6 +1873,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     galleryLayout->addWidget(d->strip);
     d->layoutIcons();
     const auto dropped = [this](QDropEvent *event, const QModelIndex &index) {
+        if (d->arrangeDrop(event, index)) { d->finishSpring(true); return; }
         const auto entry = d->item(index);
         drop(event, entry.isDir() ? entry.url() : (index.isValid() ? parentUrl(entry.url()) :
              (d->currentMode == Columns ? d->rootUrl : url())));
@@ -1669,12 +1945,38 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     });
     connect(d->model->dirLister(), &KDirLister::refreshItems, this, [this](const QList<QPair<KFileItem, KFileItem>> &items) {
         if (!items.isEmpty()) { d->invalidateSizes(); d->resetThumbnailRequests(); }
+        bool changed = false;
+        for (const auto &pair : items) {
+            const auto oldUrl = Private::normalized(pair.first.url()), newUrl = Private::normalized(pair.second.url());
+            if (oldUrl == newUrl) continue;
+            auto folder = d->arrangements.find(Private::normalized(parentUrl(oldUrl)));
+            if (folder == d->arrangements.end() || !folder->contains(oldUrl)) continue;
+            const QPoint point = folder->take(oldUrl);
+            d->arrangements[Private::normalized(parentUrl(newUrl))].insert(newUrl, point); changed = true;
+        }
+        if (changed) { d->scheduleArrangement(); emit iconArrangementChanged(); }
+    });
+    connect(d->model, &KDirModel::expand, this, [this](const QModelIndex &source) {
+        if (d->springRestoreColumns.isEmpty() || mode() != Columns) return;
+        const auto index = d->proxy->mapFromSource(source);
+        if (index.isValid()) { d->columns->scrollTo(index); d->applySelection(); }
+    });
+    connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) {
+        if (d->springActive) {
+            emit errorOccurred(job->errorString());
+            QTimer::singleShot(0, this, &Browser::cancelSpringLoading);
+        }
     });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
+    connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleArrangement(); });
+    connect(d->proxy, &QAbstractItemModel::rowsRemoved, this, [this] { d->scheduleArrangement(); });
+    connect(d->proxy, &QAbstractItemModel::layoutChanged, this, [this] { d->scheduleArrangement(); });
+    connect(d->proxy, &QAbstractItemModel::modelReset, this, [this] { d->scheduleArrangement(); });
     connect(d->model, &QAbstractItemModel::rowsRemoved, this, [this] { d->count(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->count(); });
     connect(d->model->dirLister(), &KDirLister::completed, this, [this] {
         d->count(); d->applySelection();
+        d->scheduleArrangement();
         if (d->pendingScrollRestore) {
             d->pendingScrollRestore = false;
             QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
@@ -1724,7 +2026,12 @@ QByteArray Browser::saveViewState() const {
     for (int width : d->columns->columnWidths()) columns.append(width);
     QJsonArray visible;
     for (int column : visibleListColumns()) visible.append(column);
+    QJsonObject positions;
+    const auto savedPositions = d->arrangements.value(Private::normalized(d->rootUrl));
+    for (auto it = savedPositions.cbegin(); it != savedPositions.cend(); ++it)
+        positions.insert(it.key().toString(QUrl::FullyEncoded), QJsonArray{it->x(), it->y()});
     return QJsonDocument(QJsonObject{{"version", 1}, {"mode", int(mode())}, {"modes", modes},
+        {"snapToGrid", snapToGrid()}, {"positionsUrl", Private::normalized(d->rootUrl).toString(QUrl::FullyEncoded)}, {"iconPositions", positions},
         {"previewWidth", previewWidth()}, {"listHeader", QString::fromLatin1(d->list->header()->saveState().toBase64())},
         {"columnWidths", columns}, {"listVisibleColumns", visible}}).toJson(QJsonDocument::Compact);
 }
@@ -1737,7 +2044,7 @@ void Browser::restoreViewState(const QByteArray &state) {
         auto &options = d->viewOptions[number];
         options.size = number == Columns ? 18 : number == List ? qBound(16, saved.value("iconSize").toInt(18), 32) :
             qBound(32, saved.value("iconSize").toInt(64), 256);
-        options.sort = qBound(0, saved.value("sort").toInt(), int(ListColumnCount) - 1);
+        options.sort = qBound(number == Icons ? -1 : 0, saved.value("sort").toInt(), int(ListColumnCount) - 1);
         options.ascending = saved.value("ascending").toBool(true);
         options.group = Group(qBound(0, saved.value("group").toInt(), int(GroupTags)));
         options.previews = saved.value("previews").toBool(true);
@@ -1750,6 +2057,20 @@ void Browser::restoreViewState(const QByteArray &state) {
     }
     const bool previousChanging = d->changing;
     d->changing = true;
+    d->gridSnap = object.value("snapToGrid").toBool(false);
+    const QUrl positionsUrl = Private::normalized(QUrl(object.value("positionsUrl").toString()));
+    if (!positionsUrl.isEmpty() && (d->rootUrl.isEmpty() || positionsUrl == Private::normalized(d->rootUrl))) {
+        QHash<QUrl, QPoint> positions;
+        const auto savedPositions = object.value("iconPositions").toObject();
+        for (auto it = savedPositions.begin(); it != savedPositions.end() && positions.size() < 100000; ++it) {
+            const QUrl url = Private::normalized(QUrl(it.key()));
+            const auto point = it.value().toArray();
+            if (url.isValid() && Private::normalized(parentUrl(url)) == positionsUrl && point.size() == 2 &&
+                point[0].isDouble() && point[1].isDouble())
+                positions.insert(url, d->boundedPosition(QPoint(point[0].toInt(), point[1].toInt())));
+        }
+        d->arrangements.insert(positionsUrl, positions);
+    }
     d->currentMode = Mode(qBound(0, object.value("mode").toInt(), int(Gallery)));
     d->stack->setCurrentIndex(int(mode())); setFocusProxy(activeView());
     d->restoreModeOptions();
@@ -1770,6 +2091,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     // Header state includes a sort indicator and may sort the proxy as a side
     // effect. Per-mode saved sort remains authoritative after geometry restore.
     setSort(d->viewOptions[mode()].sort, d->viewOptions[mode()].ascending);
+    d->updateArrangementMode();
     QList<int> widths;
     for (const auto &width : object.value("columnWidths").toArray()) widths.append(qBound(80, width.toInt(220), 900));
     if (!widths.isEmpty()) d->columns->setColumnWidths(widths);
@@ -1796,7 +2118,19 @@ bool Browser::canNewFolderWithSelection() const {
             KProtocolManager::supportsDeleting(item.url());
     });
 }
-int Browser::sortColumn() const { return d->proxy->sortColumn(); }
+int Browser::sortColumn() const { return mode() == Icons && d->viewOptions[Icons].sort == -1 ? -1 : d->proxy->sortColumn(); }
+bool Browser::snapToGrid() const { return d->gridSnap; }
+bool Browser::canArrangeIcons() const { return d->manualIcons(); }
+QPoint Browser::iconPosition(const QUrl &url) const {
+    return d->arrangements.value(Private::normalized(d->rootUrl)).value(Private::normalized(url), QPoint(-1, -1));
+}
+QMimeData *Browser::createDragMimeData(const QPoint &origin) const {
+    auto *view = activeView();
+    auto *mime = view->model()->mimeData(view->selectionModel()->selectedRows(0));
+    if (mime) d->writeDrag(view, mime, origin);
+    return mime;
+}
+bool Browser::springLoadingActive() const { return d->springActive; }
 bool Browser::sortAscending() const { return d->proxy->sortOrder() == Qt::AscendingOrder; }
 int Browser::listColumnCount() const { return d->proxy->columnCount(); }
 QString Browser::listColumnTitle(int column) const {
@@ -1940,6 +2274,13 @@ void Browser::navigate(const QUrl &requested) {
         const QFileInfo info(target.toLocalFile());
         if (!info.exists() || !info.isDir()) { emit errorOccurred("Folder is unavailable: " + target.toDisplayString()); return; }
     }
+    navigateValidated(target);
+}
+void Browser::navigateValidated(const QUrl &requested) {
+    if (!requested.isValid() || requested.isEmpty()) return;
+    if (!d->springNavigating) d->finishSpring(false);
+    const QUrl target = Private::normalized(requested);
+    d->springRestoreColumns = QUrl();
     d->changing = true;
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear();
     d->rootUrl = target; d->currentUrl = target;
@@ -1950,10 +2291,14 @@ void Browser::navigate(const QUrl &requested) {
     // so invalidated child roots cannot become additional top-level columns.
     d->columns->setRootIndex(QModelIndex());
     d->changing = false;
-    emit urlChanged(target); emit selectionChanged({}); emit previewRequested({});
+    d->scheduleArrangement();
+    if (d->springNavigating) emit springUrlChanged(target);
+    else emit urlChanged(target);
+    emit selectionChanged({}); emit previewRequested({});
 }
 void Browser::setMode(Mode mode) {
     if (mode < Icons || mode > Gallery || d->currentMode == mode) return;
+    if (!d->springNavigating) d->finishSpring(false);
     const auto urls = selectedUrls(); const QUrl current = d->currentUrl;
     const bool collapseColumns = d->currentMode == Columns && current != d->rootUrl;
     d->saveModeOptions();
@@ -1965,6 +2310,7 @@ void Browser::setMode(Mode mode) {
     d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
     d->resetThumbnailRequests();
     d->updatePreviewVisibility(); d->layoutIcons();
+    d->updateArrangementMode();
     if (collapseColumns) navigate(current);
     selectUrls(urls);
     d->changing = previousChanging;
@@ -1974,13 +2320,93 @@ void Browser::setMode(Mode mode) {
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }
 void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
 void Browser::setSort(int column, bool ascending) {
-    column = qBound(0, column, int(ListColumnCount) - 1);
+    column = qBound(mode() == Icons ? -1 : 0, column, int(ListColumnCount) - 1);
+    const auto urls = selectedUrls();
+    d->viewOptions[mode()].sort = column;
+    d->viewOptions[mode()].ascending = ascending;
     const auto order = ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
     const QSignalBlocker blocker(d->list->header());
     d->list->header()->setSortIndicator(column, order);
-    d->proxy->sort(column, order);
+    // KCategorizedView requires a sortable column for its groups. None is a
+    // separate Icons setting; grouping may still sort within its buckets.
+    d->proxy->sort(column < 0 && group() != GroupNone ? NameColumn : column, order);
+    d->updateArrangementMode();
+    selectUrls(urls);
     d->scheduleThumbnails();
 }
+void Browser::setSnapToGrid(bool enabled) {
+    if (d->gridSnap == enabled) return;
+    d->gridSnap = enabled;
+    d->updateArrangementMode();
+    emit iconArrangementChanged();
+}
+void Browser::setIconPosition(const QUrl &url, const QPoint &position) {
+    if (!canArrangeIcons() || Private::normalized(parentUrl(url)) != Private::normalized(d->rootUrl)) return;
+    const auto index = d->proxy->mapFromSource(d->model->indexForUrl(url));
+    if (!index.isValid()) return;
+    const QPoint point = d->gridSnap ? d->snapped(position) : d->boundedPosition(position);
+    auto &positions = d->arrangements[Private::normalized(d->rootUrl)];
+    if (positions.value(Private::normalized(url), QPoint(-1, -1)) == point) return;
+    positions.insert(Private::normalized(url), point);
+    d->applyArrangement();
+    emit iconArrangementChanged();
+}
+void Browser::cleanUp() {
+    if (!canArrangeIcons()) return;
+    const auto selected = selectedUrls();
+    auto &positions = d->arrangements[Private::normalized(d->rootUrl)];
+    QList<QUrl> urls = selected;
+    if (urls.isEmpty()) {
+        for (int row = 0; row < d->proxy->rowCount(); ++row) urls.append(d->item(d->proxy->index(row, 0)).url());
+    }
+    QSet<QUrl> moving;
+    for (auto &url : urls) { url = Private::normalized(url); moving.insert(url); }
+    std::sort(urls.begin(), urls.end(), [&positions](const auto &a, const auto &b) {
+        const QPoint pa = positions.value(a), pb = positions.value(b);
+        return pa.y() != pb.y() ? pa.y() < pb.y() : pa.x() != pb.x() ? pa.x() < pb.x() : a.toString() < b.toString();
+    });
+    QSet<quint64> occupied;
+    for (auto it = positions.cbegin(); it != positions.cend(); ++it)
+        if (!moving.contains(it.key())) d->occupy(occupied, it.value());
+    for (const auto &url : urls) positions[url] = d->vacant(occupied, d->snapped(positions.value(url)));
+    d->applyArrangement();
+    emit iconArrangementChanged();
+}
+void Browser::cleanUpBy(int column, bool ascending) {
+    if (!canArrangeIcons() || column < 0 || column >= ListColumnCount) return;
+    const auto selected = selectedUrls();
+    QSet<QUrl> selectedSet;
+    for (const auto &url : selected) selectedSet.insert(Private::normalized(url));
+    {
+        const QScopedValueRollback<bool> guard(d->applyingArrangement, true);
+        const QScopedValueRollback<bool> sorting(d->sortingArrangement, true);
+        const QSignalBlocker header(d->list->header());
+        d->proxy->sort(column, ascending ? Qt::AscendingOrder : Qt::DescendingOrder);
+        QList<QUrl> urls;
+        for (int row = 0; row < d->proxy->rowCount(); ++row) {
+            const auto url = Private::normalized(d->item(d->proxy->index(row, 0)).url());
+            if (selectedSet.isEmpty() || selectedSet.contains(url)) urls.append(url);
+        }
+        auto &positions = d->arrangements[Private::normalized(d->rootUrl)];
+        QSet<QUrl> moving;
+        for (const auto &url : urls) moving.insert(url);
+        QSet<quint64> occupied;
+        for (auto it = positions.cbegin(); it != positions.cend(); ++it)
+            if (!moving.contains(it.key())) d->occupy(occupied, it.value());
+        QPoint nextVacancy;
+        for (const auto &url : urls) { nextVacancy = d->vacant(occupied, nextVacancy); positions[url] = nextVacancy; }
+        d->proxy->sort(-1, d->viewOptions[Icons].ascending ? Qt::AscendingOrder : Qt::DescendingOrder);
+        selectUrls(selected);
+    }
+    d->scheduleArrangement();
+    emit iconArrangementChanged();
+}
+void Browser::setSpringLoadingEnabled(bool enabled) {
+    d->springEnabled = enabled;
+    if (!enabled) cancelSpringLoading();
+}
+void Browser::setSpringLoadingDelay(int milliseconds) { d->springTimer.setInterval(qBound(100, milliseconds, 3000)); }
+void Browser::cancelSpringLoading() { d->finishSpring(false); }
 void Browser::setIconSize(int size) {
     if (mode() == Columns) return;
     size = mode() == List ? qBound(16, size, 32) : qBound(32, size, 256);
@@ -2003,6 +2429,8 @@ void Browser::setGroup(Group value) {
     const bool previousChanging = d->changing;
     d->changing = true;
     d->proxy->setGroup(value);
+    if (sortColumn() < 0) d->proxy->sort(value == GroupNone ? -1 : NameColumn, sortAscending() ? Qt::AscendingOrder : Qt::DescendingOrder);
+    d->updateArrangementMode();
     d->list->setUniformRowHeights(value == GroupNone);
     if (mode() == List) d->list->doItemsLayout();
     else if (mode() == Icons) d->icons->doItemsLayout();
@@ -2218,10 +2646,67 @@ void Browser::undo() { auto *manager = KIO::FileUndoManager::self(); manager->ui
 void Browser::drop(QDropEvent *event, QUrl destination) {
     if (!event || !event->mimeData()->hasUrls()) { if (event) event->ignore(); return; }
     if (destination.isEmpty()) destination = url();
-    auto *job = KIO::drop(event, destination);
-    d->job(job, "Transferring…"); event->acceptProposedAction();
+    const bool option = event->modifiers().testFlag(Qt::AltModifier);
+    const bool command = event->modifiers().testFlag(Qt::MetaModifier);
+    Qt::DropAction action = event->dropAction();
+    Qt::KeyboardModifiers modifiers = event->modifiers();
+    if (option || command) {
+        action = option && command ? Qt::LinkAction : option ? Qt::CopyAction : Qt::MoveAction;
+        // DropJob accepts Qt's action when a native Linux modifier is present.
+        // Translate Finder intent to that public event API, retaining KIO's
+        // conflict handling, protocols and built-in FileUndoManager recording.
+        modifiers = action == Qt::LinkAction ? Qt::ControlModifier | Qt::ShiftModifier :
+                    action == Qt::CopyAction ? Qt::ControlModifier : Qt::ShiftModifier;
+    }
+    QDropEvent native(event->position(), event->possibleActions() | action, event->mimeData(), event->buttons(), modifiers);
+    native.setDropAction(action);
+    auto *job = KIO::drop(&native, destination);
+    d->job(job, "Transferring…");
+    auto created = std::make_shared<QList<QUrl>>();
+    connect(job, &KIO::DropJob::itemCreated, this, [created, destination](const QUrl &url) {
+        if (Private::normalized(parentUrl(url)) == Private::normalized(destination)) created->append(url);
+    });
+    connect(job, &KJob::result, this, [this, created, destination] {
+        if (Private::normalized(url()) == Private::normalized(destination) && !created->isEmpty()) selectUrls(*created);
+    });
+    d->finishSpring(true);
+    event->setDropAction(action); event->accept();
 }
 bool Browser::eventFilter(QObject *object, QEvent *event) {
+    auto *dragView = qobject_cast<QAbstractItemView *>(object->parent());
+    if (dragView && object == dragView->viewport()) {
+        if (event->type() == QEvent::DragEnter) {
+            auto *drag = static_cast<QDragEnterEvent *>(event);
+            if (drag->mimeData()->hasUrls()) {
+                d->beginSpring(dragView, drag->mimeData()); drag->acceptProposedAction(); return true;
+            }
+        } else if (event->type() == QEvent::DragMove) {
+            auto *drag = static_cast<QDragMoveEvent *>(event);
+            if (drag->mimeData()->hasUrls()) {
+                d->hoverSpring(dragView, drag);
+            }
+        } else if (event->type() == QEvent::DragLeave) {
+            d->springTimer.stop(); d->springHover = QUrl();
+            if (d->springActive) d->springLeaveTimer.start();
+        } else if (event->type() == QEvent::Drop) {
+            auto *dropEvent = static_cast<QDropEvent *>(event);
+            if (dropEvent->mimeData()->hasUrls()) {
+                auto index = dragView->indexAt(dropEvent->position().toPoint());
+                if (dragView == d->icons && d->arrangeDrop(dropEvent, index)) d->finishSpring(true);
+                else {
+                    if (!index.isValid()) index = dragView->rootIndex();
+                    const auto entry = d->item(index);
+                    drop(dropEvent, entry.isDir() ? entry.url() : index.isValid() ? parentUrl(entry.url()) :
+                         d->currentMode == Columns ? d->rootUrl : url());
+                }
+                if (dragView == d->icons) d->icons->endDragState();
+                else if (dragView == d->list) d->list->endDragState();
+                else if (dragView == d->columns) d->columns->endDragState();
+                else static_cast<DropView<QListView> *>(dragView)->endDragState();
+                return true;
+            }
+        } else if (event->type() == QEvent::Hide && d->springActive && !d->springNavigating) cancelSpringLoading();
+    }
     if (event->type() == QEvent::MouseButtonDblClick) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         auto *view = qobject_cast<QAbstractItemView *>(object->parent());
@@ -2238,7 +2723,10 @@ bool Browser::eventFilter(QObject *object, QEvent *event) {
     }
     if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
         auto *view = qobject_cast<QAbstractItemView *>(object->parent());
-        if (view && object == view->viewport()) d->scheduleThumbnails();
+        if (view && object == view->viewport()) {
+            if (event->type() == QEvent::Show) view->viewport()->setAcceptDrops(true);
+            d->scheduleThumbnails();
+        }
     }
     if (event->type() == QEvent::DevicePixelRatioChange) {
         d->proxy->decorationScale = activeView()->devicePixelRatioF();
@@ -2251,6 +2739,7 @@ bool Browser::eventFilter(QObject *object, QEvent *event) {
     }
     if (event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Escape && d->springActive) { cancelSpringLoading(); return true; }
         if ((object == d->strip || object == d->strip->viewport()) &&
             (key->key() == Qt::Key_PageUp || key->key() == Qt::Key_PageDown) && key->modifiers() == Qt::NoModifier) {
             const auto current = d->selection->currentIndex();

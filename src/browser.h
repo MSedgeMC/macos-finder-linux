@@ -11,6 +11,7 @@
 class QAbstractItemView;
 class QDropEvent;
 class QMenu;
+class QMimeData;
 class KDirModel;
 
 class Browser : public QWidget {
@@ -70,6 +71,15 @@ public:
     bool canCompressSelection() const;
     bool canNewFolderWithSelection() const;
     int sortColumn() const;
+    // Icons accepts sort column -1 (None). Grouped/sorted surfaces retain
+    // the manual layout and restore it when Icons returns to None/ungrouped.
+    bool snapToGrid() const;
+    bool canArrangeIcons() const;
+    QPoint iconPosition(const QUrl &url) const;
+    // Caller owns the native URL MIME. Origin is in active viewport coordinates;
+    // includes the same private arrangement payload as native view dragging.
+    QMimeData *createDragMimeData(const QPoint &origin) const;
+    bool springLoadingActive() const;
     bool sortAscending() const;
     int listColumnCount() const;
     QString listColumnTitle(int column) const;
@@ -87,10 +97,20 @@ public:
     static QString confirmedRenameName(const KFileItem &item, const QString &name, QWidget *parent);
 public slots:
     void navigate(const QUrl &url);
+    // For an already worker-validated location. KDirLister remains the final
+    // authority and reports listing errors; this skips GUI-thread local stat.
+    void navigateValidated(const QUrl &url);
     void setMode(Mode mode);
     void setHiddenFiles(bool show);
     void setFilter(const QString &filter);
     void setSort(int column, bool ascending);
+    void setSnapToGrid(bool enabled);
+    void setIconPosition(const QUrl &url, const QPoint &position);
+    void cleanUp();
+    void cleanUpBy(int column, bool ascending = true);
+    void setSpringLoadingEnabled(bool enabled);
+    void setSpringLoadingDelay(int milliseconds);
+    void cancelSpringLoading();
     void setIconSize(int size);
     void setGroup(Group group);
     void setGridSpacing(int spacing);
@@ -133,6 +153,11 @@ signals:
     // only during this call. Connect directly to append shared app actions.
     void contextMenuRequested(QMenu *menu, const KFileItemList &items);
     void listColumnsChanged();
+    void iconArrangementChanged();
+    void springLoadingChanged(bool active);
+    // Temporary hover/rollback navigation: update path/status only. Do not
+    // record history or resolve per-folder state until ordinary urlChanged.
+    void springUrlChanged(const QUrl &url);
     void sizeCalculationRunningChanged(bool running);
     void sizeCalculationProgress(quint64 entriesVisited, int foldersCompleted, int totalFolders);
     void sizeCalculationFinished(bool canceled, bool limited, const QString &message);
