@@ -8,6 +8,7 @@
 #include "tags.h"
 #include <QAbstractItemView>
 #include <QAbstractProxyModel>
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -63,6 +64,7 @@ int main(int argc, char **argv) {
     check(files.isValid(), "fixture directory");
     check(QDir().mkpath(files.filePath("folder-a/sub")) && QDir().mkpath(files.filePath("folder-z")), "folder fixtures");
     writeFile(files.filePath("small.txt"), 3);
+    QThread::msleep(10);
     writeFile(files.filePath("large.txt"), 19);
     writeFile(files.filePath("folder-a/first"), 7);
     writeFile(files.filePath("folder-a/.hidden"), 5);
@@ -104,8 +106,35 @@ int main(int argc, char **argv) {
     check(smallIndex.siblingAtColumn(Browser::DateAddedColumn).data().toString() == QString::fromUtf8("—"), "unavailable date display");
     check(smallIndex.siblingAtColumn(Browser::DateAddedColumn).data(Qt::ToolTipRole).toString().contains("provider"), "unavailable date explanation");
     check(browser.metadata(small, Browser::LogicalSizeRole).toULongLong() == 3, "raw file size");
+    const auto largeBirth = QFileInfo(large.toLocalFile()).birthTime();
+    if (birth.isValid() && largeBirth.isValid() && birth != largeBirth) {
+        browser.setSort(Browser::DateCreatedColumn, true);
+        check(waitFor([&] { return findUrl(model, small).row() < findUrl(model, large).row(); }), "creation timestamps sort ascending");
+        browser.setSort(Browser::DateCreatedColumn, false);
+        check(findUrl(model, large).row() < findUrl(model, small).row(), "creation timestamps sort descending");
+    }
     browser.selectUrls({small, large});
     check(browser.selectedUrls().size() == 2, "selection mapping with extra columns");
+    QList<QUrl> opened;
+    QObject::connect(&browser, &Browser::openRequested, [&](const QUrl &url) { opened.append(url); });
+    bool hookSeen = false;
+    const auto contextHook = QObject::connect(&browser, &Browser::contextMenuRequested,
+        [&](QMenu *menu, const KFileItemList &items) {
+            hookSeen = items.size() == 2;
+            menu->addAction("Shared application action");
+            QTimer::singleShot(0, menu, [menu] {
+                for (auto *action : menu->actions()) {
+                    if (action->text() == "Open") { action->trigger(); break; }
+                }
+                menu->close();
+            });
+        });
+    tree->scrollTo(findUrl(model, small));
+    QApplication::processEvents();
+    emit tree->customContextMenuRequested(tree->visualRect(findUrl(model, small)).center());
+    check(hookSeen && opened.contains(small) && opened.contains(large) && opened.size() == 2,
+          "synchronous context hook and Open activate all selected items");
+    QObject::disconnect(contextHook);
     browser.setSort(Browser::SizeColumn, false);
     browser.setIconSize(32);
     check(tree->header()->sortIndicatorSection() == Browser::SizeColumn && tree->header()->sortIndicatorOrder() == Qt::DescendingOrder,
@@ -167,6 +196,11 @@ int main(int argc, char **argv) {
     check(waitFor([&] { return !browser.sizeCalculationRunning() && browser.itemCount() == 1; }) && canceled,
           "navigation cancels and rejects stale results");
     check(!browser.metadata(folder, Browser::LogicalSizeRole).isValid(), "old folder cannot receive stale size");
+    browser.navigate(root);
+    check(waitFor([&] { return browser.itemCount() == 4; }), "reload folder after canceled calculation");
+    browser.calculateAllSizes();
+    check(waitFor([&] { return !browser.sizeCalculationRunning(); }), "fresh calculation after navigation");
+    check(browser.metadata(folder, Browser::LogicalSizeRole).toULongLong() == 23, "fresh sizes replace canceled generation");
     // Repeated reads use already-delivered caches; no metadata queue/timer is started by paint roles.
     for (int i = 0; i < 1000; ++i) browser.metadata(QUrl::fromLocalFile(files.filePath("folder-z/other")), Browser::DateCreatedRole);
     browser.hide();

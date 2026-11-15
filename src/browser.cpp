@@ -1482,7 +1482,8 @@ public:
         auto *copy = menu.addAction(QStringLiteral("Copy"), [this] { q->copySelected(false); });
         auto *cut = menu.addAction(QStringLiteral("Cut"), [this] { q->copySelected(true); });
         copy->setEnabled(hasSelection); cut->setEnabled(hasSelection);
-        menu.addAction(QStringLiteral("Paste"), [this] { q->paste(); })->setEnabled(QApplication::clipboard()->mimeData()->hasUrls());
+        const auto *clipboard = QApplication::clipboard()->mimeData();
+        menu.addAction(QStringLiteral("Paste"), [this] { q->paste(); })->setEnabled(clipboard && clipboard->hasUrls());
         auto *duplicate = menu.addAction(QStringLiteral("Duplicate"), q, &Browser::duplicateSelected);
         duplicate->setEnabled(hasSelection);
         auto *compress = menu.addAction(QStringLiteral("Compress"), q, &Browser::compressSelected);
@@ -2139,6 +2140,7 @@ void Browser::paste(bool move) {
     if (!url().isValid()) return;
     const auto destination = url();
     const auto *mime = QApplication::clipboard()->mimeData();
+    if (!mime) return;
     if (move && mime->hasUrls()) {
         d->copyJob(KIO::move(mime->urls(), destination), "Moving…");
     } else {
