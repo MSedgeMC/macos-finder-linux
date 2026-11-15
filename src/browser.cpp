@@ -34,6 +34,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
+#include <QPersistentModelIndex>
 #include <QProcess>
 #include <QPushButton>
 #include <QQueue>
@@ -608,11 +609,33 @@ template <class View> class DropView : public View {
 public:
     using View::View;
     DropHandler handler;
+    bool keepRangeAnchor = false;
 protected:
     void mousePressEvent(QMouseEvent *event) override {
         QScopedValueRollback<bool> handling(handlingPress, true);
         QScopedValueRollback<Qt::KeyboardModifiers> modifiers(pressModifiers, event->modifiers());
+        const auto target = this->indexAt(event->position().toPoint());
+        const bool range = keepRangeAnchor && event->button() == Qt::LeftButton &&
+            event->modifiers().testFlag(Qt::ShiftModifier) && rangeAnchor.isValid() && target.isValid() &&
+            rangeAnchor.parent() == target.parent();
+        if (keepRangeAnchor && !event->modifiers().testFlag(Qt::ShiftModifier) && target.isValid()) rangeAnchor = target;
+        rangeTarget = range ? target : QModelIndex();
+        rangeAdditive = event->modifiers() & (Qt::MetaModifier | Qt::ControlModifier);
         View::mousePressEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        View::mouseReleaseEvent(event);
+        if (rangeTarget.isValid() && rangeAnchor.isValid() && rangeTarget.parent() == rangeAnchor.parent()) {
+            // QColumnView replaces its child selection models after navigation.
+            // Retain the clicked anchor in the column and use public selection
+            // ranges after Qt has transferred the current selection model.
+            const auto parent = rangeTarget.parent();
+            QItemSelection selected(this->model()->index(qMin(rangeAnchor.row(), rangeTarget.row()), 0, parent),
+                                    this->model()->index(qMax(rangeAnchor.row(), rangeTarget.row()), 0, parent));
+            this->selectionModel()->select(selected, (rangeAdditive ? QItemSelectionModel::Select : QItemSelectionModel::ClearAndSelect) |
+                                                     QItemSelectionModel::Rows);
+        }
+        rangeTarget = QModelIndex();
     }
     QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex &index, const QEvent *event = nullptr) const override {
         // currentChanged() re-enters this query with no event while Qt handles
@@ -642,6 +665,9 @@ protected:
 private:
     bool handlingPress = false;
     Qt::KeyboardModifiers pressModifiers = Qt::NoModifier;
+    QPersistentModelIndex rangeAnchor;
+    QPersistentModelIndex rangeTarget;
+    bool rangeAdditive = false;
 };
 
 class FinderListView : public DropView<QTreeView> {
@@ -718,6 +744,7 @@ public:
 protected:
     QAbstractItemView *createColumn(const QModelIndex &index) override {
         auto *column = new DropView<QListView>;
+        column->keepRangeAnchor = true;
         initializeColumn(column);
         column->setModel(model());
         column->setRootIndex(index);
