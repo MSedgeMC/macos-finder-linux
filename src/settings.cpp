@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "settings.h"
-#include "tags.h"
 #include <KProtocolInfo>
+#include <QCloseEvent>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -12,66 +14,91 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
+#include <QMetaMethod>
+#include <QMimeData>
+#include <QPainter>
 #include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
+#include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <functional>
 
-namespace FinderPreferences {
-QUrl newWindowUrl() {
-    const auto saved = QSettings().value("General/newWindowFolder").toString();
-    if (!saved.isEmpty()) {
-        // Older releases saved absolute paths. Do not reinterpret '#' or '%'
-        // in those paths as URL syntax or replace an explicit saved choice.
-        if (QDir::isAbsolutePath(saved)) return QUrl::fromLocalFile(saved);
-        const QUrl url(saved);
-        if (url.isValid() && !url.scheme().isEmpty()) return url;
+namespace {
+constexpr auto tagMimeType = "application/x-finder-tag-id";
+constexpr auto favoriteMimeType = "application/x-finder-favorite-slot";
+
+QIcon tagIcon(const QColor &color) {
+    QPixmap pixmap(20, 20);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(color.alpha() ? color.darker(115) : QColor("#8e8e93"), 1));
+    painter.setBrush(color);
+    painter.drawEllipse(QRectF(4, 4, 12, 12));
+    return QIcon(pixmap);
+}
+
+class TagList : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+protected:
+    QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override {
+        auto *mime = QListWidget::mimeData(items);
+        if (!items.isEmpty()) mime->setData(tagMimeType, items.first()->data(Qt::UserRole).toString().toUtf8());
+        return mime;
     }
-    return KProtocolInfo::isKnownProtocol("recentlyused")
-        ? QUrl("recentlyused:/files") : QUrl::fromLocalFile(QDir::homePath());
-}
-
-QString defaultSearchScope() {
-    QSettings settings;
-    const auto scope = settings.value("Search/defaultScope").toString();
-    if (scope == "computer" || scope == "current" || scope == "previous") return scope;
-    // The old false choice searched Home, rather than the whole computer.
-    // Migrate the explicit current-folder choice; broaden the other choice to
-    // the documented computer scope, whose actual coverage the search reports.
-    return settings.contains("Search/currentFolder") && settings.value("Search/currentFolder").toBool()
-        ? QStringLiteral("current") : QStringLiteral("computer");
-}
-
-QString initialSearchScope() {
-    const auto scope = defaultSearchScope();
-    if (scope != "previous") return scope;
-    const auto last = QSettings().value("Search/lastScope", "computer").toString();
-    return last == "current" ? QStringLiteral("current") : QStringLiteral("computer");
-}
-
-void rememberSearchScope(const QString &scope) {
-    if (scope == "computer" || scope == "current") QSettings().setValue("Search/lastScope", scope);
-}
-
-bool sidebarItemVisible(const QString &key) {
-    QSettings settings;
-    auto hidden = settings.value("Sidebar/hiddenKeys").toStringList();
-    if (settings.value("Sidebar/locationGroupsVersion", 0).toInt() < 1) {
-        if (hidden.removeAll("devices"))
-            for (const auto &group : {"internalDisks", "externalDisks", "opticalMedia"})
-                if (!hidden.contains(group)) hidden << group;
-        if (hidden.contains("network") && !hidden.contains("connectedServers")) hidden << "connectedServers";
-        settings.setValue("Sidebar/hiddenKeys", hidden);
-        settings.setValue("Sidebar/locationGroupsVersion", 1);
+    QStringList mimeTypes() const override {
+        auto types = QListWidget::mimeTypes();
+        types.append(tagMimeType);
+        return types;
     }
-    if (hidden.contains(key)) return false;
-    if (key == "filesystem" && hidden.contains("internalDisks")) return false;
-    return true;
-}
+};
+
+// Slots are fixed positions, including empty ones. A drag within this list
+// moves a slot (shifting the intervening slots); a registry drag replaces a
+// slot. Neither operation removes tags from the independent sidebar registry.
+class FavoriteList : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+    std::function<void(const QString &, int, int)> dropped;
+protected:
+    QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override {
+        auto *mime = new QMimeData;
+        if (!items.isEmpty()) {
+            mime->setData(tagMimeType, items.first()->data(Qt::UserRole).toString().toUtf8());
+            mime->setData(favoriteMimeType, QByteArray::number(row(items.first())));
+        }
+        return mime;
+    }
+    QStringList mimeTypes() const override { return {tagMimeType, favoriteMimeType}; }
+    bool accepts(const QMimeData *mime) const { return mime->hasFormat(tagMimeType); }
+    void dragEnterEvent(QDragEnterEvent *event) override {
+        if (accepts(event->mimeData())) event->acceptProposedAction(); else event->ignore();
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override {
+        if (accepts(event->mimeData())) event->acceptProposedAction(); else event->ignore();
+    }
+    void dropEvent(QDropEvent *event) override {
+        const auto *target = itemAt(event->position().toPoint());
+        if (!target || !accepts(event->mimeData()) || !dropped) { event->ignore(); return; }
+        int source = -1;
+        if (event->source() == this && event->mimeData()->hasFormat(favoriteMimeType))
+            source = event->mimeData()->data(favoriteMimeType).toInt();
+        dropped(QString::fromUtf8(event->mimeData()->data(tagMimeType)), source, row(target));
+        // Persisted slots are reconstructed by the callback. Report Copy so
+        // QAbstractItemView doesn't remove the newly reconstructed source row.
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+};
 }
 
 FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
@@ -101,6 +128,8 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
                       bool fallback, const QString &name) {
         auto *box = new QCheckBox(text, this);
         box->setObjectName(name);
+        box->setProperty("preferenceKey", key);
+        box->setProperty("preferenceDefault", fallback);
         box->setChecked(QSettings().value(key, fallback).toBool());
         form->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key](bool checked) {
@@ -169,58 +198,152 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     });
 
     auto *tagPage = page(tr("Tags"), "finderSettingsTags");
-    auto *tagList = new QListWidget(this);
-    tagList->setObjectName("finderSettingsTagList");
-    const auto hiddenTags = QSettings().value("Sidebar/hiddenTags").toStringList();
-    auto addTag = [tagList, hiddenTags](const QString &tag) {
-        auto *item = new QListWidgetItem(tag, tagList);
-        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-        item->setCheckState(hiddenTags.contains(tag) ? Qt::Unchecked : Qt::Checked);
+    m_tagList = new TagList(this);
+    m_tagList->setObjectName("finderSettingsTagList");
+    m_tagList->setAccessibleName(tr("Tags; checked tags appear in the sidebar"));
+    m_tagList->setDragDropMode(QAbstractItemView::InternalMove);
+    m_tagList->setDefaultDropAction(Qt::MoveAction);
+    m_tagList->setMinimumHeight(160);
+    tagPage->addRow(tr("Show these tags in the sidebar:"), m_tagList);
+    m_tagName = new QLineEdit(this);
+    m_tagName->setObjectName("finderSettingsTagName");
+    m_tagName->setPlaceholderText(tr("Tag name"));
+    m_tagName->setMaxLength(256);
+    tagPage->addRow(tr("Name:"), m_tagName);
+    m_tagColor = new QComboBox(this);
+    m_tagColor->setObjectName("finderSettingsTagColor");
+    m_tagColor->addItem(tagIcon(Qt::transparent), tr("None"), QColor(Qt::transparent).name(QColor::HexArgb));
+    for (const auto &tag : FinderPreferences::standardTagRegistry()) m_tagColor->addItem(tagIcon(tag.color), tr(qPrintable(tag.name)), tag.color.name(QColor::HexArgb));
+    tagPage->addRow(tr("Color:"), m_tagColor);
+    auto buttonRow = [this](QFormLayout *form, const QList<QPushButton *> &buttons) {
+        auto *widget = new QWidget(this);
+        auto *row = new QHBoxLayout(widget);
+        row->setContentsMargins(0, 0, 0, 0);
+        for (auto *button : buttons) { button->setAutoDefault(false); row->addWidget(button); }
+        form->addRow(widget);
     };
-    for (const auto &tag : FileTags::standardTags()) addTag(tag);
-    for (const auto &tag : QSettings().value("Tags/favorites").toStringList())
-        if (!FileTags::standardTags().contains(tag)) addTag(tag);
-    tagPage->addRow(tr("Favorite tags in the sidebar:"), tagList);
-    connect(tagList, &QListWidget::itemChanged, this, [this, tagList] {
-        QStringList hidden;
-        for (int i = 0; i < tagList->count(); ++i)
-            if (tagList->item(i)->checkState() == Qt::Unchecked) hidden << tagList->item(i)->text();
+    m_addTag = new QPushButton(tr("+"), this);
+    m_renameTag = new QPushButton(tr("Rename…"), this);
+    m_deleteTag = new QPushButton(tr("Delete Tag…"), this);
+    m_addTag->setObjectName("finderSettingsAddTag");
+    m_addTag->setAccessibleName(tr("Create tag"));
+    m_addTag->setToolTip(tr("Create a tag with this name and color"));
+    m_renameTag->setObjectName("finderSettingsRenameTag");
+    m_deleteTag->setObjectName("finderSettingsRemoveTag");
+    buttonRow(tagPage, {m_addTag, m_renameTag, m_deleteTag});
+    m_tagError = new QLabel(this);
+    m_tagError->setObjectName("finderSettingsTagError");
+    m_tagError->setWordWrap(true);
+    tagPage->addRow(m_tagError);
+    auto *favorites = new FavoriteList(this);
+    m_favoriteList = favorites;
+    favorites->setObjectName("finderSettingsFavoriteTags");
+    favorites->setAccessibleName(tr("Seven ordered favorite tag slots"));
+    favorites->setDragDropMode(QAbstractItemView::DragDrop);
+    favorites->setDefaultDropAction(Qt::CopyAction);
+    favorites->setMinimumHeight(160);
+    tagPage->addRow(tr("Favorite Tags:"), favorites);
+    m_assignFavorite = new QPushButton(tr("Use Selected Tag"), this);
+    m_clearFavorite = new QPushButton(tr("Clear Slot"), this);
+    m_favoriteUp = new QPushButton(tr("↑"), this);
+    m_favoriteDown = new QPushButton(tr("↓"), this);
+    m_assignFavorite->setObjectName("finderSettingsAssignFavorite");
+    m_clearFavorite->setObjectName("finderSettingsClearFavorite");
+    m_favoriteUp->setObjectName("finderSettingsFavoriteUp");
+    m_favoriteDown->setObjectName("finderSettingsFavoriteDown");
+    m_favoriteUp->setAccessibleName(tr("Move favorite tag slot up"));
+    m_favoriteDown->setAccessibleName(tr("Move favorite tag slot down"));
+    buttonRow(tagPage, {m_assignFavorite, m_clearFavorite, m_favoriteUp, m_favoriteDown});
+    auto *favoriteHelp = new QLabel(tr("Drag tags into the seven shortcut slots, or select a tag and a slot. Drag slots to reorder them. Clearing a slot keeps the tag and its file metadata."), this);
+    favoriteHelp->setWordWrap(true);
+    tagPage->addRow(favoriteHelp);
+    option(tagPage, tr("Tint folders based on tags"), "Tags/tintFolders", false, "finderSettingsTintFolders");
+    connect(m_tagList, &QListWidget::currentItemChanged, this, [this] { updateTagSelection(); });
+    connect(m_tagList, &QListWidget::itemDoubleClicked, this, [this] { m_tagName->setFocus(); m_tagName->selectAll(); });
+    connect(m_favoriteList, &QListWidget::currentItemChanged, this, [this] {
+        const int row = m_favoriteList->currentRow();
+        m_assignFavorite->setEnabled(m_pendingRequest.isEmpty() && m_tagList->currentItem() && row >= 0);
+        m_clearFavorite->setEnabled(m_pendingRequest.isEmpty() && row >= 0 && !m_favoriteList->item(row)->data(Qt::UserRole).toString().isEmpty());
+        m_favoriteUp->setEnabled(m_pendingRequest.isEmpty() && row > 0);
+        m_favoriteDown->setEnabled(m_pendingRequest.isEmpty() && row >= 0 && row < 6);
+    });
+    connect(m_tagList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+        auto hidden = QSettings().value("Sidebar/hiddenTags").toStringList();
+        hidden.removeAll(item->text());
+        if (item->checkState() == Qt::Unchecked) hidden.append(item->text());
         QSettings().setValue("Sidebar/hiddenTags", hidden);
         emit preferencesChanged();
     });
-    auto *tagInput = new QLineEdit(this);
-    tagInput->setObjectName("finderSettingsTagName");
-    tagInput->setPlaceholderText(tr("New favorite tag"));
-    auto *tagButtons = new QWidget(this);
-    auto *tagRow = new QHBoxLayout(tagButtons);
-    tagRow->setContentsMargins(0, 0, 0, 0);
-    auto *add = new QPushButton(tr("+"), this);
-    auto *remove = new QPushButton(tr("−"), this);
-    add->setObjectName("finderSettingsAddTag"); remove->setObjectName("finderSettingsRemoveTag");
-    tagRow->addWidget(tagInput); tagRow->addWidget(add); tagRow->addWidget(remove);
-    tagPage->addRow(tagButtons);
-    auto *tagError = new QLabel(this); tagError->setObjectName("finderSettingsTagError");
-    tagError->setWordWrap(true); tagPage->addRow(tagError);
-    connect(add, &QPushButton::clicked, this, [this, tagInput, tagList, tagError, addTag] {
-        const auto tag = tagInput->text().trimmed();
-        if (tag.isEmpty() || tag.size() > 128 || tag.contains(',') ||
-            std::any_of(tag.cbegin(), tag.cend(), [](QChar c) { return c.category() == QChar::Other_Control; })) {
-            tagError->setText(tr("Enter a tag without commas or control characters.")); return;
+    connect(m_tagList->model(), &QAbstractItemModel::rowsMoved, this, [this] {
+        if (!m_pendingRequest.isEmpty()) return;
+        const auto registry = FinderPreferences::tagRegistry();
+        QList<FinderPreferences::Tag> ordered;
+        for (int row = 0; row < m_tagList->count(); ++row)
+            for (const auto &tag : registry)
+                if (tag.id == m_tagList->item(row)->data(Qt::UserRole).toString()) { ordered.append(tag); break; }
+        if (ordered.size() == registry.size()) { FinderPreferences::setTagRegistry(ordered); emit preferencesChanged(); }
+    });
+    connect(m_addTag, &QPushButton::clicked, this, [this] {
+        const auto name = m_tagName->text().trimmed();
+        auto tags = FinderPreferences::tagRegistry();
+        if (!FinderPreferences::validTagName(name)) { m_tagError->setText(tr("Use 1–256 characters without commas or control characters.")); return; }
+        if (std::any_of(tags.cbegin(), tags.cend(), [&name](const auto &tag) { return tag.name.compare(name, Qt::CaseInsensitive) == 0; })) {
+            m_tagError->setText(tr("A tag with that name already exists.")); return;
         }
-        for (int i = 0; i < tagList->count(); ++i)
-            if (tagList->item(i)->text().compare(tag, Qt::CaseInsensitive) == 0) return;
-        auto favorites = QSettings().value("Tags/favorites").toStringList(); favorites << tag;
-        QSettings().setValue("Tags/favorites", favorites); addTag(tag);
-        tagInput->clear(); tagError->clear(); emit preferencesChanged();
+        const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tags.append({id, name, QColor(m_tagColor->currentData().toString())});
+        FinderPreferences::setTagRegistry(tags);
+        m_tagError->clear();
+        reloadTags();
+        for (int row = 0; row < m_tagList->count(); ++row)
+            if (m_tagList->item(row)->data(Qt::UserRole).toString() == id) m_tagList->setCurrentRow(row);
+        emit preferencesChanged();
     });
-    connect(remove, &QPushButton::clicked, this, [this, tagList] {
-        auto *item = tagList->currentItem();
-        if (!item || FileTags::standardTags().contains(item->text())) return;
-        auto favorites = QSettings().value("Tags/favorites").toStringList(); favorites.removeAll(item->text());
-        QSettings().setValue("Tags/favorites", favorites);
-        delete tagList->takeItem(tagList->row(item)); emit preferencesChanged();
+    connect(m_tagColor, &QComboBox::currentIndexChanged, this, [this] {
+        const auto *item = m_tagList->currentItem();
+        if (!item || !m_pendingRequest.isEmpty()) return;
+        auto tags = FinderPreferences::tagRegistry();
+        for (auto &tag : tags)
+            if (tag.id == item->data(Qt::UserRole).toString()) { tag.color = QColor(m_tagColor->currentData().toString()); break; }
+        FinderPreferences::setTagRegistry(tags);
+        reloadTags();
+        emit preferencesChanged();
     });
-    tagPage->addRow(new QLabel(tr("Removing a favorite keeps tags stored on your files."), this));
+    connect(m_renameTag, &QPushButton::clicked, this, [this] { requestTagMetadataChange(false); });
+    connect(m_deleteTag, &QPushButton::clicked, this, [this] { requestTagMetadataChange(true); });
+    favorites->dropped = [this](const QString &id, int source, int target) {
+        if (!m_pendingRequest.isEmpty() || target < 0 || target >= 7) return;
+        auto favoriteIds = FinderPreferences::favoriteTagIds();
+        const auto tags = FinderPreferences::tagRegistry();
+        if (source >= 0 && source < 7) favoriteIds.move(source, target);
+        else {
+            if (std::none_of(tags.cbegin(), tags.cend(), [&id](const auto &tag) { return tag.id == id; })) return;
+            for (auto &other : favoriteIds) if (other == id) other.clear();
+            favoriteIds[target] = id;
+        }
+        FinderPreferences::setFavoriteTagIds(favoriteIds);
+        reloadTags(); m_favoriteList->setCurrentRow(target);
+        emit preferencesChanged();
+    };
+    connect(m_assignFavorite, &QPushButton::clicked, this, [this, favorites] {
+        if (const auto *item = m_tagList->currentItem()) favorites->dropped(item->data(Qt::UserRole).toString(), -1, m_favoriteList->currentRow());
+    });
+    connect(m_clearFavorite, &QPushButton::clicked, this, [this] {
+        const int row = m_favoriteList->currentRow();
+        if (row < 0) return;
+        auto favoriteIds = FinderPreferences::favoriteTagIds();
+        favoriteIds[row].clear(); FinderPreferences::setFavoriteTagIds(favoriteIds);
+        reloadTags(); emit preferencesChanged();
+    });
+    connect(m_favoriteUp, &QPushButton::clicked, this, [this, favorites] {
+        const int row = m_favoriteList->currentRow();
+        favorites->dropped(QString(), row, row - 1);
+    });
+    connect(m_favoriteDown, &QPushButton::clicked, this, [this, favorites] {
+        const int row = m_favoriteList->currentRow();
+        favorites->dropped(QString(), row, row + 1);
+    });
+    reloadTags();
 
     auto *sidebar = page(tr("Sidebar"), "finderSettingsSidebar");
     for (const auto &entry : QList<QPair<QString, QString>>{
@@ -232,6 +355,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         {"connectedServers", tr("Connected servers")}, {"network", tr("Network")}, {"trash", tr("Trash")}}) {
         auto *box = new QCheckBox(entry.second, this);
         box->setObjectName("finderSettingsSidebar_" + entry.first);
+        box->setProperty("sidebarKey", entry.first);
         box->setChecked(FinderPreferences::sidebarItemVisible(entry.first)); sidebar->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key = entry.first](bool checked) {
             auto keys = QSettings().value("Sidebar/hiddenKeys").toStringList();
@@ -268,4 +392,179 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
+}
+
+void FinderSettings::reloadTags() {
+    const QSignalBlocker tagBlocker(m_tagList);
+    const QSignalBlocker favoriteBlocker(m_favoriteList);
+    const auto selectedId = m_tagList->currentItem() ? m_tagList->currentItem()->data(Qt::UserRole).toString() : QString();
+    const int selectedSlot = m_favoriteList->currentRow();
+    m_tagList->clear();
+    m_favoriteList->clear();
+    const auto hidden = QSettings().value("Sidebar/hiddenTags").toStringList();
+    const auto tags = FinderPreferences::tagRegistry();
+    for (const auto &tag : tags) {
+        auto *item = new QListWidgetItem(tagIcon(tag.color), tag.name, m_tagList);
+        item->setData(Qt::UserRole, tag.id);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+        item->setCheckState(hidden.contains(tag.name) ? Qt::Unchecked : Qt::Checked);
+        item->setToolTip(tr("Check to show this tag in the sidebar. Drag to reorder."));
+        if (tag.id == selectedId) m_tagList->setCurrentItem(item);
+    }
+    const auto favoriteIds = FinderPreferences::favoriteTagIds();
+    for (int slot = 0; slot < 7; ++slot) {
+        QString name;
+        QColor color(Qt::transparent);
+        for (const auto &tag : tags)
+            if (tag.id == favoriteIds.at(slot)) { name = tag.name; color = tag.color; break; }
+        auto *item = new QListWidgetItem(tagIcon(color), tr("%1. %2").arg(slot + 1).arg(name.isEmpty() ? tr("None") : name), m_favoriteList);
+        item->setData(Qt::UserRole, favoriteIds.at(slot));
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+    }
+    if (m_tagList->currentRow() < 0 && m_tagList->count()) m_tagList->setCurrentRow(0);
+    m_favoriteList->setCurrentRow(selectedSlot >= 0 && selectedSlot < 7 ? selectedSlot : 0);
+    updateTagSelection();
+}
+
+void FinderSettings::updateTagSelection() {
+    const bool pending = !m_pendingRequest.isEmpty();
+    const auto *item = m_tagList->currentItem();
+    const bool hasTag = item;
+    const bool metadataAvailable = isSignalConnected(QMetaMethod::fromSignal(&FinderSettings::tagMetadataChangeRequested));
+    m_tagList->setEnabled(!pending);
+    m_favoriteList->setEnabled(!pending);
+    m_tagName->setEnabled(!pending);
+    m_tagColor->setEnabled(!pending);
+    m_addTag->setEnabled(!pending);
+    m_renameTag->setEnabled(!pending && hasTag && metadataAvailable);
+    m_deleteTag->setEnabled(!pending && hasTag && metadataAvailable);
+    m_renameTag->setToolTip(metadataAvailable ? tr("Rename this tag and update known local files") : tr("Tag metadata updates are unavailable."));
+    m_deleteTag->setToolTip(metadataAvailable ? tr("Delete this tag and remove it from known local files") : tr("Tag metadata updates are unavailable."));
+    if (!pending) {
+        m_tagName->setText(item ? item->text() : QString());
+        const QSignalBlocker colorBlocker(m_tagColor);
+        const auto color = item ? FinderPreferences::registeredTagColor(item->text()) : QColor("#8e8e93");
+        int colorIndex = m_tagColor->findData(color.name(QColor::HexArgb));
+        if (colorIndex < 0) { m_tagColor->addItem(tagIcon(color), tr("Custom color"), color.name(QColor::HexArgb)); colorIndex = m_tagColor->count() - 1; }
+        m_tagColor->setCurrentIndex(colorIndex);
+    }
+    const int slot = m_favoriteList->currentRow();
+    m_assignFavorite->setEnabled(!pending && hasTag && slot >= 0);
+    m_clearFavorite->setEnabled(!pending && slot >= 0 && !m_favoriteList->item(slot)->data(Qt::UserRole).toString().isEmpty());
+    m_favoriteUp->setEnabled(!pending && slot > 0);
+    m_favoriteDown->setEnabled(!pending && slot >= 0 && slot < 6);
+}
+
+void FinderSettings::requestTagMetadataChange(bool remove) {
+    const auto *item = m_tagList->currentItem();
+    if (!item || !m_pendingRequest.isEmpty() || !isSignalConnected(QMetaMethod::fromSignal(&FinderSettings::tagMetadataChangeRequested))) return;
+    const auto newName = remove ? QString() : m_tagName->text().trimmed();
+    if (!remove && !FinderPreferences::validTagName(newName)) { m_tagError->setText(tr("Use 1–256 characters without commas or control characters.")); return; }
+    if (!remove && newName == item->text()) return;
+    const auto id = item->data(Qt::UserRole).toString();
+    for (const auto &tag : FinderPreferences::tagRegistry())
+        if (!remove && tag.id != id && tag.name.compare(newName, Qt::CaseInsensitive) == 0) {
+            m_tagError->setText(tr("A tag with that name already exists.")); return;
+        }
+    m_pendingRequest = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_pendingTagId = id;
+    m_pendingOldName = item->text();
+    m_pendingNewName = newName;
+    m_tagError->clear();
+    updateTagSelection();
+    auto *confirmation = new QMessageBox(QMessageBox::Warning,
+        remove ? tr("Delete Tag") : tr("Rename Tag"),
+        remove ? tr("Delete “%1” and remove it from local files already discovered by Finder?").arg(m_pendingOldName)
+               : tr("Rename “%1” to “%2” on local files already discovered by Finder?").arg(m_pendingOldName, m_pendingNewName),
+        QMessageBox::Cancel, this);
+    confirmation->setObjectName("finderSettingsTagConfirmation");
+    confirmation->setAttribute(Qt::WA_DeleteOnClose);
+    confirmation->setInformativeText(tr("This updates files in folders and search results Finder has loaded. Other files keep their existing tag; opening them later may add that tag to the registry again. File contents are unchanged."));
+    auto *apply = confirmation->addButton(remove ? tr("Delete Tag") : tr("Rename Tag"), QMessageBox::AcceptRole);
+    confirmation->setDefaultButton(QMessageBox::Cancel);
+    confirmation->setEscapeButton(QMessageBox::Cancel);
+    connect(confirmation, &QDialog::finished, this, [this, confirmation, apply] {
+        if (confirmation->clickedButton() != apply) {
+            m_pendingRequest.clear(); m_pendingTagId.clear(); m_pendingOldName.clear(); m_pendingNewName.clear();
+            updateTagSelection(); return;
+        }
+        if (!isSignalConnected(QMetaMethod::fromSignal(&FinderSettings::tagMetadataChangeRequested))) {
+            completeTagMetadataChange(m_pendingRequest, tr("Tag metadata updates are unavailable.")); return;
+        }
+        m_tagError->setText(tr("Updating known local files…"));
+        emit tagMetadataChangeRequested(m_pendingRequest, m_pendingTagId, m_pendingOldName, m_pendingNewName);
+    });
+    confirmation->open();
+}
+
+void FinderSettings::completeTagMetadataChange(const QString &requestId, const QString &error) {
+    if (requestId.isEmpty() || requestId != m_pendingRequest) return;
+    if (error.isEmpty()) {
+        auto tags = FinderPreferences::tagRegistry();
+        auto favoriteIds = FinderPreferences::favoriteTagIds();
+        auto hidden = QSettings().value("Sidebar/hiddenTags").toStringList();
+        const bool wasHidden = hidden.contains(m_pendingOldName);
+        hidden.removeAll(m_pendingOldName);
+        if (m_pendingNewName.isEmpty()) {
+            tags.removeIf([this](const auto &tag) { return tag.id == m_pendingTagId; });
+            for (auto &id : favoriteIds) if (id == m_pendingTagId) id.clear();
+        } else {
+            // A directory refresh can observe the new name before this worker
+            // completes. Fold that discovered entry into the original stable ID.
+            QStringList mergedIds;
+            for (const auto &tag : tags)
+                if (tag.id != m_pendingTagId && tag.name == m_pendingNewName) mergedIds.append(tag.id);
+            tags.removeIf([&mergedIds](const auto &tag) { return mergedIds.contains(tag.id); });
+            for (auto &tag : tags) if (tag.id == m_pendingTagId) tag.name = m_pendingNewName;
+            bool assigned = favoriteIds.contains(m_pendingTagId);
+            for (auto &id : favoriteIds)
+                if (mergedIds.contains(id)) { if (assigned) id.clear(); else { id = m_pendingTagId; assigned = true; } }
+            if (wasHidden && !hidden.contains(m_pendingNewName)) hidden.append(m_pendingNewName);
+        }
+        FinderPreferences::setTagRegistry(tags);
+        FinderPreferences::setFavoriteTagIds(favoriteIds);
+        QSettings().setValue("Sidebar/hiddenTags", hidden);
+    }
+    m_pendingRequest.clear(); m_pendingTagId.clear(); m_pendingOldName.clear(); m_pendingNewName.clear();
+    reloadTags();
+    m_tagError->setText(error);
+    if (error.isEmpty()) emit preferencesChanged();
+}
+
+void FinderSettings::reloadPreferences() {
+    FinderPreferences::invalidateTagRegistryCache();
+    for (auto *box : findChildren<QCheckBox *>()) {
+        const QSignalBlocker blocker(box);
+        const auto key = box->property("preferenceKey").toString();
+        const auto sidebarKey = box->property("sidebarKey").toString();
+        if (!key.isEmpty()) box->setChecked(QSettings().value(key, box->property("preferenceDefault")).toBool());
+        else if (!sidebarKey.isEmpty()) box->setChecked(FinderPreferences::sidebarItemVisible(sidebarKey));
+    }
+    if (auto *folder = findChild<QComboBox *>("finderSettingsNewWindow")) {
+        const QSignalBlocker blocker(folder);
+        const auto url = FinderPreferences::newWindowUrl();
+        const auto value = url.toString(QUrl::FullyEncoded);
+        int index = folder->findData(value);
+        if (index < 0) { folder->addItem(url.toDisplayString(QUrl::PreferLocalFile), value); index = folder->count() - 1; }
+        folder->setCurrentIndex(index);
+    }
+    if (auto *scope = findChild<QComboBox *>("finderSettingsSearchScope")) {
+        const QSignalBlocker blocker(scope);
+        scope->setCurrentIndex(scope->findData(FinderPreferences::defaultSearchScope()));
+    }
+    reloadTags();
+}
+
+void FinderSettings::closeEvent(QCloseEvent *event) {
+    if (!m_pendingRequest.isEmpty()) { event->ignore(); return; }
+    QDialog::closeEvent(event);
+}
+
+void FinderSettings::reject() {
+    if (m_pendingRequest.isEmpty()) QDialog::reject();
+}
+
+void FinderSettings::showEvent(QShowEvent *event) {
+    reloadPreferences();
+    QDialog::showEvent(event);
 }
