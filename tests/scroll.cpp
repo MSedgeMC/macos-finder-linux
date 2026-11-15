@@ -94,6 +94,18 @@ protected:
     }
 };
 
+class PhaseBar : public QScrollBar {
+public:
+    int begins = 0;
+    int ends = 0;
+protected:
+    void wheelEvent(QWheelEvent *event) override {
+        if (event->phase() == Qt::ScrollBegin) ++begins;
+        if (event->phase() == Qt::ScrollEnd) ++ends;
+        QScrollBar::wheelEvent(event);
+    }
+};
+
 class NoAnimationStyle : public QProxyStyle {
 public:
     int styleHint(StyleHint hint, const QStyleOption *option = nullptr,
@@ -337,14 +349,20 @@ int main(int argc, char **argv) {
         wheel(replacement, {}, {0, -13});
         require(v->value() == 513, "replacement viewport not installed");
         wheel(replacement, {0, -120});
-        area.setVerticalScrollBar(new QScrollBar);
+        auto *phaseBar = new PhaseBar;
+        area.setVerticalScrollBar(phaseBar);
         pump(10);
         v = area.verticalScrollBar();
         require(!FinderScroll::isAnimating(&area), "replaced scrollbar retained animation");
         const int replacedValue = v->value();
         wheel(replacement, {}, {0, -13});
         require(v->value() == replacedValue + 13, "replacement scrollbar not installed");
+        wheel(replacement, {}, {0, -3}, Qt::ScrollBegin);
+        wheel(replacement, {}, {0, -2}, Qt::ScrollEnd);
+        require(phaseBar->begins == 1 && phaseBar->ends == 1 && v->value() == replacedValue + 18 &&
+                    !FinderScroll::isAnimating(&area), "pixel begin/end phase notifications lost or moved twice");
         pass("hide, disable, deactivate and replacement viewport/scrollbar cancellation");
+        pass("pixel-carrying begin/end reaches native scrollbar once without duplicate movement");
 
         area.reset();
         options.respectReducedMotion = true;

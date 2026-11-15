@@ -328,6 +328,28 @@ private:
         return x || y;
     }
 
+    void pixelPhase(QObject *watched, const QWheelEvent *event) {
+        if (event->phase() != Qt::ScrollBegin && event->phase() != Qt::ScrollEnd) return;
+        // Qt's transient native scrollbar listens to begin/end. Some devices
+        // include pixels on those events, so relay phase metadata without
+        // moving again after the direct pixel write.
+        const auto notify = [event](QScrollBar *bar) {
+            if (!bar) return;
+            QWheelEvent phase(event->position(), event->globalPosition(), {}, {},
+                              event->buttons(), event->modifiers(), event->phase(),
+                              event->inverted(), event->source(), event->pointingDevice());
+            QCoreApplication::sendEvent(bar, &phase);
+        };
+        if (watched == m_horizontal.bar) notify(m_horizontal.bar);
+        else if (watched == m_vertical.bar) notify(m_vertical.bar);
+        else if (event->pixelDelta().x() == 0 && (m_options.horizontalWheel ||
+                 (!hasRange(m_vertical) && hasRange(m_horizontal)))) notify(m_horizontal.bar);
+        else {
+            if (event->pixelDelta().x() != 0) notify(m_horizontal.bar);
+            if (event->pixelDelta().y() != 0) notify(m_vertical.bar);
+        }
+    }
+
     bool enqueue(Axis &axis, int delta, double now, int duration) {
         if (!delta || !hasRange(axis)) return false;
         const double movement = (axis.bar->invertedControls() ? -1.0 : 1.0) *
@@ -382,7 +404,9 @@ private:
         }
         if (!event->pixelDelta().isNull()) {
             stop();
-            event->setAccepted(pixel(watched, event->pixelDelta()));
+            const bool moved = pixel(watched, event->pixelDelta());
+            pixelPhase(watched, event);
+            event->setAccepted(moved);
             return true;
         }
         if (event->phase() != Qt::NoScrollPhase) {
