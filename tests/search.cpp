@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
         require(result.error.isEmpty() && result.count == 6 && result.urls.size() == 6, "hidden files or hidden recursion missing");
         cases.append("hidden files and hidden directories included when requested");
         const QByteArray tagged = QFile::encodeName(root + "/Needle.txt");
-        require(setxattr(tagged.constData(), "user.xdg.tags", "Blue,Project", 12, 0) == 0, "tag fixture xattr");
+        require(setxattr(tagged.constData(), "user.xdg.tags", "Blue,Project", 11, 0) == 0, "tag fixture xattr");
         LocalFileSearch::Options tags;
         tags.requiredTag = "Blue";
         result = scan(search, url, QString(), tags);
