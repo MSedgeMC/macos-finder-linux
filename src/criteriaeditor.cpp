@@ -75,6 +75,7 @@ public:
     Group(const QJsonObject &initial, int depth, QWidget *parent) : QFrame(parent), depth(depth) {
         if (depth) setFrameShape(QFrame::StyledPanel);
         auto *layout = new QVBoxLayout(this); layout->setContentsMargins(depth ? 10 : 0, depth ? 8 : 0, depth ? 10 : 0, depth ? 8 : 0);
+        layout->setAlignment(Qt::AlignTop);
         auto *header = new QHBoxLayout;
         header->addWidget(new QLabel("Match", this));
         match = new QComboBox(this); match->setObjectName("finderCriteriaMatch"); match->setAccessibleName("Match conditions");
@@ -121,6 +122,7 @@ struct SearchCriteriaEditor::Private { Group *root; };
 SearchCriteriaEditor::SearchCriteriaEditor(const QJsonObject &criteria, QWidget *parent) : QWidget(parent), d(std::make_unique<Private>()) {
     setObjectName("finderCriteriaEditor"); setAccessibleName("Search criteria");
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0);
+    layout->setAlignment(Qt::AlignTop);
     QJsonObject group = criteria;
     if (!criteria.isEmpty() && !criteria.contains("match")) group = {{"match", "all"}, {"criteria", QJsonArray{criteria}}};
     d->root = new Group(group, 0, this); layout->addWidget(d->root);
