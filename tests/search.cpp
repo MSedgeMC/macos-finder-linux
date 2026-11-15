@@ -14,6 +14,10 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QDateTime>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <cstdio>
 #include <stdexcept>
 #include <sys/xattr.h>
@@ -35,6 +39,7 @@ struct Result {
     bool limited = false;
     bool ended = false;
     QString error;
+    QJsonObject provider;
 };
 Result scan(LocalFileSearch &search, const QUrl &root, const QString &query,
             const LocalFileSearch::Options &options = {}) {
@@ -62,6 +67,9 @@ Result scan(LocalFileSearch &search, const QUrl &root, const QString &query,
         result.ended = true;
         loop.quit();
     });
+    auto status = QObject::connect(&search, &LocalFileSearch::providerStatus, &loop, [&](quint64, const QJsonObject &value) {
+        result.provider = value;
+    });
     QElapsedTimer elapsed;
     elapsed.start();
     search.start(root, query, options);
@@ -70,6 +78,7 @@ Result scan(LocalFileSearch &search, const QUrl &root, const QString &query,
     QObject::disconnect(batch);
     QObject::disconnect(finished);
     QObject::disconnect(error);
+    QObject::disconnect(status);
     require(result.ended, "search deadline expired");
     require(!search.isRunning(), "finished search marked running");
     return result;
@@ -160,6 +169,142 @@ int main(int argc, char **argv) {
         result = scan(search, url, QString(), criteria);
         require(result.error.isEmpty() && result.count > 0, "size-only search returns matching files");
         cases.append("metadata-only criteria scan without a filename query");
+
+        // Behavioral fixtures: expected files are independently chosen from
+        // their actual names, metadata and contents, not evaluator internals.
+        const QString rich = temporary.path() + "/rich";
+        fixture(rich + "/invoice.txt", "Quarterly amber budget\n");
+        fixture(rich + "/draft.txt", "not approved\n");
+        fixture(rich + "/holiday.png", QByteArray("\x89PNG\0binary", 11));
+        fixture(rich + "/large.log", QByteArray(20000, 'x') + "amber tail");
+        fixture(rich + "/blob.bin", QByteArray("\0amber binary", 13));
+        fixture(rich + "/notes", "extensionless amber text\n");
+        fixture(rich + "/utf16.txt", QByteArray::fromHex("fffe61006d00620065007200"));
+        fixture(rich + "/utf8.txt", QStringLiteral("Résumé AMBER\n").toUtf8());
+        require(QFile::link(temporary.path() + "/outside/needle-outside.txt", rich + "/external.txt"), "content symlink fixture");
+        require(mkfifo(QFile::encodeName(rich + "/pipe.txt").constData(), 0600) == 0, "FIFO fixture");
+        require(setxattr(QFile::encodeName(rich + "/invoice.txt").constData(), "user.xdg.tags", "Blue,Project", 12, 0) == 0, "rich tag fixture");
+        const auto richUrl = QUrl::fromLocalFile(rich);
+        const auto condition = [](const QString &field, const QString &op, const QJsonValue &value) {
+            return QJsonObject{{"field", field}, {"op", op}, {"value", value}};
+        };
+        const auto combine = [](const QString &match, const QJsonArray &children) {
+            return QJsonObject{{"match", match}, {"criteria", children}};
+        };
+        LocalFileSearch::Options richOptions;
+        richOptions.criteria = combine("all", {
+            combine("any", {condition("kind", "equals", "image"), condition("tag", "equals", "Blue")}),
+            combine("none", {condition("name", "beginsWith", "draft")})});
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.error.isEmpty() && result.count == 2 && result.urls.contains(QUrl::fromLocalFile(rich + "/invoice.txt")) &&
+            result.urls.contains(QUrl::fromLocalFile(rich + "/holiday.png")), "nested metadata Boolean criteria");
+        richOptions.criteria = combine("none", {combine("any", {condition("name", "equals", "invoice.txt"), condition("kind", "equals", "image")})});
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.error.isEmpty() && result.count == 0, "query is ANDed with nested None criteria");
+        richOptions.criteria = condition("tag", "equals", "Blu");
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.count == 0, "criteria tags must match entire tag");
+        cases.append("nested Any/All/None metadata and exact tags compose with legacy filename constraints");
+
+        richOptions = {};
+        richOptions.parseKeywords = true;
+        result = scan(search, richUrl, "name=invoice.txt OR name=draft.txt AND NOT tag:Blue", richOptions);
+        require(result.error.isEmpty() && result.count == 2, "Boolean precedence and NOT keyword matching");
+        result = scan(search, richUrl, "(name=invoice.txt OR name=draft.txt) AND NOT tag:Blue", richOptions);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/draft.txt"), "parenthesis precedence");
+        result = scan(search, richUrl, "kind:text size>=10B size<1KiB content:\"amber budget\"", richOptions);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/invoice.txt"), "implicit AND size and quoted content keywords");
+        fixture(rich + "/kind:text", "literal keyword filename\n");
+        result = scan(search, richUrl, "kind:text");
+        require(result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/kind:text"), "literal backward API keywords");
+        require(QFile::remove(rich + "/kind:text"), "remove literal keyword fixture");
+        cases.append("opt-in keyword grammar with quoted text, implicit AND, precedence, parentheses and old literal API");
+
+        const QDate date(2025, 7, 14);
+        const qint64 begin = date.startOfDay().toSecsSinceEpoch();
+        const timespec times[2]{{begin + 43200, 0}, {begin + 43200, 0}};
+        require(utimensat(AT_FDCWD, QFile::encodeName(rich + "/invoice.txt").constData(), times, AT_SYMLINK_NOFOLLOW) == 0, "fixed date fixture");
+        result = scan(search, richUrl, "modified:2025-07-14", richOptions);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/invoice.txt"), "ISO date covers whole local day");
+        richOptions.parseKeywords = false;
+        richOptions.criteria = condition("size", "equals", QString::number(QFileInfo(rich + "/invoice.txt").size()));
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.count == 1, "exact size equality");
+        richOptions.criteria = condition("modified", "lessThan", QString::number(begin + 43200));
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.count == 0, "strict timestamp boundary");
+        richOptions.criteria = condition("created", "atLeast", "0");
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.error.isEmpty() && (result.count == 1 || result.provider.value("unavailableMetadata").toInt() > 0), "birthtime available or honestly unavailable");
+        cases.append("exact byte sizes, strict Unix timestamp boundaries, whole ISO day and genuine birthtime availability");
+
+        richOptions = {};
+        richOptions.contentText = "amber";
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.error.isEmpty() && result.count == 5 && result.urls.contains(QUrl::fromLocalFile(rich + "/notes")) &&
+            result.urls.contains(QUrl::fromLocalFile(rich + "/utf16.txt")) && result.urls.contains(QUrl::fromLocalFile(rich + "/utf8.txt")) &&
+            !result.urls.contains(QUrl::fromLocalFile(rich + "/external.txt")), "actual Unicode content search and descriptor safety");
+        require(result.provider.value("provider") == "local" && result.provider.value("incompleteContentFiles").toInt() > 0, "content limitations reported");
+        richOptions.maxContentBytes = 64;
+        result = scan(search, richUrl, "large", richOptions);
+        require(result.count == 0 && result.provider.value("incompleteContentFiles").toInt() == 1, "truncated content doesn't claim absent match");
+        richOptions.contentText.clear();
+        richOptions.criteria = combine("none", {condition("content", "contains", "amber")});
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.error.isEmpty() && result.count == 1 && result.urls.first() == QUrl::fromLocalFile(rich + "/draft.txt"), "unknown content cannot match None criteria");
+        richOptions.criteria = condition("content", "contains", "amber");
+        richOptions.maxTotalContentBytes = 5;
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.error.isEmpty() && result.provider.value("contentBytesRead").toString().toLongLong() <= 5 &&
+            result.provider.value("incompleteContentFiles").toInt() > 0, "aggregate content IO budget");
+        richOptions.maxTotalContentBytes = 32 * 1024 * 1024;
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.count == 1, "bounded prefix proves positive content hit");
+        richOptions.criteria = condition("content", "endsWith", "amber tail");
+        result = scan(search, richUrl, "large", richOptions);
+        require(result.count == 0, "truncated prefix cannot prove suffix");
+        cases.append("UTF-8, UTF-16 and extensionless content; binary/FIFO/symlink exclusion; prefix, aggregate IO and three-valued negation limits");
+
+        QString parseError;
+        const QStringList malformedQueries{"name:", "(invoice", "invoice OR", "NOT", "invoice )", "content:\"unclosed", "size>nonsense", "created:wrong", "kind:mail", "owner:root"};
+        for (const auto &query : malformedQueries) {
+            require(LocalFileSearch::parseQuery(query, &parseError).isEmpty() && !parseError.isEmpty(), "malformed query accepted");
+        }
+        require(LocalFileSearch::parseQuery(QString(20000, 'x'), &parseError).isEmpty() && !parseError.isEmpty(), "oversize query accepted");
+        require(!LocalFileSearch::validateCriteria(condition("size", "equals", "9223372036854775808"), &parseError), "overflow size accepted");
+        require(!LocalFileSearch::validateCriteria(condition("size", "equals", 1.5), &parseError), "fractional bytes accepted");
+        require(!LocalFileSearch::validateCriteria(condition("name", "contains", ""), &parseError), "empty predicate accepted");
+        require(!LocalFileSearch::validateCriteria(combine("none", {}), &parseError), "empty None matches entire tree");
+        auto deep = condition("name", "contains", "invoice");
+        for (int i = 0; i < 14; ++i) deep = combine("none", {deep});
+        require(!LocalFileSearch::validateCriteria(deep, &parseError), "deep tree accepted");
+        QJsonArray tooMany;
+        for (int i = 0; i < 129; ++i) tooMany.append(condition("name", "contains", "invoice"));
+        require(!LocalFileSearch::validateCriteria(combine("any", tooMany), &parseError), "unbounded criteria accepted");
+        richOptions = {};
+        richOptions.criteria = condition("unsupported", "equals", "x");
+        result = scan(search, richUrl, {}, richOptions);
+        require(!result.error.isEmpty() && result.urls.isEmpty(), "invalid search must error without scanning");
+        richOptions.criteria = LocalFileSearch::parseQuery("(tag:Blue OR kind:image) AND NOT name:draft", &parseError);
+        const auto restored = QJsonDocument::fromJson(QJsonDocument(richOptions.criteria).toJson()).object();
+        require(restored == richOptions.criteria && LocalFileSearch::validateCriteria(restored, &parseError), "saved criteria roundtrip");
+        result = scan(search, richUrl, {}, richOptions);
+        require(result.count == 2, "parsed saved criteria match actual fixtures");
+        cases.append("bounded invalid query/tree rejection and live JSON criteria roundtrip");
+
+        const QByteArray previousDb = qgetenv("BALOO_DB_PATH");
+        const QString missingDb = temporary.path() + "/missing-index";
+        qputenv("BALOO_DB_PATH", missingDb.toUtf8());
+        richOptions = {};
+        richOptions.provider = LocalFileSearch::Options::Provider::PreferIndex;
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(result.count == 1 && result.provider.value("provider") == "local" && !result.provider.value("indexAvailable").toBool() &&
+            !QFileInfo::exists(missingDb), "missing index fallback created index directory");
+        richOptions.provider = LocalFileSearch::Options::Provider::IndexOnly;
+        result = scan(search, richUrl, "invoice", richOptions);
+        require(!result.error.isEmpty() && result.urls.isEmpty() && !QFileInfo::exists(missingDb), "index-only absence fallback");
+        if (previousDb.isNull()) qunsetenv("BALOO_DB_PATH"); else qputenv("BALOO_DB_PATH", previousDb);
+        cases.append("optional provider falls back honestly without creating an index; index-only unavailable reports error");
 
         const QString large = temporary.path() + "/large";
         for (int directory = 0; directory < 100; ++directory)
