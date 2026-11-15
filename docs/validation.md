@@ -52,12 +52,14 @@ and should not be described as a single count of unique behaviors.
 | Icon/Gallery delegate | 16 | Native listing/selection, rounded icon and two-line filename selection, thumbnail pixels, inline rename placement, real rename/Undo, List delegate retained |
 | Browser | 28 | Separate selection models, nested columns/arrow navigation, one open per double click, view transitions, rename/Undo, invalid-name rejection and conflict cancellation |
 | Places sidebar | 7 | Native model, compact row/header hit geometry, fixed icon size, accessibility and actual row activation |
-| Recursive search | 13 | Hidden behavior, result/entry/time bounds, canceled generations, replacement/destruction and UI responsiveness |
+| Recursive search | 21 | Boolean criteria, bounded Unicode content, keyword parsing, existing-index provider scope, hidden behavior, bounds, cancellation and responsiveness |
 | Linux tags | 9 | Existing metadata, custom/Unicode tags, unrelated xattrs, invalid inputs, idempotent removal and storage/path errors |
 | Installer | 14 | Offline prepare/apply/restore recovery cases using fake external commands and a fake session bus; no production writes in these cases |
 
-The earlier 11-case search suite also passed under sanitizers; the current
-13-case suite adds real tag filtering and preferred-subtree bounds. The private global-menu
+The earlier search suite also passed under sanitizers. The current worker adds
+Boolean criteria and optional existing-index coverage; a private Baloo 6.24
+fixture verified real PDF/text terms, name/root queries and stale link/pipe
+exclusion while leaving index contents unchanged. The private global-menu
 registrar check confirmed native File/Edit/View/Go/Window menu export through
 `com.canonical.dbusmenu`, including navigation, view modes and file actions.
 
@@ -70,8 +72,9 @@ not a claim that installation changes are exercised against every distribution.
 ## Standalone portable build
 
 The exported Qt/KDE-target CMake configuration and complete Release build of
-this standalone repository passed on 2026-11-15. Both CTest programs passed:
-13 recursive-search cases and 9 tag cases. A binary-only staged installation
+this standalone repository passed on 2026-11-15. All 13 CTest targets passed: search, tags, scrolling, previews, Quick Actions,
+Smart Folder loading, browser metadata, icon arrangement/spring loading,
+archives, criteria editing, Inspector, appearance and four-mode search results. A binary-only staged installation
 contained exactly `bin/finder`. Matching development dependencies were supplied
 through a private extracted prefix; these checks installed no system packages,
 opened no GUI windows and changed no production desktop files. The staged binary has no private development-prefix RPATH and passed its own
@@ -151,3 +154,29 @@ tests with fake commands do not replace verification of the chosen production
 integration. Native device eject, live network transfers, all media codecs,
 accessibility tools and every unsupported filesystem were not exhaustively
 tested by this suite.
+
+
+## Expanded native features and review regressions
+
+A further **34 native feature checks passed** on a private Wayland screen.
+They cover archive integrity and native Undo; aliases and original reveal;
+Trash Put Back; four search result modes with shared exact-URL selection;
+actual decoded text/image Gallery content; primary-item changes and clearing/
+reselection; independent tab searches; search-tab detachment restoring the
+source folder; Smart Folder criteria; Inspector; per-mode/folder view options;
+window tiling; closed-window restoration; hidden-window session restoration;
+and light/contrast/transparency controls. The harness is
+[tests/verify-features.py](../tests/verify-features.py).
+
+A source review found three integration issues, all fixed and exercised by
+these checks: preserving the previous Gallery item instead of the new primary,
+source search state after a tab moved, and visibility lost when a hidden window
+was serialized. Light toolbar glyphs now refresh with appearance changes.
+These establish the checked Linux interactions; they do not establish Apple's
+scroll physics, overall speed or full Finder equality.
+
+The latest material verification held tint constant while toggling native blur.
+Its detail ratio was **0.118**, the live backdrop color delta was **28.83**, and
+the opaque file pane remained unchanged. The sidebar boundary suite passed
+**22 captures at 1× and 22 at 1.5×**. Component totals overlap and must not be
+added together as a count of unique functions.
