@@ -2283,8 +2283,8 @@ private:
   }
   QJsonObject searchDefinition() const {
     QJsonArray selection;
-    if (showingSearch()) for (const auto &url : searchSelection().mid(0, 2000)) selection.append(url.toString(QUrl::RemovePassword));
-    const auto primary = showingSearch() ? searchPresentation->selectionModel()->currentIndex().data(Qt::UserRole).toUrl() : QUrl();
+    if (showingSearch()) for (const auto &url : (pendingSearchSelection.isEmpty() ? searchSelection() : pendingSearchSelection).mid(0, 2000)) selection.append(url.toString(QUrl::RemovePassword));
+    const auto primary = showingSearch() ? (pendingSearchSelection.isEmpty() ? searchPresentation->selectionModel()->currentIndex().data(Qt::UserRole).toUrl() : pendingSearchPrimary) : QUrl();
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
       {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
       {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter},
