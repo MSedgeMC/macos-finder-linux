@@ -12,6 +12,7 @@
 #include "archives.h"
 #include "criteriaeditor.h"
 #include "appearance.h"
+#include "inspector.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -1516,6 +1517,12 @@ public:
         {"searchResults", searchModel->rowCount()},
         {"searchRunning", fileSearch->isRunning()},
         {"searchVisible", contentStack->currentWidget() == searchPage},
+        {"searchCriteria", searchCriteria},
+        {"searchProvider", searchProviderStatus},
+        {"archiveBusy", archives && archives->busy()},
+        {"status", status->text()},
+        {"historyIndex", states.value(browser()).historyIndex},
+        {"historyCount", states.value(browser()).history.size()},
         {"mode", int(browser()->mode())},
         {"iconSize", browser()->iconSize()},
         {"sortColumn", browser()->sortColumn()},
@@ -1776,6 +1783,7 @@ private:
   QString selectedTag;
   QPointer<QMainWindow> quickWindow;
   QPointer<PreviewPane> quickPane;
+  QPointer<Inspector> inspector;
   QList<QUrl> quickUrls;
   QUrl printRequestedUrl;
   QUrl capacityUrl;
@@ -2552,6 +2560,10 @@ private:
       namedActions["print"]->setEnabled(urls.size() == 1 && urls.first().isLocalFile() && (mime.inherits("text/plain") || mime.inherits("application/pdf") || mime.name().startsWith("image/")));
     }
     const int selected = selectedUrls().size();
+    if (inspector && inspector->isVisible()) {
+      auto urls = selectedUrls(); if (urls.isEmpty()) urls.append(browser()->url());
+      inspector->setUrls(urls);
+    }
     QString text = selected ? QString("%1 of %2 selected")
                                   .arg(selected)
                                   .arg(browser()->itemCount())
@@ -2774,6 +2786,18 @@ private:
       auto *d = new KPropertiesDialog(urls, this);
       d->setAttribute(Qt::WA_DeleteOnClose);
       d->show();
+    });
+    addAction(file, "inspector", "Show Inspector", {"Meta+Alt+I"}, [this] {
+      if (inspector && inspector->isVisible()) { inspector->hide(); return; }
+      if (!inspector) {
+        inspector = new Inspector(this);
+        connect(inspector, &Inspector::propertiesRequested, this, [this](const QUrl &url) {
+          auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+        });
+        connect(inspector, &Inspector::revealRequested, this, &FinderWindow::showItems);
+      }
+      auto urls = selectedUrls(); if (urls.isEmpty()) urls.append(browser()->url());
+      inspector->setUrls(urls); inspector->show(); inspector->raise(); inspector->activateWindow();
     });
     addAction(file, "close", "Close Tab", {"Ctrl+W", "Meta+W"},
               [this] { tabs->tabCloseRequested(tabs->currentIndex()); });

@@ -77,6 +77,13 @@ target_link_libraries(finder-criteriaeditor-test PRIVATE Qt6::Widgets)
 add_test(NAME finder-criteriaeditor-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-criteriaeditor-test>")
 set_tests_properties(finder-criteriaeditor-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
 
+add_executable(finder-inspector-test inspector.cpp ../src/inspector.cpp ../src/inspector.h ../src/tags.cpp ../src/preferences.cpp)
+target_include_directories(finder-inspector-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-inspector-test PRIVATE Qt6::Widgets Threads::Threads KF6::FileMetaData KF6::KIOCore)
+target_link_options(finder-inspector-test PRIVATE -Wl,--wrap=open -Wl,--wrap=fstat -Wl,--wrap=statx -Wl,--wrap=faccessat)
+add_test(NAME finder-inspector-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-inspector-test>")
+set_tests_properties(finder-inspector-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
 add_executable(finder-appearance-test appearance.cpp ../src/appearance.cpp ../src/appearance.h ../src/browser.cpp ../src/browser.h ../src/places.cpp ../src/places.h ../src/preview.cpp ../src/preview.h ../src/settings.cpp ../src/settings.h ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp)
 target_include_directories(finder-appearance-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(finder-appearance-test PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
