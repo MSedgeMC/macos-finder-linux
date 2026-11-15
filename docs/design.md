@@ -11,7 +11,7 @@ The client uses a unified 52 logical pixel toolbar and an initially 256 pixel,
 resizable sidebar. Back/forward, the folder title, four view controls, sorting,
 tags, actions and search share that toolbar. At narrow widths the view controls
 collapse into a popup. The file pane stays opaque; glass is reserved for the
-header and sidebar. A continuous outer contour is approximated locally.
+header and sidebar. A 16px continuous outer contour with a 60% smoothing transition is drawn locally. Its cached alpha mask and native blur/contrast region share the same geometry, including fractional application scale.
 
 The sidebar and content adjoin without a reserved splitter strip. The native
 resize handle overlaps the panes, retaining its grab area without exposing the
@@ -38,14 +38,13 @@ The app defaults to left traffic-light window controls and 13px SF Pro Display
 when that font is already installed, with Inter/sans-serif fallback. It installs
 no fonts and leaves global desktop font and cursor settings unchanged. Icons
 default to 64px; path and status bars start hidden and can be enabled in View.
-The toolbar keeps native move, resize, minimize, maximize and close behavior.
+The chrome keeps native move, edge resize with cursor feedback, minimize, fill/restore and close behavior. Green click and keyboard activation enter/exit full screen; Option-click fills/restores, and right-click opens window layouts. Leaving full screen preserves prior maximization. Hidden toolbar mode retains a 40px title/control/menu row and independent sidebar. Activating a window preserves its layout.
 
 ## Material and native behavior
 
 The header and sidebar request region-limited KWin blur of the actual compositor
 backdrop. They retain a readable tinted fallback when blur is unavailable.
-Wallpaper is not substituted for windows behind the application. The coating
-and directional edges approximate a glass appearance; genuine backdrop
+Wallpaper is not substituted for windows behind the application. The coating approximates a glass appearance; genuine backdrop
 refraction and Apple's proprietary material renderer are not implemented.
 Foreground text, icons and file content remain crisp.
 
@@ -164,3 +163,11 @@ Semantic palettes leave the chosen font and global desktop settings unchanged.
 OCR, structural PDF markup, background removal, Apple cloud/sharing services
 and proprietary Finder extension providers are still absent. Platform limitations
 and tested portable behavior do not establish literal 1:1 Finder parity.
+
+## Touch and ordinary input
+
+Native two-finger pinch zooms file icons and image/PDF previews through the existing bounded size/zoom APIs. Touchscreen dragging pans noninteractive preview details through QScroller, with cancellation and reduced motion. Item views retain native tap selection and file drag/drop; pixel/momentum wheel scrolling keeps its existing direct input path. No idle gesture polling is added. Qt Wayland exposes pinch but does not expose normal two-finger scrolling as a native Swipe, so two-finger history cannot be promised on that backend. A genuine native Swipe from a supported backend invokes the enabled history action. Physical-device feel is unverified.
+
+Text-focused Copy/Cut/Paste/Select All/Undo use the actual editor, including menu and Meta paths; text Undo cannot invoke a file Undo. File context menus share selection, Trash and destination policy with File/More actions. Search/tab transfers focus the displayed content; Settings retains the most recently activated Finder owner. Folder entry points use one policy, and Option-open closes its source window only after the destination's native listing succeeds.
+
+KDE Rounded Corners can add a second outline over this client contour. On that compositor, `python3 tools/fix-kwin-outline.py --apply` appends only `org.local.finder` to `Round-Corners/Exclusions`, preserving other entries and recording a backup. The helper reconfigures KWin without restarting it. Other applications retain their desktop corner settings.

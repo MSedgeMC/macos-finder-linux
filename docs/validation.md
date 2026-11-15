@@ -72,9 +72,9 @@ not a claim that installation changes are exercised against every distribution.
 ## Standalone portable build
 
 The exported Qt/KDE-target CMake configuration and complete Release build of
-this standalone repository passed on 2026-11-15. All 13 CTest targets passed: search, tags, scrolling, previews, Quick Actions,
+this standalone repository passed on 2026-11-15. All 14 CTest targets passed: search, tags, scrolling, previews, Quick Actions,
 Smart Folder loading, browser metadata, icon arrangement/spring loading,
-archives, criteria editing, Inspector, appearance and four-mode search results. A binary-only staged installation
+archives, criteria editing, Inspector, appearance four-mode search results and native gestures. A binary-only staged installation
 contained exactly `bin/finder`. Matching development dependencies were supplied
 through a private extracted prefix; these checks installed no system packages,
 opened no GUI windows and changed no production desktop files. The staged binary has no private development-prefix RPATH and passed its own
@@ -209,3 +209,13 @@ folder default, the windowless daemon owned FileManager1, and the private test
 interface was absent from the production session. The installer retained the
 previous executable and its scoped restore manifest. No working-desktop test
 windows, automated input or compositor restart were used.
+
+## Rounded chrome, windowing and touch follow-up
+
+On 2026-11-15, all 14 isolated CTest targets passed, the native integration suite passed 32 checks, and the extended feature suite passed 34 checks. A new private Wayland window/input suite passed 17 checks: actual edge resize and title drag through the compositor, resize cursor restoration, maximize/full-screen/restore, green primary action, retained controls/sidebar with hidden toolbar, sidebar action consistency, dialogs, text Paste/Cut/Undo, host-dispatched pinch sizing, Quick Look hosting, activation preserving maximization, and tabs.
+
+Real compositor material captures checked all four corners at 1x (168 fully transparent pixels) and 1.5x application scale (428 pixels): toggling native blur/contrast changed zero pixels outside the app's alpha contour. The header/sidebar shadow line is absent. Native backdrop detail was reduced to about 5% of the unblurred sample; changing the backdrop changed the glass while the opaque file pane remained unchanged. These captures use a private patterned layer-shell background, not wallpaper substitution.
+
+A private session loaded the installed Rounded Corners plugin with copied desktop settings. Its duplicate outline was reproduced, then excluded only for Finder. A toggle of that plugin produced identical Finder pixels after exclusion. Screenshots were inspected from files. Gesture tests dispatch public Qt native/touch events and cover cancellation, phases, selection/wheel compatibility and lifecycle; they do not establish physical trackpad/touchscreen feel or Apple gesture physics.
+
+The final staged binary has no private-prefix RPATH and the scoped desktop installer prepares nine integration files with only the executable bytes changed. The originating desktop verified matching installed hash, folder default, application/FileManager1 owner, zero manager windows and absence of the private test interface. No working-screen input or compositor restart was performed.
