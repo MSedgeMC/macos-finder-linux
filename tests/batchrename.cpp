@@ -294,16 +294,17 @@ int main(int argc, char **argv)
     check(waitFor([] { return conflictDialog(); }), "native cancel conflict dialog");
     conflictDialog()->cancelPressed(); raceCancelResult.finish(raceCancel);
     check(raceCancelResult.cancelled && raceCancelResult.outputs.isEmpty() && bytes(path("race-cancel-source")) == "source", "native conflict cancel");
-    write(path("race-skip-source"), "source");
+    write(path("race-skip-source"), "source"); write(path("race-skip-second"), "second");
     BatchRenameEngine raceSkip; Observer raceSkipResult(raceSkip);
     QObject::connect(&raceSkip, &BatchRenameEngine::jobCreated, &raceSkip, [&](KIO::Job *job) {
-        if (qobject_cast<KIO::CopyJob *>(job)) write(path("race-skip-target"), "racer");
+        if (qobject_cast<KIO::CopyJob *>(job) && raceSkipResult.moves == 1) write(path("race-skip-target"), "racer");
     });
-    raceSkip.start(previewNames({item(path("race-skip-source"))}, {"race-skip-target"}));
+    raceSkip.start(previewNames({item(path("race-skip-source")), item(path("race-skip-second"))}, {"race-skip-target", "race-skip-second-new"}));
     check(waitFor([] { return conflictDialog(); }), "native skip conflict dialog");
     conflictDialog()->skipPressed(); raceSkipResult.finish(raceSkip);
-    check(!raceSkipResult.cancelled && raceSkipResult.outputs.isEmpty() && bytes(path("race-skip-source")) == "source"
-          && bytes(path("race-skip-target")) == "racer", "native Skip preserves both files");
+    check(!raceSkipResult.cancelled && raceSkipResult.outputs.size() == 1 && bytes(path("race-skip-source")) == "source"
+          && bytes(path("race-skip-target")) == "racer" && bytes(path("race-skip-second-new")) == "second",
+          "native Skip preserves both files and continues independent items"); undoSteps(1);
 
     // Failure after cycle staging reports the recoverable temporary URL. Do
     // not invent rollback: native Undo restores it after the missing slot is

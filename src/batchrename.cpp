@@ -232,7 +232,8 @@ Plan FinderBatchRename::preview(const QList<Item> &items, const Options &options
 struct BatchRenameEngine::Private {
     explicit Private(BatchRenameEngine *owner, QWidget *window) : q(owner), parent(window) {}
     struct Step { int index; QUrl from, to; bool temporary = false; bool groupEnd = true; };
-    struct Probe { QUrl url; bool source; };
+    enum class ProbeKind { Source, Destination, Parent };
+    struct Probe { QUrl url; ProbeKind kind; };
     BatchRenameEngine *q;
     QPointer<QWidget> parent;
     Plan plan;
@@ -242,6 +243,7 @@ struct BatchRenameEngine::Private {
     QSet<KIO::StatJob *> checks;
     QPointer<KIO::CopyJob> move;
     QSet<QUrl> reserved;
+    QHash<QUrl, qlonglong> devices;
     int probeIndex = 0, stepIndex = 0, completed = 0;
     bool running = false, cancelled = false, groupActive = false;
     quint64 generation = 0;
@@ -269,32 +271,51 @@ struct BatchRenameEngine::Private {
         if (cancelled) { finish(true); return; }
         while (checks.size() < 4 && probeIndex < probes.size()) {
             const auto probe = probes.at(probeIndex++);
-            auto *check = KIO::stat(probe.url, probe.source ? KIO::StatJob::SourceSide : KIO::StatJob::DestinationSide,
-                                    KIO::StatBasic, KIO::HideProgressInfo);
+            const bool destination = probe.kind == ProbeKind::Destination;
+            auto *check = KIO::stat(probe.url, destination ? KIO::StatJob::DestinationSide : KIO::StatJob::SourceSide,
+                                    destination ? KIO::StatDetails(KIO::StatBasic) : KIO::StatDetails(KIO::StatBasic | KIO::StatInode),
+                                    KIO::HideProgressInfo);
             check->setUiDelegate(nullptr);
             checks.insert(check);
-            QObject::connect(check, &KJob::result, q, [this, check, probe](KJob *) {
+            QObject::connect(check, &KJob::result, q, [this, check, probe, destination](KJob *) {
                 checks.remove(check);
                 if (!running) return;
-                if (probe.source && check->error()) {
+                if (!destination && check->error()) {
                     emit q->error(check);
                     finish(check->error() == KIO::ERR_USER_CANCELED);
                     return;
                 }
-                if (!probe.source && !check->error()) {
+                if (destination && !check->error()) {
                     failValidation(QStringLiteral("“%1” already exists in its folder. Choose a different name.").arg(probe.url.fileName()));
                     return;
                 }
-                if (!probe.source && check->error() != KIO::ERR_DOES_NOT_EXIST) {
+                if (destination && check->error() != KIO::ERR_DOES_NOT_EXIST) {
                     emit q->error(check);
                     finish(check->error() == KIO::ERR_USER_CANCELED);
                     return;
+                }
+                if (!destination) {
+                    const auto &entry = check->statResult();
+                    if (!entry.contains(KIO::UDSEntry::UDS_DEVICE_ID)) {
+                        failValidation(QStringLiteral("Cannot verify that “%1” can be renamed without copying its contents.").arg(probe.url.fileName()));
+                        return;
+                    }
+                    devices.insert(identity(probe.url), entry.numberValue(KIO::UDSEntry::UDS_DEVICE_ID));
                 }
                 inspect();
             });
             emit q->jobCreated(check);
         }
         if (checks.isEmpty() && probeIndex == probes.size()) {
+            // KF6.2 moveAs falls back to copying for EXDEV. A selected mount
+            // point can hit that even when its name stays in the same parent.
+            // Check devices asynchronously and refuse that case before dispatch.
+            for (const auto &entry : plan.entries) {
+                if (entry.changed && devices.value(identity(entry.item.url)) != devices.value(parentUrl(entry.item.url))) {
+                    failValidation(QStringLiteral("“%1” is on a different filesystem from its parent. Rename its volume through the system tools.").arg(entry.oldName));
+                    return;
+                }
+            }
             emit q->statusChanged(QStringLiteral("Renaming…"));
             const auto scheduledGeneration = generation;
             QTimer::singleShot(0, q, [this, scheduledGeneration] {
@@ -333,7 +354,7 @@ struct BatchRenameEngine::Private {
                     QStringLiteral(".finder-rename-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))); }
             while (reserved.contains(identity(temporary)));
             reserved.insert(identity(temporary));
-            probes.append({temporary, false});
+            probes.append({temporary, ProbeKind::Destination});
             steps.append({i, plan.entries.at(i).item.url, temporary, true, false});
             pending.remove(i);
             int index = predecessor.value(i, -1);
@@ -378,12 +399,14 @@ struct BatchRenameEngine::Private {
                 finish(cancelled || job->error() == KIO::ERR_USER_CANCELED);
                 return;
             }
-            // A native skip has no copyingDone. Stop rather than executing a
-            // dependent rename whose target is still occupied.
+            // Only independent items offer native Skip. Skipping must continue
+            // with the next item, while dependent groups never expose Skip.
             if (identity(current.at(step.index)) == identity(step.from)) {
-                emit q->statusChanged(QStringLiteral("An item was skipped. Remaining items were not renamed."));
-                finish(cancelled);
-                return;
+                if (!step.groupEnd || step.temporary) {
+                    finish(cancelled);
+                    return;
+                }
+                emit q->statusChanged(QStringLiteral("An item was skipped. Continuing with the remaining items…"));
             }
             ++stepIndex;
             groupActive = !step.groupEnd;
@@ -421,7 +444,7 @@ void BatchRenameEngine::start(const Plan &plan)
     for (const auto &entry : plan.entries) { items.append(entry.item); names.append(entry.newName); }
     d->plan = previewNames(items, names); // Never trust caller-supplied target URLs/counts.
     if (!plan.problem.isEmpty()) d->plan.problem = plan.problem;
-    d->current.clear(); d->steps.clear(); d->probes.clear(); d->reserved.clear();
+    d->current.clear(); d->steps.clear(); d->probes.clear(); d->reserved.clear(); d->devices.clear();
     d->probeIndex = d->stepIndex = d->completed = 0;
     d->cancelled = d->groupActive = false;
     for (const auto &entry : d->plan.entries) {
@@ -436,10 +459,16 @@ void BatchRenameEngine::start(const Plan &plan)
         if (!d->plan.canRename()) { d->failValidation(d->plan.problem); return; }
         QSet<QUrl> sources;
         for (const auto &entry : d->plan.entries) sources.insert(identity(entry.item.url));
+        QSet<QUrl> checkedParents;
         for (const auto &entry : d->plan.entries) {
             if (!entry.changed) continue;
-            d->probes.append({entry.item.url, true});
-            if (!sources.contains(identity(entry.destination))) d->probes.append({entry.destination, false});
+            d->probes.append({entry.item.url, Private::ProbeKind::Source});
+            const auto parent = parentUrl(entry.item.url);
+            if (!checkedParents.contains(parent)) {
+                checkedParents.insert(parent);
+                d->probes.append({parent, Private::ProbeKind::Parent});
+            }
+            if (!sources.contains(identity(entry.destination))) d->probes.append({entry.destination, Private::ProbeKind::Destination});
         }
         d->schedule();
         emit statusChanged(QStringLiteral("Checking filenames…"));

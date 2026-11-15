@@ -71,6 +71,8 @@ Plan previewNames(const QList<Item> &items, const QStringList &names);
 // aliases/case-insensitive collisions remain subject to the native KIO worker.
 // Local file URLs only: moveAs can fall back to copying on unsupported remote
 // renames in KF6.2, so remote sources are rejected instead of writing file data.
+// Source/parent device checks also reject mounted sources that would require
+// cross-filesystem copying. Checks require native file-worker device metadata.
 // Errors can leave partial success, including a temporary URL after a cycle
 // failure or native conflict cancellation; actual current URLs are reported,
 // and every successful step has Undo. Destruction also cancels without waiting.
