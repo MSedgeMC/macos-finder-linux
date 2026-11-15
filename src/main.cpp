@@ -1027,7 +1027,7 @@ public:
         {"history", history}, {"historyIndex", qBound(0, state.historyIndex - qMax(0, int(state.history.size()) - 100), qMax(0, int(history.size()) - 1))}, {"selected", selection}, {"search", state.searchState}});
     }
     return {{"version", 1}, {"tabs", savedTabs}, {"current", tabs->currentIndex()}, {"geometry", QString::fromLatin1(saveGeometry().toBase64())},
-      {"sidebarWidth", sidebar->width()}, {"sidebar", sidebar->isVisible()}, {"toolbar", header->isVisible()}, {"tabBar", !tabs->tabBar()->autoHide()}};
+      {"sidebarWidth", sidebar->width()}, {"sidebar", !sidebar->isHidden()}, {"toolbar", !header->isHidden()}, {"tabBar", !tabs->tabBar()->autoHide()}};
   }
   void restoreSessionState(const QJsonObject &session) {
     const auto saved = session.value("tabs").toArray(); if (session.value("version").toInt() != 1 || saved.isEmpty() || saved.size() > 100) return;
@@ -1939,7 +1939,7 @@ private:
   }
   void saveTabSearch() {
     if (!searchStateBrowser || !states.contains(searchStateBrowser) || !fileSearch) return;
-    auto state = searchDefinition(); state["visible"] = search->isVisible(); state["tag"] = selectedTag;
+    auto state = searchDefinition(); state["visible"] = !search->isHidden(); state["tag"] = selectedTag;
     state["root"] = searchStateBrowser->url().toString(); states[searchStateBrowser].searchState = state;
   }
   void restoreTabSearch() {
