@@ -219,3 +219,30 @@ Real compositor material captures checked all four corners at 1x (168 fully tran
 A private session loaded the installed Rounded Corners plugin with copied desktop settings. Its duplicate outline was reproduced, then excluded only for Finder. A toggle of that plugin produced identical Finder pixels after exclusion. Screenshots were inspected from files. Gesture tests dispatch public Qt native/touch events and cover cancellation, phases, selection/wheel compatibility and lifecycle; they do not establish physical trackpad/touchscreen feel or Apple gesture physics.
 
 The final staged binary has no private-prefix RPATH and the scoped desktop installer prepares nine integration files with only the executable bytes changed. The originating desktop verified matching installed hash, folder default, application/FileManager1 owner, zero manager windows and absence of the private test interface. No working-screen input or compositor restart was performed.
+
+
+### Quick Look and border correction, 2026-11-15
+
+A fresh private compositor reproduced a stale Rounded Corners exclusion on an
+existing Finder window. General KWin reconfigure left the outline in place;
+effect-specific reconfigure refreshed settings but retained the cached window
+exclusion. Recreating only that effect removed the line: the opaque toolbar
+boundary and its adjacent row both returned to #1e1e1e. The helper now refreshes
+loaded effects even when the exclusion is already present and preserves Breeze
+keys changed by the upstream reload.
+
+The client and blur region now use matching antialiased raster coverage,
+including the final coating-alpha rounding. Tests check the partial edge as well
+as transparent pixels and long straight boundaries. At 1x, all 45 partial
+corner samples received the material and all 168 transparent corner samples
+remained unaffected. At 1.5x, the corresponding counts were 68 and 428. This
+corrects the sharp backdrop fringe that the previous outside-alpha test missed;
+a native binary blur region still does not provide Apple's coverage renderer
+or refraction.
+
+The private Wayland Quick Look suite verifies its one-row 40px header, opaque
+content over changing patterned backdrop, unclipped controls at 480x320 and
+620x420, multi-file navigation and fullscreen restoration. The preview,
+appearance and gesture CTest targets passed. Screenshots were inspected from
+files. These checks establish the repaired Linux behavior, not literal Apple
+pixel or gesture parity.

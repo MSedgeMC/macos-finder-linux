@@ -170,4 +170,12 @@ Native two-finger pinch zooms file icons and image/PDF previews through the exis
 
 Text-focused Copy/Cut/Paste/Select All/Undo use the actual editor, including menu and Meta paths; text Undo cannot invoke a file Undo. File context menus share selection, Trash and destination policy with File/More actions. Search/tab transfers focus the displayed content; Settings retains the most recently activated Finder owner. Folder entry points use one policy, and Option-open closes its source window only after the destination's native listing succeeds.
 
-KDE Rounded Corners can add a second outline over this client contour. On that compositor, `python3 tools/fix-kwin-outline.py --apply` appends only `org.local.finder` to `Round-Corners/Exclusions`, preserving other entries and recording a backup. The helper reconfigures KWin without restarting it. Other applications retain their desktop corner settings.
+KDE Rounded Corners can add a second outline over this client contour. On that compositor, `python3 tools/fix-kwin-outline.py --apply` appends only `org.local.finder` to `Round-Corners/Exclusions`, preserving other entries and recording a backup. The helper recreates only the loaded Rounded Corners effect so existing windows refresh its cached exclusions. It preserves the three Breeze keys that the upstream effect writes during reload; KWin keeps running. Other applications retain their desktop corner settings.
+
+
+Quick Look uses one 40px host header containing traffic lights, the active
+filename, Open and Actions. Its content surface is explicitly opaque; the
+window contour clips both header and content. Initial size is bounded by the
+available screen. Zoom, contact sheet, slideshow, fullscreen and optional
+information remain available in Actions instead of a second bottom toolbar.
+PDF navigation/search and media playback controls remain inline.
