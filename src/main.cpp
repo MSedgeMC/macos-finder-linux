@@ -903,35 +903,36 @@ public:
   }
   void transferTabsTo(FinderWindow *destination, int only = -1) {
     if (!destination || destination == this) return;
-    QList<QWidget *> moving;
+    QList<Browser *> moving;
     for (int i = 0; i < tabs->count(); ++i)
-      if (only < 0 || only == i) moving << tabs->widget(i);
-    for (auto *widget : moving) {
-      auto *b = qobject_cast<Browser *>(widget);
-      const auto urls = b->selectedUrls();
-      const int mode = int(b->mode());
-      const auto history = states.value(b);
-      saveView();
-      destination->addTab(b->url(), true);
-      destination->setMode(mode);
-      auto *replacement = destination->browser();
-      replacement->setIconSize(b->iconSize());
-      replacement->setSort(b->sortColumn(), b->sortAscending());
-      replacement->setGroup(b->group());
-      replacement->setGridSpacing(b->gridSpacing());
-      replacement->setTextSize(b->textSize());
-      replacement->setLabelPosition(b->labelPosition());
-      replacement->setIconPreviewsShown(b->iconPreviewsShown());
-      replacement->setPreviewShown(b->previewShown());
-      auto &newState = destination->states[replacement];
-      newState.history = history.history; newState.historyIndex = history.historyIndex;
-      if (auto *tree = b->findChild<QTreeView *>("finderListView"))
-        replacement->findChild<QTreeView *>("finderListView")->header()->restoreState(tree->header()->saveState());
-      replacement->selectUrls(urls);
-      if (tabs->count() > 1) tabs->tabCloseRequested(tabs->indexOf(widget));
-      else { close(); break; }
+      if (only < 0 || only == i) moving << qobject_cast<Browser *>(tabs->widget(i));
+    saveView();
+    {
+      QSignalBlocker sourceSignals(tabs), destinationSignals(destination->tabs);
+      for (auto *b : moving) {
+        if (!b) continue;
+        auto state = states.take(b);
+        state.viewRestored = true;
+        b->disconnect(this);
+        for (auto *pane : {state.gallery, state.column, state.preview}) {
+          pane->disconnect(this);
+          destination->wirePreview(pane);
+        }
+        const int oldIndex = tabs->indexOf(b);
+        const auto label = tabs->tabText(oldIndex);
+        tabs->removeTab(oldIndex);
+        destination->states.insert(b, state);
+        const int newIndex = destination->tabs->addTab(b, label);
+        destination->wireBrowser(b);
+        destination->tabs->setCurrentIndex(newIndex);
+        destination->installScrolling(b);
+      }
     }
-    destination->showNormal(); destination->raise(); destination->activateWindow();
+    destination->stopSearch();
+    destination->refresh();
+    destination->show(); destination->raise(); destination->activateWindow();
+    destination->browser()->activeView()->setFocus();
+    if (tabs->count() == 0) close(); else refresh();
   }
   bool showingSearch() const {
     return contentStack && contentStack->currentWidget() == searchPage;
@@ -1070,17 +1071,7 @@ public:
     refresh();
   }
   void prepareTagMenu() { updateTags(true); }
-  void addTab(const QUrl &u, bool activate) {
-    auto *b = new Browser;
-    if (namedActions.contains("hidden"))
-      b->setHiddenFiles(namedActions["hidden"]->isChecked());
-    TabState s;
-    auto attach = [&](QWidget *host) {
-      auto *l = new QVBoxLayout(host);
-      l->setContentsMargins(0, 0, 0, 0);
-      auto *p = new PreviewPane(host);
-      p->setCompact(true);
-      l->addWidget(p);
+  void wirePreview(PreviewPane *p) {
       connect(p, &PreviewPane::openRequested, this,
               [this](const QUrl &url) { openUrl(url); });
       connect(p, &PreviewPane::getInfoRequested, this, [this](const QUrl &url) {
@@ -1136,14 +1127,17 @@ public:
         });
         connect(job, &QThread::finished, job, &QObject::deleteLater); job->start();
       });
-      return p;
-    };
-    s.gallery = attach(b->galleryPreviewHost());
-    s.gallery->setGallery(true);
-    s.column = attach(b->columnPreviewHost());
-    s.preview = attach(b->previewHost());
-    states.insert(b, s);
-    const int index = tabs->addTab(b, "Folder");
+  }
+  PreviewPane *attachPreview(QWidget *host) {
+    auto *layout = new QVBoxLayout(host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto *p = new PreviewPane(host);
+    p->setCompact(true);
+    layout->addWidget(p);
+    wirePreview(p);
+    return p;
+  }
+  void wireBrowser(Browser *b) {
     connect(b, &Browser::urlChanged, this, [this, b](const QUrl &url) {
       auto &s = states[b];
       if (!s.navigatingHistory) {
@@ -1190,6 +1184,19 @@ public:
     });
     connect(b, &Browser::errorOccurred, this,
             [this](const QString &t) { status->setText(t); });
+  }
+  void addTab(const QUrl &u, bool activate) {
+    auto *b = new Browser;
+    if (namedActions.contains("hidden"))
+      b->setHiddenFiles(namedActions["hidden"]->isChecked());
+    TabState s;
+    s.gallery = attachPreview(b->galleryPreviewHost());
+    s.gallery->setGallery(true);
+    s.column = attachPreview(b->columnPreviewHost());
+    s.preview = attachPreview(b->previewHost());
+    states.insert(b, s);
+    const int index = tabs->addTab(b, "Folder");
+    wireBrowser(b);
     explicitNavigation = true;
     b->navigate(u);
     explicitNavigation = false;
@@ -1199,7 +1206,7 @@ public:
       restoreView();
       states[b].viewRestored = true;
     }
-    b->activeView()->setFocus();
+    if (activate) b->activeView()->setFocus();
     refresh();
   }
   QJsonObject diagnostics() const {
@@ -1314,6 +1321,8 @@ public:
 signals:
   void newWindowRequested(const QUrl &url);
   void quitRequested();
+  void closeAllRequested();
+  void minimizeAllRequested();
   void hideRequested();
   void hideOthersRequested();
   void showAllRequested();
@@ -1913,7 +1922,7 @@ private:
     addAction(finder, "settings", "Settings…", {"Meta+,", "Ctrl+,"}, [this] { settingsDialog(); });
     finder->addSeparator();
     addAction(finder, "hide", "Hide Finder", {"Meta+H"}, [this] { emit hideRequested(); });
-    addAction(finder, "hideOthers", "Hide Others", {"Meta+Alt+H"}, [this] { emit hideOthersRequested(); });
+    addAction(finder, "hideOthers", "Hide Other Finder Windows", {"Meta+Alt+H"}, [this] { emit hideOthersRequested(); });
     addAction(finder, "showAll", "Show All", {}, [this] { emit showAllRequested(); });
     addAction(finder, "emptyTrash", "Empty Trash…", {"Meta+Shift+Backspace"}, [this] {
       auto empty = [this] {
@@ -2097,6 +2106,8 @@ private:
                 tabs->setCurrentIndex(
                     (tabs->currentIndex() + tabs->count() - 1) % tabs->count());
               });
+    addAction(window, "closeAllWindows", "Close All Windows", {"Meta+Alt+W"}, [this] { emit closeAllRequested(); });
+    addAction(window, "minimizeAll", "Minimize All", {"Meta+Alt+M"}, [this] { emit minimizeAllRequested(); });
     addAction(window, "minimize", "Minimize", {"Meta+M"}, [this] { showMinimized(); });
     addAction(window, "zoom", "Zoom", {}, [this] { isMaximized() ? showNormal() : showMaximized(); });
     auto *fullscreen = addAction(view, "fullscreen", "Enter Full Screen", {"Ctrl+Shift+F", "Meta+Ctrl+F"}, [this] {
@@ -2106,7 +2117,7 @@ private:
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
     addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
     addAction(window, "detachTab", "Move Tab to New Window", {}, [this] { detachTab(tabs->currentIndex()); });
-    addAction(window, "closeOtherTabs", "Close Other Tabs", {"Meta+Alt+W"}, [this] {
+    addAction(window, "closeOtherTabs", "Close Other Tabs", {}, [this] {
       auto *keep = tabs->currentWidget();
       for (int i = tabs->count() - 1; i >= 0; --i)
         if (tabs->widget(i) != keep) tabs->tabCloseRequested(i);
@@ -2154,6 +2165,12 @@ public:
     connect(w, &FinderWindow::quitRequested, this, [this] {
       const auto copy = windows; for (const auto &window : copy) if (window) window->close();
       if (!daemon) QCoreApplication::quit();
+    });
+    connect(w, &FinderWindow::closeAllRequested, this, [this] {
+      const auto copy = windows; for (const auto &window : copy) if (window) window->close();
+    });
+    connect(w, &FinderWindow::minimizeAllRequested, this, [this] {
+      for (const auto &window : windows) if (window) window->showMinimized();
     });
     connect(w, &FinderWindow::hideRequested, this, [this] { for (auto &window : windows) if (window) window->hide(); });
     connect(w, &FinderWindow::hideOthersRequested, this, [this, w] { for (auto &window : windows) if (window && window != w) window->hide(); });
