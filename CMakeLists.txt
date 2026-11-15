@@ -30,6 +30,7 @@ find_package(KF6Archive 6.2 REQUIRED)
 
 add_executable(finder
     src/main.cpp
+    src/taboverview.cpp src/taboverview.h
     src/browser.cpp src/browser.h
     src/preview.cpp src/preview.h
     src/places.cpp src/places.h
