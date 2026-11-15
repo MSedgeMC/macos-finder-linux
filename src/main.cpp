@@ -1259,7 +1259,7 @@ protected:
       if (w && w->window() == this) {
         auto *k = static_cast<QKeyEvent *>(e);
         if (k->key() == Qt::Key_Escape &&
-            (search->isVisible() || location->isVisible())) {
+            (showingSearch() || search->isVisible() || location->isVisible())) {
           search->clear();
           search->hide();
           location->hide();
