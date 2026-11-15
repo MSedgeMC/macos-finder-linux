@@ -1328,7 +1328,12 @@ public:
     refresh();
   }
   QJsonObject diagnostics() const {
-    QJsonArray selected, columns, hiddenColumns;
+    QJsonArray selected, columns, hiddenColumns, listed;
+    auto *active = browser()->activeView();
+    for (int row = 0; row < qMin(500, active->model()->rowCount(active->rootIndex())); ++row) {
+      const auto item = active->model()->index(row, 0, active->rootIndex()).data(KDirModel::FileItemRole).value<KFileItem>();
+      if (!item.isNull()) listed << item.url().toString();
+    }
     if (auto *tree = browser()->findChild<QTreeView *>("finderListView"))
       for (int i = 0; i < int(KDirModel::ColumnCount); ++i)
         if (tree->isColumnHidden(i))
@@ -1359,7 +1364,7 @@ public:
         {"tagsReady", !tagActions.isEmpty() && tagActions.first()->isEnabled()},
         {"hiddenColumns", hiddenColumns},
         {"count", browser()->itemCount()},
-        {"selected", selected},
+        {"selected", selected}, {"listed", listed},
         {"tabs", tabs->count()},
         {"headerHeight", header->height()},
         {"sidebarWidth", sidebar->width()},
@@ -1931,8 +1936,8 @@ private:
   void settingsDialog() {
     for (auto *top : QApplication::topLevelWidgets())
       if (auto *existing = qobject_cast<FinderSettings *>(top)) { existing->show(); existing->raise(); existing->activateWindow(); return; }
-    auto *dialog = new FinderSettings(this);
-    connect(dialog, &FinderSettings::preferencesChanged, this, [this] {
+    auto *dialog = new FinderSettings;
+    connect(dialog, &FinderSettings::preferencesChanged, dialog, [] {
       for (auto *window : QApplication::topLevelWidgets()) {
         auto *finder = qobject_cast<FinderWindow *>(window);
         if (!finder) continue;
@@ -1944,10 +1949,8 @@ private:
         finder->refresh();
       }
     });
-    connect(dialog, &FinderSettings::tagMetadataChangeRequested, this,
-      [this, dialog](const QString &requestId, const QString &, const QString &oldName, const QString &newName) {
-        if (writingTags) { dialog->completeTagMetadataChange(requestId, "A tag update is already running."); return; }
-        writingTags = true;
+    connect(dialog, &FinderSettings::tagMetadataChangeRequested, dialog,
+      [dialog](const QString &requestId, const QString &, const QString &oldName, const QString &newName) {
         QSet<QUrl> urls;
         for (auto *window : QApplication::topLevelWidgets()) if (auto *finder = qobject_cast<FinderWindow *>(window))
           for (auto it = finder->knownTagValues.cbegin(); it != finder->knownTagValues.cend(); ++it) if (it.value().contains(oldName)) urls.insert(it.key());
@@ -1966,7 +1969,12 @@ private:
           if (!errors.isEmpty()) *error = QString("%1 known files updated; remaining errors:\n%2").arg(changed).arg(errors.join('\n'));
         });
         QPointer<FinderSettings> settings(dialog);
-        connect(worker, &QThread::finished, this, [this, settings, requestId, error, urls] { writingTags = false; discoverTags(urls.values(), true); if (settings) settings->completeTagMetadataChange(requestId, *error); if (browser()) browser()->refreshTags(); updateTags(true); });
+        connect(worker, &QThread::finished, dialog, [settings, requestId, error, urls] {
+          if (settings) settings->completeTagMetadataChange(requestId, *error);
+          for (auto *window : QApplication::topLevelWidgets()) if (auto *finder = qobject_cast<FinderWindow *>(window)) {
+            finder->discoverTags(urls.values(), true); if (finder->browser()) finder->browser()->refreshTags(); finder->updateTags(true);
+          }
+        });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
       });
     dialog->open();
