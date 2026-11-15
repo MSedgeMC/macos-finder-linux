@@ -4,6 +4,8 @@ A native Qt 6/KDE file manager inspired by Finder, with Icons, List, real Miller
 Columns, Gallery, multi-file Quick Look, local tags, recursive filename search,
 and native KIO file operations.
 
+![Icon view](screenshots/icons.png)
+
 This is a Linux approximation inspired by Apple Liquid Glass. It does not
 contain Apple's Finder or renderer, and exact macOS pixel parity is not
 established. The file pane is opaque; suitable chrome requests genuine KWin
@@ -16,9 +18,47 @@ folder views, image/PDF/text previews, and explicit-play audio/video. Linux
 `user.xdg.tags` preserves custom tags. Local filename search runs on a bounded,
 cancelable worker without background indexing.
 
-Portable CMake build and validation details are being added in the next
-commits. The implementation has passed 32 isolated Wayland integration checks,
-with temporary fixtures and no automated input on the working desktop.
+![Gallery view](screenshots/gallery.png)
+
+## Build and run
+
+Requires Linux, Qt 6 and KDE Frameworks 6 development packages. See
+[dependencies and build instructions](docs/build.md).
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+./build/finder
+```
+
+The native implementation passed **32 isolated Wayland integration checks**.
+See [validation](docs/validation.md) and [design and platform limits](docs/design.md).
+
+## Optional KDE desktop integration
+
+On the originating Kubuntu/Plasma installation, the scoped installer replaces
+existing Dolphin launch routes and the folder default, preserving an original
+Dolphin launcher and backups. It expects KDE's `plasma-dolphin.service` and an
+existing Dolphin desktop entry. Read [tools/install.py](tools/install.py) before
+applying this desktop-specific integration.
+
+```sh
+python3 tools/test-install.py
+python3 tools/install.py --prepare
+python3 tools/install.py --apply /path/printed/by/prepare
+python3 tools/install.py --verify
+```
+
+Existing file-manager windows must be closed for replacement. The prepared
+manifest lists exact writes. Restore with `--restore /path/to/backup`; the last
+successful backup path is recorded in `last-backup.txt`. The installer restarts
+only the file-manager daemon. It does not restart Plasma, KWin or Spotlight.
+CMake's ordinary install installs only the binary.
+
+Space opens Quick Look; Return/F2 renames. Ctrl+1..4 switches views, Ctrl+T opens
+a tab, Ctrl+F searches, Ctrl+L opens Go to Folder, and Ctrl+J opens View Options.
+Meta equivalents are provided for common Finder shortcuts.
 
 ## License
 

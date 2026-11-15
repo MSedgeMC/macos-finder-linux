@@ -13,7 +13,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 HOME = Path.home()
 DATA = HOME / ".local/share"
 CONFIG = HOME / ".config"
