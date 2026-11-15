@@ -49,6 +49,7 @@ set_tests_properties(finder-quickactions-test PROPERTIES TIMEOUT 60 LABELS "unit
 add_executable(finder-smartfolder-test smartfolder.cpp ../src/smartfolder.cpp ../src/smartfolder.h)
 target_include_directories(finder-smartfolder-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(finder-smartfolder-test PRIVATE Qt6::Core Threads::Threads)
+target_link_options(finder-smartfolder-test PRIVATE -Wl,--wrap=open -Wl,--wrap=read -Wl,--wrap=fstat)
 add_test(NAME finder-smartfolder-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-smartfolder-test>")
 set_tests_properties(finder-smartfolder-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
 

@@ -1111,7 +1111,10 @@ public:
   }
   void printSelection() {
     const auto urls = selectedUrls(); if (urls.size() != 1) return;
-    quickLook(urls); quickPane->show(); quickWindow->show(); quickPane->printCurrent();
+    printRequestedUrl = urls.first(); quickLook(urls); quickPane->show(); quickWindow->show();
+    if (quickPane->canPrintCurrent() && printRequestedUrl == quickPane->currentUrl()) {
+      printRequestedUrl.clear(); quickPane->printCurrent();
+    }
   }
   void selectedOperation(const QString &operation) {
     if (!showingSearch()) {
@@ -1208,8 +1211,29 @@ public:
       auto *window = new QMainWindow(this, Qt::Window);
       window->setObjectName("finderQuickLookWindow");
       window->setWindowTitle("Quick Look"); window->resize(840, 620);
-      auto *pane = new PreviewPane(window); quickWindow = window; quickPane = pane;
-      window->setCentralWidget(pane); wirePreview(pane);
+      auto *base = new QWidget(window); base->setGraphicsEffect(new ContourEffect(base));
+      auto *layout = new QVBoxLayout(base); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
+      auto *previewHeader = new Header(base); previewHeader->setObjectName("finderQuickLookHeader"); previewHeader->setFixedHeight(40);
+      auto *controls = new QHBoxLayout(previewHeader); controls->setContentsMargins(12,4,12,4); controls->setSpacing(7);
+      for (auto kind : {"close", "minimize", "maximize"}) {
+        auto *control = new WindowControl(kind, previewHeader); controls->addWidget(control);
+        connect(control, &QToolButton::clicked, window, [window, kind] {
+          if (QString(kind) == "close") window->hide(); else if (QString(kind) == "minimize") window->showMinimized();
+          else if (window->isFullScreen()) window->showNormal(); else window->showFullScreen();
+        });
+      }
+      auto *caption = new QLabel("Quick Look", previewHeader); caption->setAlignment(Qt::AlignCenter); controls->addWidget(caption, 1);
+      layout->addWidget(previewHeader);
+      auto *pane = new PreviewPane(base); pane->setHostWindowControls(true); layout->addWidget(pane);
+      quickWindow = window; quickPane = pane;
+      window->setWindowFlags(Qt::Window | Qt::FramelessWindowHint); window->setAttribute(Qt::WA_TranslucentBackground);
+      window->setMinimumSize(480, 320); window->setCentralWidget(base); wirePreview(pane);
+      connect(pane, &PreviewPane::printReadinessChanged, this, [this, pane](bool ready) {
+        if (ready && !printRequestedUrl.isEmpty() && pane->currentUrl() == printRequestedUrl) {
+          printRequestedUrl.clear(); QTimer::singleShot(0, pane, &PreviewPane::printCurrent);
+        }
+      });
+      connect(pane, &PreviewPane::currentUrlChanged, this, [this](const QUrl &url) { if (!printRequestedUrl.isEmpty() && printRequestedUrl != url) printRequestedUrl.clear(); });
       connect(pane, &PreviewPane::closeRequested, window, &QWidget::hide);
     }
     quickUrls = ordered; quickPane->updateQuickLook(ordered, ordered.first());
@@ -1665,6 +1689,7 @@ private:
   QPointer<QMainWindow> quickWindow;
   QPointer<PreviewPane> quickPane;
   QList<QUrl> quickUrls;
+  QUrl printRequestedUrl;
   QUrl capacityUrl;
   QString capacityText;
   QWidget *bottom, *crumbs, *statusRow, *modeBox, *headerSidebar;
