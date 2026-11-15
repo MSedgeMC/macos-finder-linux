@@ -22,6 +22,7 @@
 #include <KUrlCompletion>
 #include <QCompleter>
 #include <KIO/EmptyTrashJob>
+#include <KIO/ListJob>
 #include <KIO/FileUndoManager>
 #include <KIO/JobUiDelegateFactory>
 #include <KIO/OpenUrlJob>
@@ -891,7 +892,7 @@ public:
     sr->addWidget(status, 1);
     auto *size = iconSlider = new QSlider(Qt::Horizontal);
     size->setObjectName("finderIconSize");
-    size->setRange(32, 256);
+    size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 64 : 256);
     size->setValue(64);
     size->setFixedWidth(100);
     size->setToolTip("Icon size");
@@ -1065,6 +1066,10 @@ public:
     });
     warning->open();
   }
+  void printSelection() {
+    const auto urls = selectedUrls(); if (urls.size() != 1) return;
+    quickLook(urls); quickPane->show(); quickWindow->show(); quickPane->printCurrent();
+  }
   void selectedOperation(const QString &operation) {
     if (!showingSearch()) {
       if (operation == "rename")
@@ -1180,7 +1185,8 @@ public:
   }
   void prepareTagMenu() { updateTags(true); }
   void wirePreview(PreviewPane *p) {
-      connect(p, &PreviewPane::openRequested, this,
+      connect(p, &PreviewPane::actionError, this, [this](const QUrl &, const QString &error) { status->setText(error); });
+    connect(p, &PreviewPane::openRequested, this,
               [this](const QUrl &url) { openUrl(url); });
       connect(p, &PreviewPane::getInfoRequested, this, [this](const QUrl &url) {
         auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
@@ -1328,12 +1334,7 @@ public:
     refresh();
   }
   QJsonObject diagnostics() const {
-    QJsonArray selected, columns, hiddenColumns, listed;
-    auto *active = browser()->activeView();
-    for (int row = 0; row < qMin(500, active->model()->rowCount(active->rootIndex())); ++row) {
-      const auto item = active->model()->index(row, 0, active->rootIndex()).data(KDirModel::FileItemRole).value<KFileItem>();
-      if (!item.isNull()) listed << item.url().toString();
-    }
+    QJsonArray selected, columns, hiddenColumns;
     if (auto *tree = browser()->findChild<QTreeView *>("finderListView"))
       for (int i = 0; i < int(KDirModel::ColumnCount); ++i)
         if (tree->isColumnHidden(i))
@@ -1364,7 +1365,7 @@ public:
         {"tagsReady", !tagActions.isEmpty() && tagActions.first()->isEnabled()},
         {"hiddenColumns", hiddenColumns},
         {"count", browser()->itemCount()},
-        {"selected", selected}, {"listed", listed},
+        {"selected", selected},
         {"tabs", tabs->count()},
         {"headerHeight", header->height()},
         {"sidebarWidth", sidebar->width()},
@@ -1502,6 +1503,8 @@ signals:
   void newWindowRequested(const QUrl &url);
   void quitRequested();
   void windowListRequested(QMenu *menu);
+  void trashPolicyChanged();
+  void settingsCreated(FinderSettings *dialog);
   void closeAllRequested();
   void minimizeAllRequested();
   void hideRequested();
@@ -1944,8 +1947,9 @@ private:
         finder->places->refreshPreferences(); finder->rebuildTagMenu();
         finder->installScrolling(finder);
         if (finder->quickWindow) finder->installScrolling(finder->quickWindow);
-        for (auto *b : finder->states.keys())
-          b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
+        for (auto *b : finder->states.keys()) {
+          b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool()); b->refreshPreferences();
+        }
         finder->refresh();
       }
     });
@@ -1977,6 +1981,7 @@ private:
         });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
       });
+    emit settingsCreated(dialog);
     dialog->open();
     installScrolling(dialog);
   }
@@ -1997,7 +2002,7 @@ private:
     form->addRow("View", mode);
     auto *size = new QSpinBox;
     size->setObjectName("viewOptionIconSize");
-    size->setRange(32, 256);
+    size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 64 : 256);
     size->setValue(browser()->iconSize());
     form->addRow("Icon size", size);
     auto *spacing = new QSpinBox;
@@ -2058,6 +2063,7 @@ private:
     };
     auto updateControls = [form, mode, size, spacing, labels, defaults, columns] {
       const auto selected = mode->currentIndex();
+      size->setRange(selected == Browser::List ? 16 : 32, selected == Browser::List ? 64 : 256);
       form->setRowVisible(spacing, selected == Browser::Icons);
       form->setRowVisible(labels, selected == Browser::Icons);
       form->setRowVisible(size, selected != Browser::Columns);
@@ -2162,6 +2168,10 @@ private:
     if (namedActions.contains("showOriginal")) {
       const auto urls = selectedUrls();
       namedActions["showOriginal"]->setEnabled(urls.size() == 1 && urls.first().isLocalFile() && QFileInfo(urls.first().toLocalFile()).isSymbolicLink());
+    }
+    if (namedActions.contains("print")) {
+      const auto urls = selectedUrls(); const auto mime = urls.size() == 1 ? QMimeDatabase().mimeTypeForFile(urls.first().fileName(), QMimeDatabase::MatchExtension) : QMimeType();
+      namedActions["print"]->setEnabled(urls.size() == 1 && urls.first().isLocalFile() && (mime.inherits("text/plain") || mime.inherits("application/pdf") || mime.name().startsWith("image/")));
     }
     const int selected = selectedUrls().size();
     QString text = selected ? QString("%1 of %2 selected")
@@ -2327,6 +2337,8 @@ private:
     addAction(file, "trash", "Move to Trash",
               {"Delete", "Meta+Backspace", "Ctrl+Backspace"},
               [this] { if (trashSelection()) restoreSelection(); else selectedOperation("trash"); });
+    addAction(file, "print", "Print…", {"Meta+P", "Ctrl+P"}, [this] { printSelection(); });
+    file->addMenu(share->menu())->setText("Share"); file->addMenu(tagMenu)->setText("Tags");
     addAction(file, "info", "Get Info", {"Ctrl+I", "Meta+I"}, [this] {
       auto urls = selectedUrls();
       if (urls.isEmpty()) urls << browser()->url();
@@ -2543,9 +2555,41 @@ public:
   QList<QPointer<FinderWindow>> windows;
   bool testing = false;
   bool daemon = false;
+  QTimer trashAgeTimer;
+  QPointer<KIO::ListJob> trashAgeListing;
+  Manager() {
+    trashAgeTimer.setInterval(6 * 60 * 60 * 1000);
+    connect(&trashAgeTimer, &QTimer::timeout, this, &Manager::removeOldTrash);
+    QTimer::singleShot(0, this, &Manager::refreshTrashPolicy);
+  }
+  void refreshTrashPolicy() {
+    if (QSettings().value("Advanced/removeTrashAfter30Days", false).toBool()) {
+      if (!trashAgeTimer.isActive()) { trashAgeTimer.start(); removeOldTrash(); }
+    } else { trashAgeTimer.stop(); if (trashAgeListing) trashAgeListing->kill(); }
+  }
+  void removeOldTrash() {
+    if (!QSettings().value("Advanced/removeTrashAfter30Days", false).toBool() || trashAgeListing) return;
+    auto *job = KIO::listDir(QUrl("trash:/"), KIO::HideProgressInfo); trashAgeListing = job;
+    auto expired = std::make_shared<QList<QUrl>>();
+    const auto cutoff = QDateTime::currentDateTime().addDays(-30);
+    connect(job, &KIO::ListJob::entries, this, [expired, cutoff](KIO::Job *, const KIO::UDSEntryList &entries) {
+      for (const auto &entry : entries) {
+        const auto name = entry.stringValue(KIO::UDSEntry::UDS_NAME);
+        const auto deleted = QDateTime::fromString(entry.stringValue(KIO::UDSEntry::UDS_EXTRA + 1), Qt::ISODate);
+        if (name != "." && name != ".." && deleted.isValid() && deleted < cutoff) {
+          QUrl url("trash:/"); url.setPath('/' + name); expired->append(url);
+        }
+      }
+    });
+    connect(job, &KJob::result, this, [this, expired](KJob *done) {
+      trashAgeListing = nullptr;
+      if (!done->error() && !expired->isEmpty() && QSettings().value("Advanced/removeTrashAfter30Days", false).toBool()) KIO::del(*expired, KIO::HideProgressInfo);
+    });
+  }
   FinderWindow *create(QUrl u) {
     auto *w = new FinderWindow(u);
     windows << w;
+    connect(w, &FinderWindow::settingsCreated, this, [this](FinderSettings *dialog) { connect(dialog, &FinderSettings::preferencesChanged, this, &Manager::refreshTrashPolicy); });
     connect(w, &FinderWindow::windowListRequested, this, [this, w](QMenu *menu) {
       menu->clear();
       for (const auto &window : windows) if (window) {
@@ -2666,6 +2710,17 @@ public:
   Manager *m;
   explicit TestAPI(Manager *manager) : QObject(manager), m(manager) {}
 public slots:
+  QString listedUrls() {
+    QJsonArray listed;
+    if (auto *window = m->active()) {
+      auto *view = window->browser()->activeView();
+      for (int row = 0; row < qMin(10000, view->model()->rowCount(view->rootIndex())); ++row) {
+        const auto item = view->model()->index(row, 0, view->rootIndex()).data(KDirModel::FileItemRole).value<KFileItem>();
+        if (!item.isNull()) listed << item.url().toString();
+      }
+    }
+    return QString::fromUtf8(QJsonDocument(listed).toJson(QJsonDocument::Compact));
+  }
   QString actionState(const QString &name) {
     auto *action = m->active() ? m->active()->action(name) : nullptr;
     if (!action) return "{}";
@@ -2911,10 +2966,12 @@ public slots:
     return false;
   }
   bool dialogButton(const QString &text) {
-    for (auto *w : QApplication::topLevelWidgets())
+    auto windows = QApplication::topLevelWidgets();
+    if (auto *active = QApplication::activeWindow()) { windows.removeOne(active); windows.prepend(active); }
+    for (auto *w : windows)
       if (w->isVisible())
         for (auto *b : w->findChildren<QPushButton *>())
-          if (b->text().remove('&') == text) {
+          if (b->isVisible() && b->isEnabled() && b->text().remove('&') == text) {
             b->click();
             return true;
           }
