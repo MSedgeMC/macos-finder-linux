@@ -70,3 +70,9 @@ target_include_directories(finder-archives-test PRIVATE "${PROJECT_SOURCE_DIR}/s
 target_link_libraries(finder-archives-test PRIVATE Qt6::Widgets Threads::Threads KF6::Archive KF6::KIOCore KF6::KIOGui KF6::KIOWidgets)
 add_test(NAME finder-archives-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-archives-test>")
 set_tests_properties(finder-archives-test PROPERTIES TIMEOUT 90 LABELS "unit;headless")
+
+add_executable(finder-criteriaeditor-test criteriaeditor.cpp ../src/criteriaeditor.cpp ../src/criteriaeditor.h)
+target_include_directories(finder-criteriaeditor-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-criteriaeditor-test PRIVATE Qt6::Widgets)
+add_test(NAME finder-criteriaeditor-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-criteriaeditor-test>")
+set_tests_properties(finder-criteriaeditor-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")

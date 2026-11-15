@@ -41,6 +41,7 @@ add_executable(finder
     src/quickactions.cpp src/quickactions.h
     src/smartfolder.cpp src/smartfolder.h
     src/archives.cpp src/archives.h
+    src/criteriaeditor.cpp src/criteriaeditor.h
 )
 target_link_libraries(finder PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::DBus Qt6::Network

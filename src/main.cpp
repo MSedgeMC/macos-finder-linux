@@ -10,6 +10,7 @@
 #include "quickactions.h"
 #include "smartfolder.h"
 #include "archives.h"
+#include "criteriaeditor.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -46,6 +47,7 @@
 #include <QDateEdit>
 #include <QDateTime>
 #include <QSaveFile>
+#include <QScrollArea>
 #include <QSet>
 #include <QFileDialog>
 #include <QDBusConnection>
@@ -822,6 +824,7 @@ public:
     searchSummary = new QLabel;
     searchSummary->setContentsMargins(14, 8, 14, 8);
     resultsLayout->addWidget(searchSummary);
+    searchProviderLabel = new QLabel(searchPage); searchProviderLabel->setObjectName("finderSearchCoverage"); searchProviderLabel->setWordWrap(true); searchProviderLabel->setContentsMargins(14, 0, 14, 4); searchProviderLabel->hide(); resultsLayout->addWidget(searchProviderLabel);
     auto *criteria = new QHBoxLayout;
     searchScope = new QComboBox; searchScope->setObjectName("finderSearchScope");
     searchScope->addItem("This Computer", "computer"); searchScope->addItem("Current Folder", "current");
@@ -922,6 +925,12 @@ public:
             });
     connect(fileSearch, &LocalFileSearch::error, this,
             [this](quint64, const QString &e) { searchSummary->setText(e); });
+    connect(fileSearch, &LocalFileSearch::providerStatus, this, [this](quint64, const QJsonObject &info) {
+      searchProviderStatus = info;
+      searchProviderLabel->setText(info.value("detail").toString()); searchProviderLabel->setVisible(!searchProviderLabel->text().isEmpty());
+      searchSummary->setToolTip(info.value("detail").toString());
+      searchSummary->setAccessibleDescription(info.value("coverage").toString() + ": " + info.value("detail").toString());
+    });
     body->setSizes({256, 844});
     body->setStretchFactor(1, 1);
     outer->addWidget(body, 1);
@@ -1708,11 +1717,14 @@ private:
   QStandardItemModel *searchModel;
   LocalFileSearch *fileSearch = nullptr;
   QTimer *searchTimer = nullptr;
-  QLabel *searchSummary;
+  QLabel *searchSummary, *searchProviderLabel;
   QUrl searchRoot;
   QComboBox *searchScope, *searchKind;
   QLineEdit *searchContent;
   qint64 searchMinimumSize = -1, searchMaximumSize = -1, searchModifiedAfter = -1;
+  QJsonObject searchCriteria, searchProviderStatus;
+  bool searchParseKeywords = true;
+  LocalFileSearch::Options::Provider searchProvider = LocalFileSearch::Options::Provider::Local;
   QString selectedTag;
   QPointer<QMainWindow> quickWindow;
   QPointer<PreviewPane> quickPane;
@@ -1866,6 +1878,8 @@ private:
       searchScope->setCurrentIndex(state.value("scope").toString(FinderPreferences::initialSearchScope()) == "current" ? 1 : 0);
       searchMinimumSize = state.value("minimumSize").toInteger(-1); searchMaximumSize = state.value("maximumSize").toInteger(-1);
       searchModifiedAfter = state.value("modifiedAfter").toInteger(-1);
+      searchCriteria = state.value("criteria").toObject(); searchParseKeywords = state.value("parseKeywords").toBool(true);
+      searchProvider = LocalFileSearch::Options::Provider(qBound(0, state.value("provider").toInt(), 2));
     }
     selectedTag = state.value("tag").toString(); search->setVisible(state.value("visible").toBool()); layoutHeader();
     if (!selectedTag.isEmpty()) {
@@ -1893,7 +1907,7 @@ private:
     selectedTag.clear();
     if (!browser())
       return;
-    if (search->text().trimmed().isEmpty() && searchContent->text().isEmpty() && searchKind->currentData().toString().isEmpty() && searchMinimumSize < 0 && searchMaximumSize < 0 && searchModifiedAfter < 0) {
+    if (search->text().trimmed().isEmpty() && searchContent->text().isEmpty() && searchKind->currentData().toString().isEmpty() && searchMinimumSize < 0 && searchMaximumSize < 0 && searchModifiedAfter < 0 && searchCriteria.isEmpty()) {
       fileSearch->cancel();
       contentStack->setCurrentWidget(tabs);
       return;
@@ -1907,6 +1921,7 @@ private:
     options.preferredPath = browser()->url().isLocalFile() ? browser()->url().toLocalFile() : QDir::homePath();
     options.kind = searchKind->currentData().toString(); options.contentText = searchContent->text();
     options.minimumSize = searchMinimumSize; options.maximumSize = searchMaximumSize; options.modifiedAfter = searchModifiedAfter;
+    options.criteria = searchCriteria; options.parseKeywords = searchParseKeywords; options.provider = searchProvider;
     fileSearch->start(searchRoot, search->text().trimmed(), options);
     refresh();
   }
@@ -2123,22 +2138,34 @@ private:
   void searchCriteriaDialog() {
     auto *dialog = new QDialog(this); dialog->setWindowTitle("Search Criteria"); dialog->setObjectName("finderSearchCriteria"); dialog->setAttribute(Qt::WA_DeleteOnClose);
     auto *layout = new QFormLayout(dialog);
+    QPointer<Browser> target(browser()); const auto origin = browser()->url();
+    auto *editor = new SearchCriteriaEditor(searchCriteria, dialog);
+    auto *scroll = new QScrollArea(dialog); scroll->setWidgetResizable(true); scroll->setWidget(editor); scroll->setMinimumHeight(220); layout->addRow(scroll);
+    auto *keywords = new QCheckBox("Interpret keywords and AND / OR / NOT in the search field", dialog); keywords->setObjectName("finderSearchParseKeywords"); keywords->setChecked(searchParseKeywords); layout->addRow(keywords);
+    auto *provider = new QComboBox(dialog); provider->setObjectName("finderSearchProvider"); provider->addItems({"Search local files", "Prefer existing Baloo index", "Existing Baloo index only"}); provider->setCurrentIndex(int(searchProvider)); layout->addRow("Search provider", provider);
     auto *minimum = new QSpinBox(dialog); minimum->setRange(0, 2000000000); minimum->setSpecialValueText("Any"); minimum->setValue(qMax(qint64(0), searchMinimumSize)); minimum->setObjectName("finderSearchMinimumSize"); layout->addRow("Minimum bytes", minimum);
     auto *maximum = new QSpinBox(dialog); maximum->setRange(0, 2000000000); maximum->setSpecialValueText("Any"); maximum->setValue(qMax(qint64(0), searchMaximumSize)); maximum->setObjectName("finderSearchMaximumSize"); layout->addRow("Maximum bytes", maximum);
     auto *dateEnabled = new QCheckBox("Modified after", dialog); dateEnabled->setChecked(searchModifiedAfter >= 0); layout->addRow(dateEnabled);
     auto *date = new QDateEdit(dialog); date->setCalendarPopup(true); date->setDate(searchModifiedAfter >= 0 ? QDateTime::fromSecsSinceEpoch(searchModifiedAfter).date() : QDate::currentDate().addMonths(-1)); layout->addRow(date);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog); layout->addRow(buttons);
+    auto *error = new QLabel(dialog); error->setWordWrap(true); error->setObjectName("finderCriteriaError"); layout->addRow(error);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, minimum, maximum, date, dateEnabled] {
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, minimum, maximum, date, dateEnabled, editor, error, keywords, provider, target, origin] {
+      if (!target || browser() != target || target->url() != origin) { dialog->reject(); return; }
+      const auto criteria = editor->criteria(); QString message;
+      if (!LocalFileSearch::validateCriteria(criteria, &message)) { error->setText(message); return; }
+      if (minimum->value() && maximum->value() && minimum->value() > maximum->value()) { error->setText("Minimum size must not exceed maximum size."); return; }
       searchMinimumSize = minimum->value() ? minimum->value() : -1; searchMaximumSize = maximum->value() ? maximum->value() : -1;
       searchModifiedAfter = dateEnabled->isChecked() ? date->date().startOfDay().toSecsSinceEpoch() : -1;
+      searchCriteria = criteria; searchParseKeywords = keywords->isChecked(); searchProvider = LocalFileSearch::Options::Provider(provider->currentIndex());
       beginSearch(); dialog->accept();
-    }); dialog->open();
+    }); dialog->resize(720, 580); dialog->open();
   }
   QJsonObject searchDefinition() const {
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
       {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
-      {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter}};
+      {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter},
+      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}};
   }
   void saveSmartFolder() {
     auto *dialog = new QFileDialog(this, "Save Smart Folder", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), "Finder Smart Folder (*.finder-search)");
@@ -2161,12 +2188,18 @@ private:
     smartFolderReader->read(url, [this, target, generation](const QJsonObject &definition, const QUrl &root, const QString &error, quint64) {
       if (!target || target != browser() || generation != navigationGeneration) return;
       if (!error.isEmpty()) { status->setText(error); return; }
+      QString criteriaError;
+      if (definition.contains("criteria") && (!definition.value("criteria").isObject() || !LocalFileSearch::validateCriteria(definition.value("criteria").toObject(), &criteriaError))) {
+        status->setText(criteriaError.isEmpty() ? "The Smart Folder has invalid search criteria." : criteriaError); return;
+      }
       stopSearch(); saveView(); explicitNavigation = true; target->navigateValidated(root); explicitNavigation = false;
       if (browser()->url().adjusted(QUrl::StripTrailingSlash) != root.adjusted(QUrl::StripTrailingSlash)) return;
       { QSignalBlocker scope(searchScope), kind(searchKind), content(searchContent), name(search);
         search->setText(definition.value("name").toString()); searchContent->setText(definition.value("content").toString());
         searchScope->setCurrentIndex(qMax(0, searchScope->findData(definition.value("scope").toString()))); searchKind->setCurrentIndex(qMax(0, searchKind->findData(definition.value("kind").toString())));
         searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
+        searchCriteria = definition.value("criteria").toObject(); searchParseKeywords = definition.value("parseKeywords").toBool(false);
+        searchProvider = LocalFileSearch::Options::Provider(qBound(0, definition.value("provider").toInt(), 2));
       }
       search->show(); search->setFocus(); layoutHeader(); beginSearch();
     });
