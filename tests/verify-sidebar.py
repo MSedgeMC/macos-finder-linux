@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
 """Pixel and resize regression check on a private Wayland screen only."""
 import argparse
 import json
@@ -50,7 +49,7 @@ def wait_for(predicate, label, timeout=15):
         if predicate():
             return
         QTest.qWait(100)
-    raise AssertionError(label)
+    raise AssertionError((label, status()))
 
 
 def status():
@@ -73,7 +72,7 @@ def capture(name):
         assert state['splitterGrabWidth'] >= 4, state
         seam = round(state['contentX'] * scale)
         top = round(state['bodyY'] * scale)
-        bottom = round((state['bodyY'] + state['bodyHeight']) * scale)
+        bottom = round((state['bodyY'] + state['bodyHeight'] - 18) * scale)
         pixels = [image.getpixel((x, y)) for x in range(seam - 3, seam + 3)
                   for y in range(top, bottom)]
         assert all(pixel[3] > 0 for pixel in pixels), (name, 'transparent seam')
@@ -88,7 +87,7 @@ def capture(name):
 
 
 try:
-    with tempfile.TemporaryDirectory(prefix='seam-fixtures-', dir=out) as scope:
+    with tempfile.TemporaryDirectory(prefix='finder-boundary-fixture-', dir=Path.home()) as scope:
         fixture = Path(scope) / 'Documents'
         fixture.mkdir()
         (fixture / 'Folder').mkdir()
@@ -102,10 +101,25 @@ try:
             wait_for(lambda: status()['count'] == 2, 'native directory listing')
             initial_width = status()['sidebarWidth']
             assert initial_width == 256, status()
+            rows=json.loads(str(api.sidebarRows(timeout=3)))
+            assert [row['text'] for row in rows[:3]]==['Recents','Shared','Favorites'], rows
+            assert all(row['height']==(32 if row['selectable'] else 18) for row in rows), rows
+            (out/'sidebar-rows.json').write_text(json.dumps(rows,indent=2)+'\n')
             for mode, name in enumerate(('icons', 'list', 'columns', 'gallery')):
                 assert api.setMode(mode, timeout=3)
                 capture(name)
             assert api.setMode(0, timeout=3)
+            for group in range(6):
+                assert api.trigger('group'+str(group),timeout=3)
+                wait_for(lambda:status()['group']==group,'group mode')
+                assert api.selectFiles([str(fixture/'Notes.txt')],timeout=3)
+                wait_for(lambda:len(status()['selected'])==1,'group native selection')
+                capture('group-'+str(group))
+            assert api.trigger('group0',timeout=3)
+            assert api.trigger('preview',timeout=3)
+            wait_for(lambda:status()['previewShown'],'preview toggle')
+            capture('preview-pane')
+            assert api.trigger('preview',timeout=3)
             assert api.dragSidebar(80, timeout=3)
             wait_for(lambda: abs(status()['sidebarWidth'] - (initial_width + 80)) <= 2,
                      'native sidebar drag changes geometry')
@@ -136,6 +150,14 @@ try:
             capture('search-results')
             assert api.key(int(Qt.Key.Key_Escape), 0, '', timeout=3)
             wait_for(lambda: not status()['searchVisible'], 'search close')
+            os.setxattr(fixture/'Notes.txt','user.xdg.tags',b'Blue,Project')
+            assert api.activateSidebar('Blue',timeout=3)
+            wait_for(lambda:status()['searchVisible'] and not status()['searchRunning'] and status()['searchResults']>=1,'tag sidebar results', timeout=25)
+            assert api.selectFiles([str(fixture/'Notes.txt')],timeout=3)
+            wait_for(lambda:status()['selected']==[(fixture/'Notes.txt').as_uri()],'actual fixture in tag results')
+            capture('tag-results')
+            assert api.key(int(Qt.Key.Key_Escape),0,'',timeout=3)
+            wait_for(lambda:not status()['searchVisible'],'tag results close')
             assert api.clickObject('window-maximize', timeout=3)
             capture('maximized')
             assert api.clickObject('window-maximize', timeout=3)
