@@ -297,7 +297,7 @@ struct TabState {
   int historyIndex = -1;
   bool navigatingHistory = false;
   bool viewRestored = false;
-  PreviewPane *gallery = nullptr, *column = nullptr;
+  PreviewPane *gallery = nullptr, *column = nullptr, *preview = nullptr;
 };
 class CapacityProbe : public QThread {
   Q_OBJECT
@@ -502,6 +502,22 @@ public:
       QSettings().setValue("View/foldersFirst", on);
     });
     arrange->setMenu(sortMenu);
+    sortMenu->addSeparator();
+    auto *groups = sortMenu->addMenu("Group By");
+    groupActions = new QActionGroup(this);
+    groupActions->setExclusive(true);
+    const QStringList grouping{"None", "Name", "Kind", "Date Modified", "Size", "Tags"};
+    for (int i = 0; i < grouping.size(); ++i) {
+      auto *action = groups->addAction(grouping[i]);
+      action->setCheckable(true);
+      action->setData(i);
+      action->setChecked(i == 0);
+      groupActions->addAction(action);
+      namedActions["group" + QString::number(i)] = action;
+      connect(action, &QAction::triggered, this, [this, i] {
+        browser()->setGroup(Browser::Group(i)); saveView(); refresh();
+      });
+    }
     arrange->setPopupMode(QToolButton::InstantPopup);
     hl->addWidget(arrange);
     auto *actionsCapsule = new QWidget(header);
@@ -520,6 +536,16 @@ public:
     shareMenu->addAction("Open with…", this, [this] {
       for (const auto &u : selectedUrls())
         openWith(u);
+    });
+    shareMenu->addAction("Email…", this, [this] {
+      const auto urls = selectedUrls();
+      if (urls.isEmpty()) return;
+      QStringList arguments;
+      for (const auto &url : urls) {
+        if (!url.isLocalFile()) { status->setText("Download remote files before sending attachments."); return; }
+        arguments << "--attach" << url.toLocalFile();
+      }
+      if (!QProcess::startDetached("xdg-email", arguments)) status->setText("Could not start the email application.");
     });
     share->setMenu(shareMenu);
     share->setPopupMode(QToolButton::InstantPopup);
@@ -969,6 +995,7 @@ public:
     s.gallery = attach(b->galleryPreviewHost());
     s.gallery->setGallery(true);
     s.column = attach(b->columnPreviewHost());
+    s.preview = attach(b->previewHost());
     states.insert(b, s);
     const int index = tabs->addTab(b, "Folder");
     connect(b, &Browser::urlChanged, this, [this, b](const QUrl &url) {
@@ -994,8 +1021,9 @@ public:
               for (auto i : items)
                 urls << i.url();
               auto &s = states[b];
-              s.gallery->setUrls(urls);
-              s.column->setUrls(urls);
+              if (b->mode() == Browser::Gallery) s.gallery->setUrls(urls);
+              if (b->mode() == Browser::Columns) s.column->setUrls(urls);
+              if (b->previewShown()) s.preview->setUrls(urls);
               if (b == browser())
                 refresh();
             });
@@ -1047,6 +1075,9 @@ public:
         {"mode", int(browser()->mode())},
         {"iconSize", browser()->iconSize()},
         {"sortColumn", browser()->sortColumn()},
+        {"group", int(browser()->group())},
+        {"gridSpacing", browser()->gridSpacing()},
+        {"previewShown", browser()->previewShown()},
         {"sortAscending", browser()->sortAscending()},
         {"tagsBusy", writingTags},
         {"tagsReady", !tagActions.isEmpty() && tagActions.first()->isEnabled()},
@@ -1213,7 +1244,7 @@ private:
   QLineEdit *location, *search;
   QToolButton *back, *forward, *modePopup, *arrange, *share;
   QSlider *iconSlider;
-  QActionGroup *modeActions, *sortGroup;
+  QActionGroup *modeActions, *sortGroup, *groupActions;
   QAction *descending;
   QMenu *actionsMenu;
   QToolButton *tagButton;
@@ -1240,6 +1271,7 @@ private:
       writingTags = false;
       status->setText(error.isEmpty() ? "Tags updated" : error);
       updateTags();
+      if (browser()) browser()->refreshTags();
     });
     connect(job, &QThread::finished, job, &QObject::deleteLater);
     job->start();
@@ -1369,6 +1401,11 @@ private:
     settings.setValue("sortColumn", browser()->sortColumn());
     settings.setValue("sortAscending", browser()->sortAscending());
     settings.setValue("iconSize", browser()->iconSize());
+    settings.setValue("group", int(browser()->group()));
+    settings.setValue("gridSpacing", browser()->gridSpacing());
+    settings.setValue("textSize", browser()->textSize());
+    settings.setValue("labelPosition", int(browser()->labelPosition()));
+    settings.setValue("iconPreviews", browser()->iconPreviewsShown());
     if (auto *tree = browser()->findChild<QTreeView *>("finderListView"))
       settings.setValue("listHeader", tree->header()->saveState());
     settings.endGroup();
@@ -1401,6 +1438,11 @@ private:
 
     browser()->setFoldersFirst(
         QSettings().value("View/foldersFirst", false).toBool());
+    browser()->setGroup(Browser::Group(settings.value("group", 0).toInt()));
+    browser()->setGridSpacing(settings.value("gridSpacing", 16).toInt());
+    browser()->setTextSize(settings.value("textSize", 13).toInt());
+    browser()->setLabelPosition(Browser::LabelPosition(settings.value("labelPosition", 0).toInt()));
+    browser()->setIconPreviewsShown(settings.value("iconPreviews", true).toBool());
     restoring = false;
   }
   void showSearch() {
@@ -1426,6 +1468,24 @@ private:
     size->setRange(40, 160);
     size->setValue(browser()->iconSize());
     form->addRow("Icon size", size);
+    auto *spacing = new QSpinBox;
+    spacing->setObjectName("viewOptionGridSpacing");
+    spacing->setRange(0, 64); spacing->setValue(browser()->gridSpacing());
+    form->addRow("Grid spacing", spacing);
+    auto *textSize = new QSpinBox;
+    textSize->setObjectName("viewOptionTextSize");
+    textSize->setRange(10, 20); textSize->setValue(browser()->textSize());
+    form->addRow("Text size", textSize);
+    auto *labels = new QComboBox;
+    labels->setObjectName("viewOptionLabels"); labels->addItems({"Bottom", "Right"});
+    labels->setCurrentIndex(int(browser()->labelPosition()));
+    form->addRow("Label position", labels);
+    auto *previews = new QCheckBox("Show icon preview");
+    previews->setObjectName("viewOptionIconPreviews"); previews->setChecked(browser()->iconPreviewsShown());
+    form->addRow(previews);
+    auto *group = new QComboBox;
+    group->setObjectName("viewOptionGroup"); group->addItems({"None", "Name", "Kind", "Date Modified", "Size", "Tags"});
+    group->setCurrentIndex(int(browser()->group())); form->addRow("Group by", group);
     auto *sort = new QComboBox;
     sort->setObjectName("viewOptionSort");
     for (auto a : sortGroup->actions())
@@ -1447,15 +1507,21 @@ private:
       columns << qMakePair(c, box);
     }
     auto *defaults = new QCheckBox("Use these settings for new folders");
+    defaults->setEnabled(browser()->mode() != Browser::Columns);
     form->addRow(defaults);
     auto *buttons =
         new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Save);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, dialog,
-            [this, dialog, mode, size, sort, reverse, columns, defaults] {
+            [this, dialog, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, defaults] {
               setMode(mode->currentIndex());
               browser()->setIconSize(size->value());
+              browser()->setGridSpacing(spacing->value());
+              browser()->setTextSize(textSize->value());
+              browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex()));
+              browser()->setIconPreviewsShown(previews->isChecked());
+              browser()->setGroup(Browser::Group(group->currentIndex()));
               browser()->setSort(sort->currentData().toInt(),
                                  !reverse->isChecked());
               auto *tree = browser()->findChild<QTreeView *>("finderListView");
@@ -1505,6 +1571,13 @@ private:
     modeActions->actions()[int(browser()->mode())]->setChecked(true);
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns",
                                           "gallery"}[int(browser()->mode())]));
+    auto &state = states[browser()];
+    const auto selected = browser()->selectedUrls();
+    if (browser()->mode() == Browser::Gallery) state.gallery->setUrls(selected);
+    if (browser()->mode() == Browser::Columns) state.column->setUrls(selected);
+    if (browser()->previewShown()) state.preview->setUrls(selected);
+    for (auto *action : groupActions->actions()) action->setChecked(action->data().toInt() == int(browser()->group()));
+    if (namedActions.contains("compress")) namedActions["compress"]->setEnabled(!showingSearch() && browser()->canCompressSelection());
     {
       QSignalBlocker blocker(iconSlider);
       iconSlider->setValue(browser()->iconSize());
@@ -1609,6 +1682,7 @@ private:
     return a;
   }
   void makeActions() {
+    auto *finder = menuBar()->addMenu("Finder");
     auto *file = menuBar()->addMenu("File");
     auto *edit = menuBar()->addMenu("Edit");
     auto *view = menuBar()->addMenu("View");
@@ -1616,6 +1690,19 @@ private:
     auto *window = menuBar()->addMenu("Window");
     menuBar()->setNativeMenuBar(true);
     menuBar()->hide();
+    finder->addAction("About Finder", this, [this] {
+      auto *dialog = new QDialog(this); dialog->setAttribute(Qt::WA_DeleteOnClose);
+      dialog->setWindowTitle("About Finder for Linux");
+      auto *layout = new QVBoxLayout(dialog);
+      auto *label = new QLabel("Finder for Linux\nNative Qt / KDE file management", dialog);
+      label->setAlignment(Qt::AlignCenter); layout->addWidget(label);
+      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+      connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+      layout->addWidget(buttons); dialog->open();
+    });
+    addAction(finder, "settings", "Settings…", {"Meta+,", "Ctrl+,"}, [this] { viewOptions(); });
+    finder->addSeparator();
+    addAction(finder, "quit", "Quit Finder", {"Ctrl+Q", "Meta+Q"}, [this] { close(); });
     addAction(file, "newWindow", "New Finder Window", {"Ctrl+N", "Meta+N"},
               [this] {
                 emit newWindowRequested(QUrl::fromLocalFile(QDir::homePath()));
@@ -1637,6 +1724,9 @@ private:
               [this] { selectedOperation("rename"); });
     addAction(file, "duplicate", "Duplicate", {"Ctrl+D", "Meta+D"},
               [this] { selectedOperation("duplicate"); });
+    addAction(file, "compress", "Compress", {}, [this] {
+      if (!showingSearch()) browser()->compressSelected();
+    });
     addAction(file, "trash", "Move to Trash",
               {"Delete", "Meta+Backspace", "Ctrl+Backspace"},
               [this] { selectedOperation("trash"); });
@@ -1697,7 +1787,19 @@ private:
           crumbs->setVisible(namedActions["path"]->isChecked());
         });
     path->setCheckable(true);
-    path->setChecked(true);
+    path->setChecked(QSettings().value("Window/pathBar", false).toBool());
+    crumbs->setVisible(path->isChecked());
+    auto *statusAction = addAction(view, "statusBar", "Show Status Bar", {"Meta+/"}, [this] {
+      statusRow->setVisible(namedActions["statusBar"]->isChecked());
+      QSettings().setValue("Window/statusBar", namedActions["statusBar"]->isChecked());
+    });
+    statusAction->setCheckable(true);
+    statusAction->setChecked(QSettings().value("Window/statusBar", false).toBool());
+    statusRow->setVisible(statusAction->isChecked());
+    auto *previewAction = addAction(view, "preview", "Show Preview", {"Ctrl+Shift+P", "Meta+Shift+P"}, [this] {
+      browser()->setPreviewShown(namedActions["preview"]->isChecked()); refresh();
+    });
+    previewAction->setCheckable(true);
     for (int i = 0; i < 4; ++i)
       addAction(
           view, "mode" + QString::number(i),
@@ -1736,15 +1838,17 @@ private:
                 tabs->setCurrentIndex(
                     (tabs->currentIndex() + tabs->count() - 1) % tabs->count());
               });
-    for (auto n : {"newFolder", "open", "quickLook", "rename", "duplicate",
+    for (auto n : {"newFolder", "open", "quickLook", "rename", "duplicate", "compress",
                    "trash", "info"})
       actionsMenu->addAction(namedActions[n]);
     actionsMenu->addSeparator();
     actionsMenu->addAction(namedActions["hidden"]);
     actionsMenu->addAction(namedActions["path"]);
+    actionsMenu->addAction(namedActions["statusBar"]);
+    actionsMenu->addAction(namedActions["preview"]);
     actionsMenu->addAction(namedActions["viewOptions"]);
     actionsMenu->addSeparator();
-    for (auto menu : {file, edit, view, go, window})
+    for (auto menu : {finder, file, edit, view, go, window})
       actionsMenu->addMenu(menu);
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable,
             namedActions["undo"], &QAction::setEnabled);
