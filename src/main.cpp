@@ -119,24 +119,27 @@ protected:
     QPixmap source = sourcePixmap(Qt::LogicalCoordinates, &origin, NoPad);
     if (source.isNull())
       return;
-    QPixmap mask(source.size());
-    mask.setDevicePixelRatio(source.devicePixelRatio());
-    mask.fill(Qt::transparent);
-    QPainter m(&mask);
-    m.setRenderHint(QPainter::Antialiasing);
-    m.setPen(Qt::NoPen);
-    m.setBrush(Qt::white);
     const auto *widget = qobject_cast<QWidget *>(parent());
-    m.drawPath(
-        windowContour(QRectF(QPointF(0, 0), source.deviceIndependentSize()),
-                      widget && widget->window()->isMaximized() ? 0 : 16));
-    m.end();
+    const bool square = widget && (widget->window()->isMaximized() || widget->window()->isFullScreen());
+    if (mask.size() != source.size() || mask.devicePixelRatio() != source.devicePixelRatio() || square != squareMask) {
+      mask = QPixmap(source.size());
+      mask.setDevicePixelRatio(source.devicePixelRatio());
+      mask.fill(Qt::transparent);
+      QPainter m(&mask);
+      m.setRenderHint(QPainter::Antialiasing);
+      m.setPen(Qt::NoPen); m.setBrush(Qt::white);
+      m.drawPath(windowContour(QRectF(QPointF(0, 0), source.deviceIndependentSize()), square ? 0 : 16));
+      squareMask = square;
+    }
     QPainter clipped(&source);
     clipped.setCompositionMode(QPainter::CompositionMode_DestinationIn);
     clipped.drawPixmap(0, 0, mask);
     clipped.end();
     p->drawPixmap(origin, source);
   }
+private:
+  QPixmap mask;
+  bool squareMask = false;
 };
 
 static QIcon symbol(const QString &name) {
