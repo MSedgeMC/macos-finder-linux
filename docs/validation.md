@@ -189,3 +189,15 @@ coalesces changes into the public KIO incremental directory update. Native KIO
 retains row/selection changes; no idle polling is added. Six repeated external
 create/select/delete cycles with pinned directory timestamps passed, alongside
 the metadata and arrangement/spring-loading suites.
+
+
+## Final large-folder sample
+
+The final staged Release executable listed **5,000 files in 858 ms** on the
+originating machine, then measured **0.0% process CPU** in one-second settled
+idle samples in all four views. Resident memory was approximately **195 MiB**.
+The same harness's earlier baseline took 1,246 ms and used approximately
+192 MiB. These are single local samples, not a macOS comparison or universal
+performance guarantee. Diagnostic-call P95 was 1.84–5.79 ms across views; that
+measures the test D-Bus response and must not be reported as frame time. Builds
+and other test sessions were stopped for this measurement.
