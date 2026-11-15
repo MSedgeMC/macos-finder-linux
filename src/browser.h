@@ -4,6 +4,7 @@
 
 #include <QWidget>
 #include <QUrl>
+#include <QVariant>
 #include <KFileItem>
 #include <memory>
 
@@ -21,6 +22,35 @@ public:
     Q_ENUM(Group)
     enum LabelPosition { LabelBelow, LabelRight };
     Q_ENUM(LabelPosition)
+    // The first seven IDs deliberately match KDirModel::ModelColumns. Use
+    // these APIs, rather than KDirModel::ColumnCount, for List view controls.
+    enum ListColumn {
+        NameColumn = 0, SizeColumn, DateModifiedColumn, PermissionsColumn,
+        OwnerColumn, GroupColumn, KindColumn, DateCreatedColumn, DateAddedColumn,
+        LastOpenedColumn, TagsColumn, ListColumnCount
+    };
+    Q_ENUM(ListColumn)
+    // Available on activeView()->model() indexes in every view. Invalid
+    // QVariant means unavailable/pending, never a substituted timestamp.
+    // RawValueRole: QDateTime for dates, qulonglong for complete logical byte
+    // sizes, QStringList for Tags; native columns retain their existing roles.
+    // AccessTimeRole is filesystem access time, explicitly NOT Last Opened.
+    // TagColorsRole is QVariantList of QColor, parallel to TagsRole.
+    enum MetadataRole {
+        TagsRole = Qt::UserRole + 131, TagColorsRole = Qt::UserRole + 134,
+        RawValueRole, DateCreatedRole, DateAddedRole, LastOpenedRole,
+        LogicalSizeRole, ModificationTimeRole, AccessTimeRole,
+        MetadataPendingRole, MetadataErrorRole, DirectorySizeStateRole,
+        CalculatedBytesRole
+    };
+    Q_ENUM(MetadataRole)
+    enum SizeState { SizeNotCalculated, SizeCalculating, SizeComplete, SizeIncomplete, SizeUnavailable };
+    Q_ENUM(SizeState)
+    struct SizeCalculationLimits {
+        quint64 maxEntries = 250000;
+        int maxDepth = 64;
+        int maxMilliseconds = 15000;
+    };
     explicit Browser(QWidget *parent = nullptr);
     ~Browser() override;
     QUrl url() const;
@@ -41,6 +71,14 @@ public:
     bool canNewFolderWithSelection() const;
     int sortColumn() const;
     bool sortAscending() const;
+    int listColumnCount() const;
+    QString listColumnTitle(int column) const;
+    bool listColumnVisible(int column) const;
+    // Returns visible logical IDs in their current visual header order.
+    QList<int> visibleListColumns() const;
+    bool sizeCalculationRunning() const;
+    // Cached lookup only. An invalid value is unavailable or still pending.
+    QVariant metadata(const QUrl &url, int role) const;
     QWidget *galleryPreviewHost() const;
     QWidget *columnPreviewHost() const;
     QWidget *previewHost() const;
@@ -70,6 +108,19 @@ public slots:
     void newFolder();
     void newFolderWithSelection();
     void autoSizeListColumns(int column = -1);
+    // Name always remains visible. Visibility/order/width persist in view state.
+    void setListColumnVisible(int column, bool visible);
+    // Explicit, one-worker scan of loaded direct child folders in the current
+    // location (including filtered/hidden loaded rows), at most 4096 roots.
+    // Sums regular-file logical lengths, including hidden files, without
+    // following symlinks or crossing devices. Incomplete totals remain marked
+    // partial and are not exposed as LogicalSizeRole. Bounds apply to the whole
+    // request; navigation/real listing changes/destruction cancel stale work.
+    // Calling while running is a no-op; cancel is asynchronous and nonblocking.
+    void calculateAllSizes();
+    void calculateAllSizes(SizeCalculationLimits limits);
+    void cancelSizeCalculation();
+    void refreshMetadata();
     void copySelected(bool cut = false);
     void paste(bool move = false);
     void trashSelected();
@@ -81,6 +132,10 @@ signals:
     // Emitted synchronously before exec(); the menu is stack-owned and valid
     // only during this call. Connect directly to append shared app actions.
     void contextMenuRequested(QMenu *menu, const KFileItemList &items);
+    void listColumnsChanged();
+    void sizeCalculationRunningChanged(bool running);
+    void sizeCalculationProgress(quint64 entriesVisited, int foldersCompleted, int totalFolders);
+    void sizeCalculationFinished(bool canceled, bool limited, const QString &message);
     void urlChanged(const QUrl &url);
     void selectionChanged(const KFileItemList &items);
     void countChanged(int count);

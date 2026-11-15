@@ -12,8 +12,11 @@
 #include <QColumnView>
 #include <QCollator>
 #include <QDate>
+#include <QDateTime>
+#include <QLocale>
 #include <QDir>
 #include <QDropEvent>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QHash>
@@ -78,10 +81,19 @@
 #include <functional>
 #include <algorithm>
 #include <array>
+#include <KIO/Global>
+#include <atomic>
+#include <cerrno>
+#include <cstring>
+#include <limits>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 using DropHandler = std::function<void(QDropEvent *, const QModelIndex &)>;
-constexpr int TagsRole = Qt::UserRole + 131;
+constexpr int TagsRole = Browser::TagsRole;
 constexpr int SectionStartRole = Qt::UserRole + 132;
 constexpr int CutRole = Qt::UserRole + 133;
 constexpr int SectionHeight = 30;
@@ -90,6 +102,277 @@ QString itemType(const KFileItem &item) {
     const auto supplied = item.entry().stringValue(KIO::UDSEntry::UDS_DISPLAY_TYPE);
     // Unlike mimeComment(), this does not open .desktop/.directory files.
     return supplied.isEmpty() ? item.currentMimeType().comment() : supplied;
+}
+
+// Keep the KDirModel tree and its native column identities. Additional indexes
+// share the native row pointer; all native KIO/selection/thumbnail paths continue
+// to map straight through FinderProxy to this real directory model.
+class MetadataDirModel : public KDirModel {
+public:
+    explicit MetadataDirModel(QObject *parent) : KDirModel(parent) {
+        birthTimer.setSingleShot(true);
+        birthTimer.setInterval(40);
+        QObject::connect(&birthTimer, &QTimer::timeout, this, [this] { readBirthTimes(); });
+        QObject::connect(this, &QAbstractItemModel::rowsInserted, this,
+            [this](const QModelIndex &parent, int first, int last) { enqueueBirthTimes(parent, first, last); });
+        QObject::connect(this, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            [this](const QModelIndex &parent, int first, int last) {
+                for (int row = first; row <= last; ++row) {
+                    const auto item = itemForIndex(index(row, 0, parent));
+                    births.remove(item.url()); pendingBirths.remove(item.url());
+                }
+            });
+        QObject::connect(this, &QAbstractItemModel::modelReset, this, [this] { refreshMetadata(); });
+        QObject::connect(dirLister(), &KDirLister::refreshItems, this,
+            [this](const QList<QPair<KFileItem, KFileItem>> &items) {
+                if (items.isEmpty()) return;
+                for (const auto &pair : items) { births.remove(pair.first.url()); births.remove(pair.second.url()); }
+                restartBirthTimes();
+            });
+    }
+    ~MetadataDirModel() override { if (birthWorker) birthWorker->requestInterruption(); }
+    int columnCount(const QModelIndex & = {}) const override { return Browser::ListColumnCount; }
+    QModelIndex index(int row, int column, const QModelIndex &parent = {}) const override {
+        if (column < 0 || column >= Browser::ListColumnCount) return {};
+        if (column < KDirModel::ColumnCount) return KDirModel::index(row, column, parent);
+        const auto native = KDirModel::index(row, 0, parent);
+        return native.isValid() ? createIndex(row, column, native.internalPointer()) : QModelIndex();
+    }
+    QModelIndex sibling(int row, int column, const QModelIndex &from) const override {
+        return index(row, column, parent(from));
+    }
+    Qt::ItemFlags flags(const QModelIndex &index) const override {
+        const auto native = index.siblingAtColumn(0);
+        const auto flags = KDirModel::flags(native);
+        return index.column() >= KDirModel::ColumnCount ? flags & ~Qt::ItemIsEditable : KDirModel::flags(index);
+    }
+    QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override {
+        if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
+            switch (section) {
+            case Browser::DateCreatedColumn: return QStringLiteral("Date Created");
+            case Browser::DateAddedColumn: return QStringLiteral("Date Added");
+            case Browser::LastOpenedColumn: return QStringLiteral("Last Opened");
+            case Browser::TagsColumn: return QStringLiteral("Tags");
+            default: break;
+            }
+        }
+        return KDirModel::headerData(section, orientation, role);
+    }
+    QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
+        if (!index.isValid()) return {};
+        const auto item = itemForIndex(index.siblingAtColumn(0));
+        const auto entry = item.entry();
+        const auto timestamp = [&entry](uint field) -> QVariant {
+            return entry.contains(field) ? QVariant(QDateTime::fromSecsSinceEpoch(entry.numberValue(field))) : QVariant();
+        };
+        if (role == Browser::DateCreatedRole) {
+            if (!item.url().isLocalFile() && entry.contains(KIO::UDSEntry::UDS_CREATION_TIME)) return timestamp(KIO::UDSEntry::UDS_CREATION_TIME);
+            const auto date = births.value(item.url());
+            return date.isValid() ? QVariant(date) : QVariant();
+        }
+        if (role == Browser::DateAddedRole || role == Browser::LastOpenedRole) return {};
+        if (role == Browser::ModificationTimeRole) return timestamp(KIO::UDSEntry::UDS_MODIFICATION_TIME);
+        if (role == Browser::AccessTimeRole) return timestamp(KIO::UDSEntry::UDS_ACCESS_TIME);
+        if (role == Browser::LogicalSizeRole)
+            return !item.isDir() && entry.contains(KIO::UDSEntry::UDS_SIZE) ? QVariant::fromValue(qulonglong(item.size())) : QVariant();
+        if (role == Browser::MetadataPendingRole)
+            return pendingBirths.contains(item.url());
+        if (role == Browser::RawValueRole) {
+            switch (index.column()) {
+            case Browser::SizeColumn: return data(index, Browser::LogicalSizeRole);
+            case Browser::DateModifiedColumn: return data(index, Browser::ModificationTimeRole);
+            case Browser::DateCreatedColumn: return data(index, Browser::DateCreatedRole);
+            case Browser::DateAddedColumn: return data(index, Browser::DateAddedRole);
+            case Browser::LastOpenedColumn: return data(index, Browser::LastOpenedRole);
+            default: return index.column() < KDirModel::ColumnCount ? KDirModel::data(index, Qt::DisplayRole) : QVariant();
+            }
+        }
+        if (index.column() >= KDirModel::ColumnCount) {
+            if (role == Qt::TextAlignmentRole) return int(Qt::AlignLeft | Qt::AlignVCenter);
+            if (role == Qt::DisplayRole || role == Qt::ToolTipRole) {
+                const auto date = data(index, Browser::RawValueRole).toDateTime();
+                if (date.isValid()) return QLocale().toString(date, QLocale::ShortFormat);
+                if (role == Qt::ToolTipRole) {
+                    if (index.column() == Browser::DateAddedColumn) return QStringLiteral("Unavailable: no date-added provider is connected.");
+                    if (index.column() == Browser::LastOpenedColumn) return QStringLiteral("Unavailable: no application-open history provider is connected. Filesystem access time is not last opened.");
+                    return QStringLiteral("Unavailable: the filesystem/provider supplies no real creation time.");
+                }
+                return index.column() == Browser::DateCreatedColumn && pendingBirths.contains(item.url()) ?
+                    QStringLiteral("Reading…") : QStringLiteral("—");
+            }
+            if (role == KDirModel::FileItemRole || role == KDirModel::ChildCountRole ||
+                role == KDirModel::HasJobRole || role == KDirModel::HandleSequencesRole)
+                return KDirModel::data(index.siblingAtColumn(0), role);
+            return {};
+        }
+        return KDirModel::data(index, role);
+    }
+    void refreshMetadata() {
+        births.clear();
+        restartBirthTimes();
+    }
+private:
+    QHash<QUrl, QDateTime> births;
+    QSet<QUrl> pendingBirths;
+    QQueue<QUrl> birthQueue;
+    QTimer birthTimer;
+    QPointer<QThread> birthWorker;
+    quint64 birthRevision = 0;
+    void restartBirthTimes() {
+        ++birthRevision;
+        if (birthWorker) birthWorker->requestInterruption();
+        birthQueue.clear(); pendingBirths.clear(); birthTimer.stop();
+        enqueueBirthTimes({}, 0, rowCount() - 1);
+    }
+    void enqueueBirthTimes(const QModelIndex &parent, int first, int last) {
+        for (int row = first; row <= last; ++row) {
+            const auto index = this->index(row, 0, parent);
+            const auto item = itemForIndex(index);
+            if (item.url().isLocalFile() && !item.isLink() &&
+                !births.contains(item.url()) && !pendingBirths.contains(item.url())) {
+                pendingBirths.insert(item.url()); birthQueue.enqueue(item.url());
+            }
+            const int children = rowCount(index);
+            if (children) enqueueBirthTimes(index, 0, children - 1);
+        }
+        if (!birthWorker && !birthQueue.isEmpty() && !birthTimer.isActive()) birthTimer.start();
+    }
+    void readBirthTimes() {
+        if (birthWorker) return;
+        QList<QUrl> urls;
+        while (!birthQueue.isEmpty() && urls.size() < 128) {
+            const auto url = birthQueue.dequeue();
+            if (pendingBirths.contains(url) && !births.contains(url)) urls.append(url);
+        }
+        if (urls.isEmpty()) return;
+        const auto revision = birthRevision;
+        auto result = std::make_shared<QHash<QUrl, QDateTime>>();
+        auto *worker = QThread::create([urls, result] {
+            for (const auto &url : urls) {
+                if (QThread::currentThread()->isInterruptionRequested()) break;
+                // QFileInfo birthTime returns invalid when unsupported; ctime
+                // and atime are never used to fabricate Finder metadata.
+                result->insert(url, QFileInfo(url.toLocalFile()).birthTime());
+            }
+        });
+        birthWorker = worker;
+        QObject::connect(worker, &QThread::finished, this, [this, revision, result] {
+            birthWorker = nullptr;
+            if (revision == birthRevision) {
+                for (auto it = result->cbegin(); it != result->cend(); ++it) {
+                    births.insert(it.key(), it.value()); pendingBirths.remove(it.key());
+                    const auto index = indexForUrl(it.key());
+                    if (index.isValid()) emit dataChanged(index, index.siblingAtColumn(Browser::ListColumnCount - 1),
+                        {Qt::DisplayRole, Qt::ToolTipRole, Browser::DateCreatedRole, Browser::RawValueRole, Browser::MetadataPendingRole});
+                }
+            }
+            if (!birthQueue.isEmpty()) birthTimer.start(0);
+        });
+        QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+        worker->start();
+    }
+};
+
+struct DirectorySize {
+    Browser::SizeState state = Browser::SizeNotCalculated;
+    quint64 bytes = 0;
+    QString error;
+};
+struct SizeScan {
+    QHash<QUrl, DirectorySize> sizes;
+    std::atomic<quint64> entries{0};
+    std::atomic<int> completed{0};
+    std::atomic<bool> cancelRequested{false};
+    bool canceled = false;
+    bool limited = false;
+};
+
+// Use directory descriptors and no-follow stat/open calls. Symlink loops never
+// enter the traversal, and path replacement cannot redirect an opened parent.
+// The worker owns only a bounded stack of DIR handles, never any GUI/model.
+void scanDirectorySizes(const QList<QUrl> &urls, Browser::SizeCalculationLimits limits, const std::shared_ptr<SizeScan> &scan) {
+    QElapsedTimer elapsed; elapsed.start();
+    const auto stopped = [&] {
+        if (scan->cancelRequested.load() || QThread::currentThread()->isInterruptionRequested()) { scan->canceled = true; return true; }
+        if (scan->entries.load() >= limits.maxEntries || elapsed.elapsed() >= limits.maxMilliseconds) {
+            scan->limited = true; return true;
+        }
+        return false;
+    };
+    for (const auto &url : urls) {
+        DirectorySize size;
+        size.state = Browser::SizeComplete;
+        if (stopped()) {
+            size.state = Browser::SizeIncomplete;
+            size.error = scan->canceled ? QStringLiteral("Calculation canceled.") : QStringLiteral("Calculation budget reached.");
+            scan->sizes.insert(url, size);
+            continue;
+        }
+        const auto path = QFile::encodeName(url.toLocalFile());
+        const int rootFd = ::open(path.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+        struct stat rootStat{};
+        if (rootFd < 0 || ::fstat(rootFd, &rootStat) != 0) {
+            size.state = Browser::SizeUnavailable;
+            size.error = QString::fromLocal8Bit(std::strerror(errno));
+            if (rootFd >= 0) ::close(rootFd);
+            scan->sizes.insert(url, size); ++scan->completed;
+            continue;
+        }
+        DIR *root = ::fdopendir(rootFd);
+        if (!root) {
+            size.state = Browser::SizeUnavailable;
+            size.error = QString::fromLocal8Bit(std::strerror(errno)); ::close(rootFd);
+            scan->sizes.insert(url, size); ++scan->completed;
+            continue;
+        }
+        struct Frame { DIR *directory; int depth; };
+        QList<Frame> stack{{root, 0}};
+        const auto incomplete = [&size](const QString &reason) {
+            size.state = Browser::SizeIncomplete;
+            if (size.error.isEmpty()) size.error = reason;
+        };
+        while (!stack.isEmpty()) {
+            if (stopped()) {
+                incomplete(scan->canceled ? QStringLiteral("Calculation canceled.") : QStringLiteral("Calculation budget reached."));
+                break;
+            }
+            const auto frame = stack.last();
+            errno = 0;
+            const auto *entry = ::readdir(frame.directory);
+            if (!entry) {
+                if (errno) incomplete(QString::fromLocal8Bit(std::strerror(errno)));
+                ::closedir(frame.directory); stack.removeLast();
+                continue;
+            }
+            if (!std::strcmp(entry->d_name, ".") || !std::strcmp(entry->d_name, "..")) continue;
+            ++scan->entries;
+            struct stat info{};
+            if (::fstatat(::dirfd(frame.directory), entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+                incomplete(QString::fromLocal8Bit(std::strerror(errno))); continue;
+            }
+            if (S_ISLNK(info.st_mode)) continue;
+            if (info.st_dev != rootStat.st_dev) { incomplete(QStringLiteral("A mounted filesystem was skipped.")); continue; }
+            if (S_ISREG(info.st_mode)) {
+                const auto bytes = quint64(qMax<off_t>(0, info.st_size));
+                if (bytes > std::numeric_limits<quint64>::max() - size.bytes) incomplete(QStringLiteral("Logical size overflow."));
+                else size.bytes += bytes;
+            } else if (S_ISDIR(info.st_mode)) {
+                if (frame.depth >= limits.maxDepth) { scan->limited = true; incomplete(QStringLiteral("Directory depth limit reached.")); continue; }
+                const int fd = ::openat(::dirfd(frame.directory), entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+                struct stat opened{};
+                if (fd < 0 || ::fstat(fd, &opened) != 0) {
+                    incomplete(QString::fromLocal8Bit(std::strerror(errno))); if (fd >= 0) ::close(fd); continue;
+                }
+                if (opened.st_dev != rootStat.st_dev) { ::close(fd); incomplete(QStringLiteral("A mounted filesystem was skipped.")); continue; }
+                DIR *child = ::fdopendir(fd);
+                if (!child) { incomplete(QString::fromLocal8Bit(std::strerror(errno))); ::close(fd); continue; }
+                stack.append({child, frame.depth + 1});
+            }
+        }
+        for (const auto &frame : stack) ::closedir(frame.directory);
+        scan->sizes.insert(url, size);
+        ++scan->completed;
+    }
 }
 
 // Files remain real KDirModel rows. Categorization changes their order and
@@ -105,7 +388,7 @@ public:
         groupTimer.setSingleShot(true);
         groupTimer.setInterval(200);
         QObject::connect(&groupTimer, &QTimer::timeout, this, [this] {
-            if (grouping == Browser::GroupTags) invalidate();
+            if (grouping == Browser::GroupTags || sortColumn() == Browser::TagsColumn) invalidate();
         });
         refreshPreferences();
     }
@@ -113,6 +396,7 @@ public:
     Browser::Group grouping = Browser::GroupNone;
     QSet<QUrl> cutUrls;
     bool foldersFirstPreference = false;
+    QHash<QUrl, DirectorySize> directorySizes;
     QSize decorationSize{64, 64};
     qreal decorationScale = 1;
 
@@ -132,12 +416,32 @@ public:
         setSortFoldersFirst(enabled && sortColumn() == KDirModel::Name);
     }
 
+    void sizesChanged(const QList<QUrl> &urls) {
+        for (const auto &url : urls) {
+            const auto source = static_cast<KDirModel *>(sourceModel())->indexForUrl(url);
+            const auto index = mapFromSource(source).siblingAtColumn(Browser::SizeColumn);
+            if (index.isValid()) emit dataChanged(index, index,
+                {Qt::DisplayRole, Qt::ToolTipRole, Browser::LogicalSizeRole, Browser::CalculatedBytesRole,
+                 Browser::DirectorySizeStateRole, Browser::MetadataErrorRole, Browser::RawValueRole});
+        }
+        if (sortColumn() == Browser::SizeColumn) invalidate();
+    }
     void setGroup(Browser::Group value) {
         grouping = value;
         setCategorizedModel(value != Browser::GroupNone);
         invalidate();
     }
     void watchSource() {
+        QObject::connect(static_cast<KDirModel *>(sourceModel())->dirLister(), &KDirLister::refreshItems, this,
+            [this](const QList<QPair<KFileItem, KFileItem>> &items) {
+                if (items.isEmpty()) return;
+                for (const auto &pair : items) {
+                    for (const auto &url : {pair.first.url(), pair.second.url()}) {
+                        tagCache.remove(url); tagErrors.remove(url); tagCategories.remove(url);
+                    }
+                }
+                restartTagReads();
+            });
         QObject::connect(sourceModel(), &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &parent, int first, int last) {
             enqueueTags(parent, first, last);
         });
@@ -150,21 +454,52 @@ public:
         // The host calls refreshTags after its real tag-writing job finishes.
     }
     void refreshTags() {
-        ++tagRevision;
-        if (tagWorker) tagWorker->requestInterruption();
-        tagTimer.stop();
-        groupTimer.stop();
-        tagQueue.clear();
-        queuedTags.clear();
-        tagCache.clear();
-        tagErrors.clear();
-        tagCategories.clear();
-        tintCache.clear();
-        if (grouping == Browser::GroupTags) invalidate();
-        enqueueTags({}, 0, sourceModel()->rowCount() - 1);
+        tagCache.clear(); tagErrors.clear(); tagCategories.clear();
+        restartTagReads();
     }
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
-        if (role == TagsRole) return tagCache.value(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
+        if (!index.isValid()) return {};
+        const auto item = mapToSource(index).siblingAtColumn(0).data(KDirModel::FileItemRole).value<KFileItem>();
+        const auto url = item.url();
+        if (role == Browser::DirectorySizeStateRole)
+            return item.isDir() ? directorySizes.value(url).state : Browser::SizeNotCalculated;
+        if (item.isDir() && (role == Browser::LogicalSizeRole || role == Browser::CalculatedBytesRole ||
+            (role == Browser::RawValueRole && index.column() == Browser::SizeColumn))) {
+            const auto found = directorySizes.constFind(url);
+            return found != directorySizes.cend() && (found->state == Browser::SizeComplete ||
+                (role == Browser::CalculatedBytesRole && found->state == Browser::SizeIncomplete)) ?
+                QVariant::fromValue(qulonglong(found->bytes)) : QVariant();
+        }
+        if (item.isDir() && index.column() == Browser::SizeColumn && (role == Qt::DisplayRole || role == Qt::ToolTipRole)) {
+            const auto size = directorySizes.value(url);
+            if (role == Qt::ToolTipRole) return size.error.isEmpty() ?
+                (size.state == Browser::SizeNotCalculated ? QStringLiteral("Use Calculate All Sizes to measure folder contents.") :
+                 QStringLiteral("Logical file sizes; symlinks excluded, other filesystem devices skipped.")) : size.error;
+            switch (size.state) {
+            case Browser::SizeCalculating: return QStringLiteral("Calculating…");
+            case Browser::SizeComplete: return KIO::convertSize(size.bytes);
+            case Browser::SizeIncomplete: return QStringLiteral("≥ %1 (partial)").arg(KIO::convertSize(size.bytes));
+            default: return QStringLiteral("—");
+            }
+        }
+        if (role == TagsRole || (role == Browser::RawValueRole && index.column() == Browser::TagsColumn))
+            return tagCache.contains(url) && !tagErrors.contains(url) ? QVariant(tagCache.value(url)) : QVariant();
+        if (role == Browser::TagColorsRole) {
+            if (!tagCache.contains(url) || tagErrors.contains(url)) return {};
+            QVariantList colors;
+            for (const auto &tag : tagCache.value(url)) colors.append(FileTags::tagColor(tag));
+            return colors;
+        }
+        if (role == Browser::MetadataPendingRole && index.column() == Browser::TagsColumn) return queuedTags.contains(url);
+        if (role == Browser::MetadataErrorRole) return index.column() == Browser::SizeColumn && item.isDir() ?
+            directorySizes.value(url).error : tagErrors.value(url);
+        if (index.column() == Browser::TagsColumn && (role == Qt::DisplayRole || role == Qt::ToolTipRole)) {
+            if (tagErrors.contains(url)) return role == Qt::ToolTipRole ? tagErrors.value(url) : QStringLiteral("—");
+            if (!url.isLocalFile() || item.isLink()) return role == Qt::ToolTipRole ?
+                QStringLiteral("Unavailable: tags require a supported local inode.") : QStringLiteral("—");
+            if (!tagCache.contains(url)) return QStringLiteral("Reading…");
+            return tagCache.value(url).join(QStringLiteral(", "));
+        }
         if (role == CutRole) return cutUrls.contains(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
         if ((role == Qt::DisplayRole || role == Qt::ToolTipRole) && index.column() == KDirModel::Name) {
             const auto item = mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>();
@@ -215,7 +550,9 @@ public:
     }
 protected:
     bool subSortLessThan(const QModelIndex &left, const QModelIndex &right) const override {
-        if (left.column() != KDirModel::Type) return KDirSortFilterProxyModel::subSortLessThan(left, right);
+        const int column = left.column();
+        if (column != KDirModel::Type && column != KDirModel::Size && column < KDirModel::ColumnCount)
+            return KDirSortFilterProxyModel::subSortLessThan(left, right);
         const auto a = left.data(KDirModel::FileItemRole).value<KFileItem>();
         const auto b = right.data(KDirModel::FileItemRole).value<KFileItem>();
         const bool ascending = sortOrder() == Qt::AscendingOrder;
@@ -224,9 +561,29 @@ protected:
         // KDirSortFilterProxyModel's Type comparison calls mimetype(), which
         // can sniff file contents. The lister's delayed MIME types are enough
         // for ordering; native thumbnail delivery can refine them afterwards.
-        const auto aMime = a.currentMimeType();
-        const auto bMime = b.currentMimeType();
-        int result = aMime.name() == bMime.name() ? 0 : collator.compare(itemType(a), itemType(b));
+        int result = 0;
+        if (column >= KDirModel::ColumnCount || column == KDirModel::Size) {
+            const auto raw = [this, column](const QModelIndex &index, const KFileItem &item) -> QVariant {
+                if (column == Browser::TagsColumn) return tagCache.contains(item.url()) && !tagErrors.contains(item.url()) ?
+                    QVariant(tagCache.value(item.url())) : QVariant();
+                if (column == Browser::SizeColumn && item.isDir()) {
+                    const auto found = directorySizes.constFind(item.url());
+                    return found != directorySizes.cend() && found->state == Browser::SizeComplete ?
+                        QVariant::fromValue(qulonglong(found->bytes)) : QVariant();
+                }
+                return index.data(Browser::RawValueRole);
+            };
+            const auto av = raw(left, a);
+            const auto bv = raw(right, b);
+            if (av.isValid() != bv.isValid()) return av.isValid() == ascending; // Unavailable always last.
+            if (column == Browser::SizeColumn && av.isValid()) result = av.toULongLong() < bv.toULongLong() ? -1 : av.toULongLong() > bv.toULongLong() ? 1 : 0;
+            else if (column == Browser::TagsColumn) result = collator.compare(av.toStringList().join(", "), bv.toStringList().join(", "));
+            else if (av.isValid()) result = av.toDateTime() < bv.toDateTime() ? -1 : av.toDateTime() > bv.toDateTime() ? 1 : 0;
+        } else {
+            const auto aMime = a.currentMimeType();
+            const auto bMime = b.currentMimeType();
+            result = aMime.name() == bMime.name() ? 0 : collator.compare(itemType(a), itemType(b));
+        }
         if (!result) result = collator.compare(a.text(), b.text());
         if (!result) result = QString::compare(a.text(), b.text(), Qt::CaseSensitive);
         if (!result) result = QString::compare(a.url().toString(), b.url().toString(), Qt::CaseSensitive);
@@ -308,6 +665,13 @@ private:
         default: return {};
         }
     }
+    void restartTagReads() {
+        ++tagRevision;
+        if (tagWorker) tagWorker->requestInterruption();
+        tagTimer.stop(); groupTimer.stop(); tagQueue.clear(); queuedTags.clear(); tintCache.clear();
+        if (grouping == Browser::GroupTags || sortColumn() == Browser::TagsColumn) invalidate();
+        enqueueTags({}, 0, sourceModel()->rowCount() - 1);
+    }
     void enqueueTags(const QModelIndex &parent, int first, int last) {
         for (int row = first; row <= last; ++row) {
             const auto index = sourceModel()->index(row, 0, parent);
@@ -386,10 +750,12 @@ private:
                     int last = first;
                     while (last + 1 < changed.size() && changed[last + 1].parent() == changed[first].parent() &&
                            changed[last + 1].row() == changed[last].row() + 1) ++last;
-                    emit dataChanged(changed[first], changed[last], tintFolders ? QList<int>{TagsRole, Qt::DecorationRole} : QList<int>{TagsRole});
+                    emit dataChanged(changed[first], changed[last].siblingAtColumn(Browser::ListColumnCount - 1),
+                        {TagsRole, Browser::TagColorsRole, Browser::RawValueRole, Browser::MetadataPendingRole,
+                         Browser::MetadataErrorRole, Qt::DisplayRole, Qt::ToolTipRole, Qt::DecorationRole});
                     first = last + 1;
                 }
-                if (grouping == Browser::GroupTags && !groupTimer.isActive()) groupTimer.start();
+                if ((grouping == Browser::GroupTags || sortColumn() == Browser::TagsColumn) && !groupTimer.isActive()) groupTimer.start();
             }
             if (!tagQueue.isEmpty()) tagTimer.start(0);
             else if (groupTimer.isActive()) groupTimer.start(0);
@@ -436,7 +802,7 @@ public:
         return size;
     }
     void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        const QStringList tags = index.column() == KDirModel::Name ? index.data(TagsRole).toStringList() : QStringList();
+        const QStringList tags = index.column() == KDirModel::Name || index.column() == Browser::TagsColumn ? index.data(TagsRole).toStringList() : QStringList();
         QStyleOptionViewItem content(option);
         if (sectionRows && index.data(SectionStartRole).toBool()) content.rect.setTop(content.rect.top() + SectionHeight);
         const int dotsWidth = tags.isEmpty() ? 0 : qMin(3, int(tags.size())) * 9 + 6;
@@ -798,6 +1164,20 @@ public:
     QPointer<KIO::PreviewJob> thumbnailJob;
     QSet<QUrl> thumbnailRequests;
     quint64 thumbnailRevision = 0;
+    QPointer<QThread> sizeWorker;
+    QTimer sizeProgressTimer;
+    std::shared_ptr<SizeScan> sizeScan;
+    quint64 sizeRevision = 0;
+    int sizeRoots = 0;
+    void invalidateSizes() {
+        ++sizeRevision;
+        if (sizeScan) sizeScan->cancelRequested = true;
+        if (sizeWorker) sizeWorker->requestInterruption();
+        const auto urls = proxy->directorySizes.keys();
+        proxy->directorySizes.clear();
+        proxy->sizesChanged(urls);
+    }
+    ~Private() { if (sizeWorker) sizeWorker->requestInterruption(); }
     QUrl rootUrl;
     QUrl currentUrl;
     Mode currentMode = Icons;
@@ -843,6 +1223,10 @@ public:
     }
 
     explicit Private(Browser *owner) : q(owner) {
+        sizeProgressTimer.setInterval(100);
+        QObject::connect(&sizeProgressTimer, &QTimer::timeout, q, [this] {
+            if (sizeScan) emit q->sizeCalculationProgress(sizeScan->entries.load(), sizeScan->completed.load(), sizeRoots);
+        });
         thumbnailTimer.setSingleShot(true);
         thumbnailTimer.setInterval(120);
         QObject::connect(&thumbnailTimer, &QTimer::timeout, q, [this] { updateVisibleThumbnails(); });
@@ -1153,7 +1537,7 @@ public:
 
 Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>(this)) {
     setObjectName(QStringLiteral("finderBrowser"));
-    d->model = new KDirModel(this);
+    d->model = new MetadataDirModel(this);
     d->model->setDropsAllowed(KDirModel::DropOnDirectory);
     d->model->dirLister()->setMainWindow(window());
     d->model->dirLister()->setAutoErrorHandlingEnabled(true);
@@ -1228,6 +1612,10 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->list->setColumnWidth(KDirModel::Name, 300); d->list->setColumnWidth(KDirModel::Size, 100);
     d->list->setColumnWidth(KDirModel::ModifiedTime, 185); d->list->setColumnWidth(KDirModel::Type, 160);
     for (int column : {KDirModel::Permissions, KDirModel::Owner, KDirModel::Group}) d->list->hideColumn(column);
+    for (int column = DateCreatedColumn; column < ListColumnCount; ++column) {
+        d->list->setColumnWidth(column, column == TagsColumn ? 180 : 185);
+        d->list->hideColumn(column);
+    }
     d->list->header()->moveSection(d->list->header()->visualIndex(KDirModel::Type), 3);
     d->list->header()->setStretchLastSection(false);
     d->list->header()->setSectionsMovable(true);
@@ -1247,11 +1635,11 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
             ->setEnabled(section >= 0);
         menu.addAction(QStringLiteral("Resize All Columns to Fit"), this, [this] { autoSizeListColumns(); });
         menu.addSeparator();
-        for (int column = 0; column < KDirModel::ColumnCount; ++column) {
+        for (int column = 0; column < listColumnCount(); ++column) {
             auto *action = menu.addAction(d->proxy->headerData(column, Qt::Horizontal).toString());
             action->setCheckable(true); action->setChecked(!d->list->isColumnHidden(column));
             action->setEnabled(column != KDirModel::Name);
-            connect(action, &QAction::toggled, this, [this, column](bool visible) { d->list->setColumnHidden(column, !visible); });
+            connect(action, &QAction::toggled, this, [this, column](bool visible) { setListColumnVisible(column, visible); });
         }
         menu.exec(d->list->header()->mapToGlobal(point));
     });
@@ -1271,12 +1659,15 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         }
     });
     connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) { emit errorOccurred(job->errorString()); });
+    connect(d->model->dirLister(), &KDirLister::itemsDeleted, this, [this] { d->invalidateSizes(); });
+    connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->invalidateSizes(); });
     connect(d->model->dirLister(), &KDirLister::newItems, this, [this](const KFileItemList &items) {
+        if (!items.isEmpty()) d->invalidateSizes();
         for (const auto &item : items) d->thumbnailRequests.remove(item.url());
         d->scheduleThumbnails();
     });
     connect(d->model->dirLister(), &KDirLister::refreshItems, this, [this](const QList<QPair<KFileItem, KFileItem>> &items) {
-        if (!items.isEmpty()) d->resetThumbnailRequests();
+        if (!items.isEmpty()) { d->invalidateSizes(); d->resetThumbnailRequests(); }
     });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
     connect(d->model, &QAbstractItemModel::rowsRemoved, this, [this] { d->count(); });
@@ -1330,9 +1721,11 @@ QByteArray Browser::saveViewState() const {
     }
     QJsonArray columns;
     for (int width : d->columns->columnWidths()) columns.append(width);
+    QJsonArray visible;
+    for (int column : visibleListColumns()) visible.append(column);
     return QJsonDocument(QJsonObject{{"version", 1}, {"mode", int(mode())}, {"modes", modes},
         {"previewWidth", previewWidth()}, {"listHeader", QString::fromLatin1(d->list->header()->saveState().toBase64())},
-        {"columnWidths", columns}}).toJson(QJsonDocument::Compact);
+        {"columnWidths", columns}, {"listVisibleColumns", visible}}).toJson(QJsonDocument::Compact);
 }
 void Browser::restoreViewState(const QByteArray &state) {
     const auto object = QJsonDocument::fromJson(state).object();
@@ -1343,7 +1736,7 @@ void Browser::restoreViewState(const QByteArray &state) {
         auto &options = d->viewOptions[number];
         options.size = number == Columns ? 18 : number == List ? qBound(16, saved.value("iconSize").toInt(18), 32) :
             qBound(32, saved.value("iconSize").toInt(64), 256);
-        options.sort = qBound(0, saved.value("sort").toInt(), int(KDirModel::ColumnCount) - 1);
+        options.sort = qBound(0, saved.value("sort").toInt(), int(ListColumnCount) - 1);
         options.ascending = saved.value("ascending").toBool(true);
         options.group = Group(qBound(0, saved.value("group").toInt(), int(GroupTags)));
         options.previews = saved.value("previews").toBool(true);
@@ -1364,6 +1757,15 @@ void Browser::restoreViewState(const QByteArray &state) {
     setPreviewWidth(object.value("previewWidth").toInt(280));
     const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
     if (!header.isEmpty()) d->list->header()->restoreState(header);
+    if (object.contains("listVisibleColumns")) {
+        QSet<int> visible{NameColumn};
+        for (const auto &value : object.value("listVisibleColumns").toArray()) visible.insert(value.toInt());
+        for (int column = 1; column < listColumnCount(); ++column) d->list->setColumnHidden(column, !visible.contains(column));
+    } else {
+        // Legacy states know only native columns. New metadata starts optional.
+        for (int column = DateCreatedColumn; column < ListColumnCount; ++column) d->list->hideColumn(column);
+    }
+    d->list->showColumn(NameColumn);
     // Header state includes a sort indicator and may sort the proxy as a side
     // effect. Per-mode saved sort remains authoritative after geometry restore.
     setSort(d->viewOptions[mode()].sort, d->viewOptions[mode()].ascending);
@@ -1375,6 +1777,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
     d->changing = previousChanging;
     d->selected();
+    emit listColumnsChanged();
 }
 bool Browser::canCompressSelection() const {
     const auto urls = selectedUrls();
@@ -1394,6 +1797,95 @@ bool Browser::canNewFolderWithSelection() const {
 }
 int Browser::sortColumn() const { return d->proxy->sortColumn(); }
 bool Browser::sortAscending() const { return d->proxy->sortOrder() == Qt::AscendingOrder; }
+int Browser::listColumnCount() const { return d->proxy->columnCount(); }
+QString Browser::listColumnTitle(int column) const {
+    return column >= 0 && column < listColumnCount() ? d->proxy->headerData(column, Qt::Horizontal).toString() : QString();
+}
+bool Browser::listColumnVisible(int column) const {
+    return column >= 0 && column < listColumnCount() && !d->list->isColumnHidden(column);
+}
+QList<int> Browser::visibleListColumns() const {
+    QList<int> columns;
+    for (int visual = 0; visual < listColumnCount(); ++visual) {
+        const int logical = d->list->header()->logicalIndex(visual);
+        if (listColumnVisible(logical)) columns.append(logical);
+    }
+    return columns;
+}
+void Browser::setListColumnVisible(int column, bool visible) {
+    if (column < 0 || column >= listColumnCount() || column == NameColumn || listColumnVisible(column) == visible) return;
+    d->list->setColumnHidden(column, !visible);
+    emit listColumnsChanged();
+}
+QVariant Browser::metadata(const QUrl &url, int role) const {
+    const auto source = d->model->indexForUrl(url);
+    return source.isValid() ? d->proxy->mapFromSource(source).data(role) : QVariant();
+}
+void Browser::refreshMetadata() { d->invalidateSizes(); static_cast<MetadataDirModel *>(d->model)->refreshMetadata(); d->proxy->refreshTags(); }
+bool Browser::sizeCalculationRunning() const { return !d->sizeWorker.isNull(); }
+void Browser::cancelSizeCalculation() {
+    if (d->sizeScan) d->sizeScan->cancelRequested = true;
+    if (d->sizeWorker) d->sizeWorker->requestInterruption();
+}
+void Browser::calculateAllSizes() { calculateAllSizes(SizeCalculationLimits{}); }
+void Browser::calculateAllSizes(SizeCalculationLimits limits) {
+    if (sizeCalculationRunning()) return;
+    limits.maxEntries = qBound<quint64>(1, limits.maxEntries, 250000);
+    limits.maxDepth = qBound(0, limits.maxDepth, 64);
+    limits.maxMilliseconds = qBound(1, limits.maxMilliseconds, 15000);
+    QList<QUrl> urls;
+    QList<QUrl> changed;
+    const auto parent = d->currentUrl == d->rootUrl ? QModelIndex() : d->model->indexForUrl(d->currentUrl);
+    const int rows = d->model->rowCount(parent);
+    bool capped = false;
+    for (int row = 0; row < rows; ++row) {
+        const auto item = d->model->itemForIndex(d->model->index(row, 0, parent));
+        if (!item.isDir()) continue;
+        if (changed.size() >= 4096) { capped = true; break; }
+        changed.append(item.url());
+        if (!item.url().isLocalFile() || item.isLink()) {
+            d->proxy->directorySizes.insert(item.url(), {SizeUnavailable, 0, QStringLiteral("Requires a real local directory; symlinks and remote providers are not scanned.")});
+        } else if (urls.size() < 4096) {
+            urls.append(item.url());
+            d->proxy->directorySizes.insert(item.url(), {SizeCalculating, 0, {}});
+        } else { capped = true; break; }
+    }
+    d->proxy->sizesChanged(changed);
+    if (urls.isEmpty()) {
+        emit sizeCalculationFinished(false, false, QStringLiteral("No supported loaded folders to calculate."));
+        return;
+    }
+    const auto revision = ++d->sizeRevision;
+    auto scan = std::make_shared<SizeScan>();
+    d->sizeScan = scan; d->sizeRoots = urls.size();
+    auto *worker = QThread::create([urls, limits, scan] { scanDirectorySizes(urls, limits, scan); });
+    d->sizeWorker = worker;
+    connect(worker, &QThread::finished, this, [this, revision, urls, scan, capped] {
+        d->sizeProgressTimer.stop();
+        d->sizeWorker = nullptr; d->sizeScan.reset();
+        const bool stale = revision != d->sizeRevision;
+        if (!stale) {
+            for (auto it = scan->sizes.cbegin(); it != scan->sizes.cend(); ++it)
+                d->proxy->directorySizes.insert(it.key(), it.value());
+            d->proxy->sizesChanged(urls);
+        }
+        emit sizeCalculationProgress(scan->entries.load(), scan->completed.load(), urls.size());
+        emit sizeCalculationRunningChanged(false);
+        const bool canceled = stale || scan->canceled || scan->cancelRequested.load();
+        const bool limited = capped || scan->limited;
+        const bool partial = std::any_of(scan->sizes.cbegin(), scan->sizes.cend(), [](const DirectorySize &size) { return size.state != SizeComplete; });
+        const auto message = canceled ? QStringLiteral("Size calculation canceled.") : limited ? QStringLiteral("Size calculation reached its limit; totals may be partial.") :
+            partial ? QStringLiteral("Size calculation finished; some folders could not be fully read.") : QStringLiteral("Folder sizes calculated.");
+        emit sizeCalculationFinished(canceled, limited, message);
+        emit statusMessage(message);
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    d->sizeProgressTimer.start();
+    worker->start();
+    emit sizeCalculationRunningChanged(true);
+    emit statusMessage(QStringLiteral("Calculating folder sizes…"));
+}
+
 QWidget *Browser::galleryPreviewHost() const { return d->galleryHost; }
 QWidget *Browser::columnPreviewHost() const { return d->columnHost; }
 QWidget *Browser::previewHost() const { return d->sidePreviewHost; }
@@ -1451,7 +1943,7 @@ void Browser::navigate(const QUrl &requested) {
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear();
     d->rootUrl = target; d->currentUrl = target;
     d->resetThumbnailRequests();
-    d->proxy->refreshTags();
+    refreshMetadata();
     d->model->openUrl(target);
     // KDirLister can clear rows without a modelReset. Rebuild the column path
     // so invalidated child roots cannot become additional top-level columns.
@@ -1481,7 +1973,7 @@ void Browser::setMode(Mode mode) {
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }
 void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
 void Browser::setSort(int column, bool ascending) {
-    column = qBound(0, column, int(KDirModel::ColumnCount) - 1);
+    column = qBound(0, column, int(ListColumnCount) - 1);
     const auto order = ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
     const QSignalBlocker blocker(d->list->header());
     d->list->header()->setSortIndicator(column, order);
@@ -1629,8 +2121,8 @@ void Browser::newFolderWithSelection() {
     });
 }
 void Browser::autoSizeListColumns(int column) {
-    if (column < -1 || column >= KDirModel::ColumnCount) return;
-    for (int current = 0; current < KDirModel::ColumnCount; ++current) {
+    if (column < -1 || column >= listColumnCount()) return;
+    for (int current = 0; current < listColumnCount(); ++current) {
         if ((column == -1 || column == current) && !d->list->isColumnHidden(current))
             d->list->resizeColumnToContents(current);
     }
