@@ -892,7 +892,7 @@ public:
     sr->addWidget(status, 1);
     auto *size = iconSlider = new QSlider(Qt::Horizontal);
     size->setObjectName("finderIconSize");
-    size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 64 : 256);
+    size->setRange(32, 256);
     size->setValue(64);
     size->setFixedWidth(100);
     size->setToolTip("Icon size");
@@ -2002,7 +2002,7 @@ private:
     form->addRow("View", mode);
     auto *size = new QSpinBox;
     size->setObjectName("viewOptionIconSize");
-    size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 64 : 256);
+    size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 32 : 256);
     size->setValue(browser()->iconSize());
     form->addRow("Icon size", size);
     auto *spacing = new QSpinBox;
@@ -2063,7 +2063,7 @@ private:
     };
     auto updateControls = [form, mode, size, spacing, labels, defaults, columns] {
       const auto selected = mode->currentIndex();
-      size->setRange(selected == Browser::List ? 16 : 32, selected == Browser::List ? 64 : 256);
+      size->setRange(selected == Browser::List ? 16 : 32, selected == Browser::List ? 32 : 256);
       form->setRowVisible(spacing, selected == Browser::Icons);
       form->setRowVisible(labels, selected == Browser::Icons);
       form->setRowVisible(size, selected != Browser::Columns);
