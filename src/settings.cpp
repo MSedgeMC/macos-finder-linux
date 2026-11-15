@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MIT
 #include "settings.h"
 #include "tags.h"
+#include <KProtocolInfo>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QProcess>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -18,11 +21,64 @@
 #include <QVBoxLayout>
 #include <algorithm>
 
+namespace FinderPreferences {
+QUrl newWindowUrl() {
+    const auto saved = QSettings().value("General/newWindowFolder").toString();
+    if (!saved.isEmpty()) {
+        // Older releases saved absolute paths. Do not reinterpret '#' or '%'
+        // in those paths as URL syntax or replace an explicit saved choice.
+        if (QDir::isAbsolutePath(saved)) return QUrl::fromLocalFile(saved);
+        const QUrl url(saved);
+        if (url.isValid() && !url.scheme().isEmpty()) return url;
+    }
+    return KProtocolInfo::isKnownProtocol("recentlyused")
+        ? QUrl("recentlyused:/files") : QUrl::fromLocalFile(QDir::homePath());
+}
+
+QString defaultSearchScope() {
+    QSettings settings;
+    const auto scope = settings.value("Search/defaultScope").toString();
+    if (scope == "computer" || scope == "current" || scope == "previous") return scope;
+    // The old false choice searched Home, rather than the whole computer.
+    // Migrate the explicit current-folder choice; broaden the other choice to
+    // the documented computer scope, whose actual coverage the search reports.
+    return settings.contains("Search/currentFolder") && settings.value("Search/currentFolder").toBool()
+        ? QStringLiteral("current") : QStringLiteral("computer");
+}
+
+QString initialSearchScope() {
+    const auto scope = defaultSearchScope();
+    if (scope != "previous") return scope;
+    const auto last = QSettings().value("Search/lastScope", "computer").toString();
+    return last == "current" ? QStringLiteral("current") : QStringLiteral("computer");
+}
+
+void rememberSearchScope(const QString &scope) {
+    if (scope == "computer" || scope == "current") QSettings().setValue("Search/lastScope", scope);
+}
+
+bool sidebarItemVisible(const QString &key) {
+    QSettings settings;
+    auto hidden = settings.value("Sidebar/hiddenKeys").toStringList();
+    if (settings.value("Sidebar/locationGroupsVersion", 0).toInt() < 1) {
+        if (hidden.removeAll("devices"))
+            for (const auto &group : {"internalDisks", "externalDisks", "opticalMedia"})
+                if (!hidden.contains(group)) hidden << group;
+        if (hidden.contains("network") && !hidden.contains("connectedServers")) hidden << "connectedServers";
+        settings.setValue("Sidebar/hiddenKeys", hidden);
+        settings.setValue("Sidebar/locationGroupsVersion", 1);
+    }
+    if (hidden.contains(key)) return false;
+    if (key == "filesystem" && hidden.contains("internalDisks")) return false;
+    return true;
+}
+}
+
 FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     setObjectName("finderSettings");
     setWindowTitle(tr("Finder Settings"));
     setAttribute(Qt::WA_DeleteOnClose);
-    resize(490, 420);
+    resize(560, 520);
     auto *layout = new QVBoxLayout(this);
     auto *tabs = new QTabWidget(this);
     tabs->setObjectName("finderSettingsTabs");
@@ -36,6 +92,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         auto *form = new QFormLayout(widget);
         form->setContentsMargins(24, 20, 24, 20);
         form->setSpacing(12);
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
         scroll->setWidget(widget);
         tabs->addTab(scroll, label);
         return form;
@@ -55,11 +112,19 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     auto *general = page(tr("General"), "finderSettingsGeneral");
     auto *folder = new QComboBox(this);
     folder->setObjectName("finderSettingsNewWindow");
+    if (KProtocolInfo::isKnownProtocol("recentlyused"))
+        folder->addItem(tr("Recents"), "recentlyused:/files");
+    folder->addItem(tr("Applications"), QUrl::fromLocalFile("/usr/share/applications").toString(QUrl::FullyEncoded));
     for (const auto &entry : QList<QPair<QString, QStandardPaths::StandardLocation>>{
         {tr("Home"), QStandardPaths::HomeLocation}, {tr("Desktop"), QStandardPaths::DesktopLocation},
-        {tr("Documents"), QStandardPaths::DocumentsLocation}, {tr("Downloads"), QStandardPaths::DownloadLocation}})
-        folder->addItem(entry.first, QStandardPaths::writableLocation(entry.second));
-    const auto saved = QSettings().value("General/newWindowFolder", QDir::homePath()).toString();
+        {tr("Documents"), QStandardPaths::DocumentsLocation}, {tr("Downloads"), QStandardPaths::DownloadLocation},
+        {tr("Music"), QStandardPaths::MusicLocation}, {tr("Pictures"), QStandardPaths::PicturesLocation},
+        {tr("Movies"), QStandardPaths::MoviesLocation}}) {
+        const auto path = QStandardPaths::writableLocation(entry.second);
+        if (!path.isEmpty()) folder->addItem(entry.first, QUrl::fromLocalFile(path).toString(QUrl::FullyEncoded));
+    }
+    if (KProtocolInfo::isKnownProtocol("remote")) folder->addItem(tr("Network"), "remote:/");
+    const auto saved = FinderPreferences::newWindowUrl().toString(QUrl::FullyEncoded);
     int current = folder->findData(saved);
     if (current < 0) { folder->addItem(saved, saved); current = folder->count() - 1; }
     folder->setCurrentIndex(current);
@@ -68,10 +133,40 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         QSettings().setValue("General/newWindowFolder", folder->currentData());
         emit preferencesChanged();
     });
+    auto *chooseFolder = new QPushButton(tr("Other Folder…"), this);
+    chooseFolder->setObjectName("finderSettingsChooseFolder");
+    general->addRow(QString(), chooseFolder);
+    connect(chooseFolder, &QPushButton::clicked, this, [this, folder] {
+        auto *chooser = new QFileDialog(this, tr("Choose a Folder"));
+        chooser->setAttribute(Qt::WA_DeleteOnClose);
+        chooser->setFileMode(QFileDialog::Directory);
+        chooser->setOption(QFileDialog::ShowDirsOnly);
+        chooser->setDirectoryUrl(FinderPreferences::newWindowUrl());
+        connect(chooser, &QFileDialog::urlSelected, this, [folder](const QUrl &url) {
+            if (!url.isValid() || url.isEmpty()) return;
+            const auto value = url.toString(QUrl::FullyEncoded);
+            int index = folder->findData(value);
+            if (index < 0) { folder->addItem(url.toDisplayString(QUrl::PreferLocalFile), value); index = folder->count() - 1; }
+            folder->setCurrentIndex(index);
+        });
+        chooser->open();
+    });
     option(general, tr("Open folders in tabs instead of new windows"), "General/openFoldersInTabs", true, "finderSettingsOpenTabs");
-    auto *desktop = new QLabel(tr("Desktop items are managed by Plasma's desktop settings."), this);
+    auto *desktop = new QLabel(tr("Plasma manages desktop icons and folder sorting. Use Configure Desktop and Wallpaper on the desktop for Folder View options, or System Settings for desktop appearance."), this);
     desktop->setWordWrap(true);
     general->addRow(desktop);
+    auto *desktopSettings = new QPushButton(tr("Open System Settings…"), this);
+    desktopSettings->setObjectName("finderSettingsDesktopSettings");
+    const auto systemSettingsProgram = QStandardPaths::findExecutable("systemsettings");
+    desktopSettings->setEnabled(!systemSettingsProgram.isEmpty());
+    general->addRow(QString(), desktopSettings);
+    auto *desktopError = new QLabel(this);
+    desktopError->setWordWrap(true);
+    general->addRow(desktopError);
+    connect(desktopSettings, &QPushButton::clicked, this, [this, systemSettingsProgram, desktopError] {
+        if (!QProcess::startDetached(systemSettingsProgram, QStringList()))
+            desktopError->setText(tr("System Settings could not be opened."));
+    });
 
     auto *tagPage = page(tr("Tags"), "finderSettingsTags");
     auto *tagList = new QListWidget(this);
@@ -128,28 +223,48 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     tagPage->addRow(new QLabel(tr("Removing a favorite keeps tags stored on your files."), this));
 
     auto *sidebar = page(tr("Sidebar"), "finderSettingsSidebar");
-    const auto hidden = QSettings().value("Sidebar/hiddenKeys").toStringList();
     for (const auto &entry : QList<QPair<QString, QString>>{
         {"recents", tr("Recents")}, {"shared", tr("Shared")}, {"applications", tr("Applications")},
         {"desktop", tr("Desktop")}, {"documents", tr("Documents")}, {"downloads", tr("Downloads")},
         {"home", tr("Home")}, {"music", tr("Music")}, {"pictures", tr("Pictures")},
-        {"videos", tr("Movies")}, {"devices", tr("Hard disks and external disks")},
-        {"network", tr("Connected servers and Network")}, {"trash", tr("Trash")}}) {
+        {"videos", tr("Movies")}, {"internalDisks", tr("Hard disks (including Linux Filesystem)")},
+        {"externalDisks", tr("External disks")}, {"opticalMedia", tr("CDs, DVDs, and other removable media")},
+        {"connectedServers", tr("Connected servers")}, {"network", tr("Network")}, {"trash", tr("Trash")}}) {
         auto *box = new QCheckBox(entry.second, this);
         box->setObjectName("finderSettingsSidebar_" + entry.first);
-        box->setChecked(!hidden.contains(entry.first)); sidebar->addRow(box);
+        box->setChecked(FinderPreferences::sidebarItemVisible(entry.first)); sidebar->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key = entry.first](bool checked) {
             auto keys = QSettings().value("Sidebar/hiddenKeys").toStringList();
+            if (key == "internalDisks") keys.removeAll("filesystem");
             keys.removeAll(key); if (!checked) keys << key;
             QSettings().setValue("Sidebar/hiddenKeys", keys); emit preferencesChanged();
         });
     }
+    auto *sidebarHelp = new QLabel(tr("Show available locations in Finder. Devices appear when connected. Other applications use their own sidebar settings."), this);
+    sidebarHelp->setWordWrap(true);
+    sidebar->addRow(sidebarHelp);
     auto *advanced = page(tr("Advanced"), "finderSettingsAdvanced");
+    option(advanced, tr("Show all filename extensions"), "Advanced/showAllExtensions", false, "finderSettingsShowExtensions");
+    option(advanced, tr("Show a warning before changing an extension"), "Advanced/warnExtensionChange", true, "finderSettingsWarnExtension");
+    option(advanced, tr("Show a warning before emptying the Trash"), "Advanced/warnEmptyTrash", true, "finderSettingsWarnTrash");
+    auto *trashAge = option(advanced, tr("Remove items from the Trash after 30 days"), "Advanced/removeTrashAfter30Days", false, "finderSettingsTrash30Days");
+    trashAge->setToolTip(tr("Age is counted from the time an item was moved to the Trash. Applies to supported local Trash locations while Finder is running."));
     option(advanced, tr("Keep folders on top when sorting by name"), "View/foldersFirst", false, "finderSettingsFoldersFirst");
-    option(advanced, tr("Search the current folder by default"), "Search/currentFolder", true, "finderSettingsSearchFolder");
+    auto *searchScope = new QComboBox(this);
+    searchScope->setObjectName("finderSettingsSearchScope");
+    searchScope->addItem(tr("Search This Computer"), "computer");
+    searchScope->addItem(tr("Search the Current Folder"), "current");
+    searchScope->addItem(tr("Use the Previous Search Scope"), "previous");
+    searchScope->setCurrentIndex(searchScope->findData(FinderPreferences::defaultSearchScope()));
+    advanced->addRow(tr("When performing a search:"), searchScope);
+    connect(searchScope, &QComboBox::currentIndexChanged, this, [this, searchScope] {
+        QSettings settings;
+        settings.setValue("Search/defaultScope", searchScope->currentData());
+        settings.remove("Search/currentFolder");
+        emit preferencesChanged();
+    });
     option(advanced, tr("Use smooth scrolling for mouse wheels"), "Input/smoothScrolling", true, "finderSettingsSmoothScroll");
     option(advanced, tr("Reduce motion"), "Input/reduceMotion", false, "finderSettingsReduceMotion");
-    option(advanced, tr("Show a warning before emptying the Trash"), "Advanced/warnEmptyTrash", true, "finderSettingsWarnTrash");
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
