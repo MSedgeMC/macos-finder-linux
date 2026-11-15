@@ -62,6 +62,7 @@ public slots:
     void setPreviewWidth(int width);
     void restoreViewState(const QByteArray &state);
     void refreshTags();
+    void refreshPreferences();
     void setFoldersFirst(bool enabled);
     void selectUrls(const QList<QUrl> &urls);
     void renameSelected();

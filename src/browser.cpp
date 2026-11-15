@@ -3,10 +3,12 @@
 // Public Qt/KIO views and jobs; no private Dolphin ABI or shell file mutations.
 #include "browser.h"
 #include "tags.h"
+#include "preferences.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QClipboard>
+#include <QCache>
 #include <QColumnView>
 #include <QCollator>
 #include <QDate>
@@ -103,11 +105,21 @@ public:
         QObject::connect(&groupTimer, &QTimer::timeout, this, [this] {
             if (grouping == Browser::GroupTags) invalidate();
         });
+        refreshPreferences();
     }
     ~FinderProxy() override { if (tagWorker) tagWorker->requestInterruption(); }
     Browser::Group grouping = Browser::GroupNone;
     QSet<QUrl> cutUrls;
     bool foldersFirstPreference = false;
+    QSize decorationSize{64, 64};
+    qreal decorationScale = 1;
+
+    void refreshPreferences() {
+        showAllExtensions = QSettings().value("Advanced/showAllExtensions", false).toBool();
+        tintFolders = QSettings().value("Tags/tintFolders", false).toBool();
+        nameCache.clear(); tintCache.clear();
+        FinderPreferences::tagRegistry(); // Warm the O(1) color lookup off paint.
+    }
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override {
         setSortFoldersFirst(foldersFirstPreference && column == KDirModel::Name);
@@ -145,12 +157,47 @@ public:
         tagCache.clear();
         tagErrors.clear();
         tagCategories.clear();
+        tintCache.clear();
         if (grouping == Browser::GroupTags) invalidate();
         enqueueTags({}, 0, sourceModel()->rowCount() - 1);
     }
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
         if (role == TagsRole) return tagCache.value(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
         if (role == CutRole) return cutUrls.contains(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
+        if ((role == Qt::DisplayRole || role == Qt::ToolTipRole) && index.column() == KDirModel::Name) {
+            const auto item = mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>();
+            const auto name = item.text();
+            if (role == Qt::ToolTipRole || showAllExtensions || item.isDir()) return name;
+            const auto found = nameCache.constFind(item.url());
+            if (found != nameCache.cend() && found->first == name) return found->second;
+            // Filename-only MIME globs never read the file. Keep unknown suffixes
+            // visible, and preserve EditRole, FileItemRole and URLs unchanged.
+            const auto suffix = QMimeDatabase().suffixForFileName(name);
+            const auto display = suffix.isEmpty() || name.size() <= suffix.size() + 1 ? name : name.left(name.size() - suffix.size() - 1);
+            if (nameCache.size() >= 8192) nameCache.clear();
+            nameCache.insert(item.url(), {name, display});
+            return display;
+        }
+        if (role == Qt::DecorationRole && index.column() == KDirModel::Name && tintFolders) {
+            const auto item = mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>();
+            const auto tags = tagCache.value(item.url());
+            const auto decoration = KDirSortFilterProxyModel::data(index, role);
+            if (!item.isDir() || tags.isEmpty()) return decoration;
+            const auto icon = decoration.value<QIcon>();
+            if (icon.isNull()) return decoration;
+            const auto color = FileTags::tagColor(tags.first());
+            const auto key = QStringLiteral("%1:%2:%3:%4:%5").arg(icon.cacheKey()).arg(decorationSize.width())
+                .arg(decorationSize.height()).arg(decorationScale).arg(color.rgba());
+            if (const auto *cached = tintCache.object(key)) return *cached;
+            auto pixmap = icon.pixmap(decorationSize, decorationScale);
+            QPainter painter(&pixmap);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceAtop);
+            auto tint = color; tint.setAlpha(170);
+            painter.fillRect(pixmap.rect(), tint); painter.end();
+            auto *tinted = new QIcon(pixmap);
+            tintCache.insert(key, tinted);
+            return *tinted;
+        }
         if (role == Qt::DisplayRole && index.column() == KDirModel::Type)
             return itemType(mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>());
         if (role == CategoryDisplayRole || role == CategorySortRole) {
@@ -191,6 +238,10 @@ private:
     QHash<QUrl, QStringList> tagCache;
     QHash<QUrl, QString> tagErrors;
     QHash<QUrl, QPair<QString, QString>> tagCategories;
+    mutable QHash<QUrl, QPair<QString, QString>> nameCache;
+    mutable QCache<QString, QIcon> tintCache{512};
+    bool showAllExtensions = false;
+    bool tintFolders = false;
     QQueue<QUrl> tagQueue;
     QSet<QUrl> queuedTags;
     QTimer tagTimer;
@@ -304,12 +355,14 @@ private:
             tagWorker = nullptr;
             if (revision == tagRevision) {
                 QModelIndexList changed;
+                QStringList observedTags;
                 for (const auto &url : urls) {
                     queuedTags.remove(url);
                     const auto source = static_cast<KDirModel *>(sourceModel())->indexForUrl(url);
                     if (!source.isValid()) continue;
                     if (!result->contains(url)) continue;
                     const auto tags = result->value(url);
+                    observedTags.append(tags);
                     tagCache.insert(url, tags);
                     if (errors->contains(url)) tagErrors.insert(url, errors->value(url));
                     auto ordered = tags;
@@ -319,6 +372,8 @@ private:
                     const auto mapped = mapFromSource(source);
                     if (mapped.isValid()) changed.append(mapped);
                 }
+                observedTags.removeDuplicates();
+                FinderPreferences::registerObservedTags(observedTags);
                 // Repaint only delivered names. A full-model signal per batch
                 // makes large list views repeatedly lay out unchanged rows.
                 std::sort(changed.begin(), changed.end(), [](const auto &a, const auto &b) {
@@ -329,7 +384,7 @@ private:
                     int last = first;
                     while (last + 1 < changed.size() && changed[last + 1].parent() == changed[first].parent() &&
                            changed[last + 1].row() == changed[last].row() + 1) ++last;
-                    emit dataChanged(changed[first], changed[last], {TagsRole});
+                    emit dataChanged(changed[first], changed[last], tintFolders ? QList<int>{TagsRole, Qt::DecorationRole} : QList<int>{TagsRole});
                     first = last + 1;
                 }
                 if (grouping == Browser::GroupTags && !groupTimer.isActive()) groupTimer.start();
@@ -1090,6 +1145,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(true);
     d->list->setIconSize({18, 18}); d->list->setSortingEnabled(true);
     d->columns = new ColumnsView(d->stack); d->columns->setObjectName("finderColumnView");
+    d->columns->setIconSize({18, 18});
     d->columns->setColumnWidths({220, 220, 220, 220, 220}); d->columns->setResizeGripsVisible(true);
     d->columnHost = new QWidget; d->columnHost->setObjectName("finderColumnPreview");
     d->columnHost->setMinimumWidth(250); d->columns->setPreviewWidget(d->columnHost);
@@ -1249,6 +1305,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     d->currentMode = Mode(qBound(0, object.value("mode").toInt(), int(Gallery)));
     d->stack->setCurrentIndex(int(mode())); setFocusProxy(activeView());
     d->restoreModeOptions();
+    d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
     setPreviewWidth(object.value("previewWidth").toInt(280));
     const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
     if (!header.isEmpty()) d->list->header()->restoreState(header);
@@ -1354,6 +1411,7 @@ void Browser::setMode(Mode mode) {
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
     setFocusProxy(activeView());
     d->restoreModeOptions();
+    d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
     d->resetThumbnailRequests();
     d->updatePreviewVisibility(); d->layoutIcons();
     if (collapseColumns) navigate(current);
@@ -1370,6 +1428,7 @@ void Browser::setIconSize(int size) {
     if (iconSize() == size) return;
     auto *view = mode() == Gallery ? d->strip : static_cast<QListView *>(d->icons);
     view->setIconSize(QSize(size, size));
+    d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
     d->layoutIcons();
     if (mode() == Icons || mode() == Gallery) d->resetThumbnailRequests();
 }
@@ -1424,6 +1483,11 @@ void Browser::setPreviewWidth(int width) {
     d->updatePreviewVisibility();
 }
 void Browser::refreshTags() { d->proxy->refreshTags(); }
+void Browser::refreshPreferences() {
+    d->proxy->refreshPreferences();
+    // QColumnView's dynamically created child views paint their own viewports.
+    for (auto *view : findChildren<QAbstractItemView *>()) view->viewport()->update();
+}
 void Browser::setFoldersFirst(bool enabled) { d->proxy->setFoldersFirstPreference(enabled); }
 void Browser::selectUrls(const QList<QUrl> &urls) { d->pendingSelection = urls; if (urls.isEmpty()) d->activeSelection()->clearSelection(); else d->applySelection(); }
 void Browser::renameSelected() {
