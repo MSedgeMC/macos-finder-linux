@@ -542,8 +542,7 @@ public:
     QWidget *galleryHost;
     QWidget *columnHost;
     QWidget *sidePreviewHost;
-    KFilePreviewGenerator *iconsPreview;
-    KFilePreviewGenerator *galleryPreview;
+    KFilePreviewGenerator *thumbnailGenerator = nullptr;
     QUrl rootUrl;
     QUrl currentUrl;
     Mode currentMode = Icons;
@@ -576,6 +575,19 @@ public:
 
     void updatePreviewVisibility() {
         sidePreviewHost->setVisible(sidePreview && currentMode != Gallery && currentMode != Columns);
+    }
+
+    void updateThumbnailGenerator() {
+        // A disabled generator still responds to shared KDirModel changes and
+        // resolves generic icons. Keep exactly one generator for the active
+        // thumbnail view so it cannot overwrite another view's decoded pixels.
+        delete thumbnailGenerator;
+        thumbnailGenerator = nullptr;
+        if (currentMode != Icons && currentMode != Gallery) return;
+        thumbnailGenerator = new KFilePreviewGenerator(currentMode == Icons ? static_cast<QAbstractItemView *>(icons) : strip);
+        thumbnailGenerator->setEnabledPlugins(KIO::PreviewJob::defaultPlugins());
+        thumbnailGenerator->setPreviewShown(previews);
+        thumbnailGenerator->updateIcons();
     }
 
     KFileItem item(const QModelIndex &index) const {
@@ -776,7 +788,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->icons = new DropView<KCategorizedView>(d->stack); d->icons->setObjectName("finderIconView");
     d->icons->setViewMode(QListView::IconMode); d->icons->setResizeMode(QListView::Adjust);
     d->icons->setMovement(QListView::Static); d->icons->setIconSize({64, 64});
-    d->icons->setWordWrap(true); d->icons->setCategoryDrawer(new FinderCategoryDrawer(d->icons));
+    d->icons->setWordWrap(true); d->icons->setUniformItemSizes(true); d->icons->setCategoryDrawer(new FinderCategoryDrawer(d->icons));
     d->icons->setCategorySpacing(8); d->icons->setCollapsibleBlocks(false);
     d->list = new FinderListView(d->stack); d->list->setObjectName("finderListView");
     d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(false);
@@ -793,7 +805,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->strip = new DropView<QListView>(d->gallery); d->strip->setObjectName("finderGalleryStrip");
     d->strip->setViewMode(QListView::IconMode); d->strip->setFlow(QListView::LeftToRight); d->strip->setWrapping(false);
     d->strip->setMovement(QListView::Static); d->strip->setIconSize({64, 64});
-    d->strip->setResizeMode(QListView::Adjust); d->strip->setWordWrap(true);
+    d->strip->setResizeMode(QListView::Adjust); d->strip->setWordWrap(true); d->strip->setUniformItemSizes(true);
     d->strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     galleryLayout->addWidget(d->strip);
     d->layoutIcons();
@@ -826,12 +838,9 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         menu.exec(d->list->header()->mapToGlobal(point));
     });
     d->stack->addWidget(d->icons); d->stack->addWidget(d->list); d->stack->addWidget(d->columns); d->stack->addWidget(d->gallery);
-    d->iconsPreview = new KFilePreviewGenerator(d->icons); d->galleryPreview = new KFilePreviewGenerator(d->strip);
-    // A private/clean KDE profile need not have PreviewSettings populated.
-    // Use native default thumbnailers, including installed image/PDF workers.
-    const QStringList thumbnailers = KIO::PreviewJob::defaultPlugins();
-    d->iconsPreview->setEnabledPlugins(thumbnailers); d->galleryPreview->setEnabledPlugins(thumbnailers);
-    d->galleryPreview->setPreviewShown(false);
+    // A private KDE profile need not have PreviewSettings populated. Native
+    // default thumbnailers include installed image/PDF workers and their cache.
+    d->updateThumbnailGenerator();
     connect(d->selection, &QItemSelectionModel::selectionChanged, this, [this] { if (d->currentMode != Columns) d->selected(); });
     connect(d->selection, &QItemSelectionModel::currentChanged, this, [this] { if (d->currentMode != Columns) d->selected(); });
     connect(d->columnSelection, &QItemSelectionModel::selectionChanged, this, [this] { if (d->currentMode == Columns) d->selected(); });
@@ -916,10 +925,7 @@ void Browser::setMode(Mode mode) {
     const auto urls = selectedUrls(); const QUrl current = d->currentUrl;
     const bool collapseColumns = d->currentMode == Columns && current != d->rootUrl;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
-    // Disable the departing view's generator before enabling the new one;
-    // both share the model's cached DecorationRole previews.
-    if (mode == Gallery) { d->iconsPreview->setPreviewShown(false); d->galleryPreview->setPreviewShown(d->previews); }
-    else { d->galleryPreview->setPreviewShown(false); d->iconsPreview->setPreviewShown(d->previews && mode == Icons); }
+    d->updateThumbnailGenerator();
     d->updatePreviewVisibility(); d->layoutIcons();
     if (collapseColumns) navigate(current);
     selectUrls(urls);
@@ -932,7 +938,7 @@ void Browser::setIconSize(int size) {
     size = qBound(32, size, 256);
     d->icons->setIconSize(QSize(size, size));
     d->layoutIcons();
-    d->iconsPreview->updateIcons();
+    if (d->thumbnailGenerator && mode() == Icons) d->thumbnailGenerator->updateIcons();
 }
 void Browser::setGroup(Group value) {
     if (value < GroupNone || value > GroupTags || group() == value) return;
@@ -964,8 +970,7 @@ void Browser::setLabelPosition(LabelPosition position) {
 }
 void Browser::setIconPreviewsShown(bool shown) {
     d->previews = shown;
-    d->iconsPreview->setPreviewShown(shown && mode() == Icons);
-    d->galleryPreview->setPreviewShown(shown && mode() == Gallery);
+    if (d->thumbnailGenerator) d->thumbnailGenerator->setPreviewShown(shown);
 }
 void Browser::setPreviewShown(bool shown) {
     d->sidePreview = shown;
