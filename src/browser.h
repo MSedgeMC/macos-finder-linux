@@ -16,6 +16,10 @@ class Browser : public QWidget {
 public:
     enum Mode { Icons, List, Columns, Gallery };
     Q_ENUM(Mode)
+    enum Group { GroupNone, GroupName, GroupKind, GroupDateModified, GroupSize, GroupTags };
+    Q_ENUM(Group)
+    enum LabelPosition { LabelBelow, LabelRight };
+    Q_ENUM(LabelPosition)
     explicit Browser(QWidget *parent = nullptr);
     ~Browser() override;
     QUrl url() const;
@@ -24,10 +28,18 @@ public:
     int itemCount() const;
     Mode mode() const;
     int iconSize() const;
+    Group group() const;
+    int gridSpacing() const;
+    int textSize() const;
+    LabelPosition labelPosition() const;
+    bool iconPreviewsShown() const;
+    bool previewShown() const;
+    bool canCompressSelection() const;
     int sortColumn() const;
     bool sortAscending() const;
     QWidget *galleryPreviewHost() const;
     QWidget *columnPreviewHost() const;
+    QWidget *previewHost() const;
     KDirModel *directoryModel() const;
     QAbstractItemView *activeView() const;
 public slots:
@@ -37,6 +49,13 @@ public slots:
     void setFilter(const QString &filter);
     void setSort(int column, bool ascending);
     void setIconSize(int size);
+    void setGroup(Group group);
+    void setGridSpacing(int spacing);
+    void setTextSize(int points);
+    void setLabelPosition(LabelPosition position);
+    void setIconPreviewsShown(bool shown);
+    void setPreviewShown(bool shown);
+    void refreshTags();
     void setFoldersFirst(bool enabled);
     void selectUrls(const QList<QUrl> &urls);
     void renameSelected();
@@ -45,6 +64,7 @@ public slots:
     void paste(bool move = false);
     void trashSelected();
     void duplicateSelected();
+    void compressSelected();
     void undo();
     void drop(QDropEvent *event, QUrl destination = {});
 signals:
