@@ -51,6 +51,7 @@
 #include <QDateTime>
 #include <QSaveFile>
 #include <QScrollArea>
+#include <QSortFilterProxyModel>
 #include <QSet>
 #include <QFileDialog>
 #include <QDBusConnection>
@@ -579,7 +580,7 @@ public:
     auto *snap = sortMenu->addAction("Snap to Grid"); snap->setCheckable(true); namedActions["snapToGrid"] = snap;
     connect(snap, &QAction::toggled, this, [this](bool enabled) { browser()->setSnapToGrid(enabled); saveView(); });
     auto *clean = sortMenu->addAction("Clean Up", this, [this] { browser()->cleanUp(); saveView(); }); namedActions["cleanUp"] = clean;
-    auto *cleanup = sortMenu->addMenu("Clean Up By");
+    auto *cleanup = sortMenu->addMenu("Clean Up By"); namedActions["cleanUpBy"] = cleanup->menuAction();
     for (const auto &entry : QList<QPair<QString, int>>{{"Name", Browser::NameColumn}, {"Kind", Browser::KindColumn}, {"Date Modified", Browser::DateModifiedColumn}, {"Size", Browser::SizeColumn}, {"Tags", Browser::TagsColumn}})
       cleanup->addAction(entry.first, this, [this, entry] { browser()->cleanUpBy(entry.second); saveView(); refresh(); });
     sortMenu->addSeparator();
@@ -592,6 +593,7 @@ public:
       saveView();
     });
     auto *folders = sortMenu->addAction("Keep Folders on Top");
+    namedActions["foldersFirst"] = folders;
     folders->setCheckable(true);
     folders->setChecked(QSettings().value("View/foldersFirst", false).toBool());
     connect(folders, &QAction::toggled, this, [this](bool on) {
@@ -600,7 +602,7 @@ public:
     });
     arrange->setMenu(sortMenu);
     sortMenu->addSeparator();
-    auto *groups = sortMenu->addMenu("Group By");
+    auto *groups = sortMenu->addMenu("Group By"); namedActions["groupBy"] = groups->menuAction();
     groupActions = new QActionGroup(this);
     groupActions->setExclusive(true);
     const QStringList grouping{"None", "Name", "Kind", "Date Modified", "Size", "Tags"};
@@ -1532,11 +1534,11 @@ public:
         {"historyCount", states.value(browser()).history.size()},
         {"mode", showingSearch() ? searchPresentation->mode() : int(browser()->mode())},
         {"iconSize", browser()->iconSize()},
-        {"sortColumn", browser()->sortColumn()},
+        {"sortColumn", showingSearch() ? searchPresentation->proxyModel()->sortColumn() : browser()->sortColumn()},
         {"group", int(browser()->group())},
         {"gridSpacing", browser()->gridSpacing()},
         {"previewShown", browser()->previewShown()},
-        {"sortAscending", browser()->sortAscending()},
+        {"sortAscending", showingSearch() ? searchPresentation->proxyModel()->sortOrder() == Qt::AscendingOrder : browser()->sortAscending()},
         {"tagsBusy", writingTags},
         {"tagsReady", !tagActions.isEmpty() && tagActions.first()->isEnabled()},
         {"hiddenColumns", hiddenColumns},
@@ -1949,6 +1951,7 @@ private:
     }
     selectedTag = state.value("tag").toString(); search->setVisible(state.value("visible").toBool()); layoutHeader();
     searchPresentation->setMode(qBound(0, state.value("resultsMode").toInt(int(browser()->mode())), 3));
+    searchPresentation->sort(qBound(0, state.value("resultsSort").toInt(), 2), state.value("resultsDescending").toBool() ? Qt::DescendingOrder : Qt::AscendingOrder);
     if (!selectedTag.isEmpty()) {
       searchRoot = QUrl::fromLocalFile(QDir::homePath()); searchModel->removeRows(0, searchModel->rowCount()); contentStack->setCurrentWidget(searchPage);
       LocalFileSearch::Options options; options.requiredTag = selectedTag; options.showHidden = true; options.preferredPath = browser()->url().toLocalFile();
@@ -2246,7 +2249,7 @@ private:
     return {{"format", "macos-finder-linux-smart-folder"}, {"version", 1}, {"name", search->text()}, {"scope", searchScope->currentData().toString()},
       {"root", browser()->url().toString()}, {"kind", searchKind->currentData().toString()}, {"content", searchContent->text()},
       {"minimumSize", searchMinimumSize}, {"maximumSize", searchMaximumSize}, {"modifiedAfter", searchModifiedAfter},
-      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}, {"resultsMode", searchPresentation->mode()}};
+      {"criteria", searchCriteria}, {"parseKeywords", searchParseKeywords}, {"provider", int(searchProvider)}, {"resultsMode", searchPresentation->mode()}, {"resultsSort", searchPresentation->proxyModel()->sortColumn()}, {"resultsDescending", searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder}};
   }
   void saveSmartFolder() {
     auto *dialog = new QFileDialog(this, "Save Smart Folder", QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation), "Finder Smart Folder (*.finder-search)");
@@ -2281,6 +2284,7 @@ private:
         searchMinimumSize = definition.value("minimumSize").toInteger(-1); searchMaximumSize = definition.value("maximumSize").toInteger(-1); searchModifiedAfter = definition.value("modifiedAfter").toInteger(-1);
         searchCriteria = definition.value("criteria").toObject(); searchParseKeywords = definition.value("parseKeywords").toBool(false);
         searchPresentation->setMode(qBound(0, definition.value("resultsMode").toInt(int(browser()->mode())), 3));
+        searchPresentation->sort(qBound(0, definition.value("resultsSort").toInt(), 2), definition.value("resultsDescending").toBool() ? Qt::DescendingOrder : Qt::AscendingOrder);
         searchProvider = LocalFileSearch::Options::Provider(qBound(0, definition.value("provider").toInt(), 2));
       }
       search->show(); search->setFocus(); layoutHeader(); beginSearch();
@@ -2544,23 +2548,26 @@ private:
       namedActions["extract"]->setEnabled(!archives->busy() && urls.size() == 1 && Archives::canExtract(urls.first()).enabled);
       namedActions["cancelArchive"]->setEnabled(archives->busy());
     }
-    if (namedActions.contains("sortNone")) namedActions["sortNone"]->setEnabled(browser()->mode() == Browser::Icons);
+    if (namedActions.contains("sortNone")) namedActions["sortNone"]->setEnabled(!showingSearch() && browser()->mode() == Browser::Icons);
     if (namedActions.contains("snapToGrid")) {
-      QSignalBlocker block(namedActions["snapToGrid"]); namedActions["snapToGrid"]->setChecked(browser()->snapToGrid()); namedActions["snapToGrid"]->setEnabled(browser()->mode() == Browser::Icons);
+      QSignalBlocker block(namedActions["snapToGrid"]); namedActions["snapToGrid"]->setChecked(browser()->snapToGrid()); namedActions["snapToGrid"]->setEnabled(!showingSearch() && browser()->mode() == Browser::Icons);
     }
-    if (namedActions.contains("cleanUp")) namedActions["cleanUp"]->setEnabled(browser()->canArrangeIcons());
+    if (namedActions.contains("cleanUp")) namedActions["cleanUp"]->setEnabled(!showingSearch() && browser()->canArrangeIcons());
+    for (const auto &name : {"cleanUpBy", "groupBy", "foldersFirst"})
+      if (namedActions.contains(name)) namedActions[name]->setEnabled(!showingSearch());
     {
       QSignalBlocker blocker(iconSlider);
       iconSlider->setValue(browser()->iconSize());
     }
-    iconSlider->setVisible(browser()->mode() == Browser::Icons);
+    iconSlider->setVisible(!showingSearch() && browser()->mode() == Browser::Icons);
     for (auto *a : sortGroup->actions()) {
       a->setEnabled(!showingSearch() || a->data().toInt() == Browser::NameColumn || a->data().toInt() == Browser::KindColumn);
-      a->setChecked(a->data().toInt() == browser()->sortColumn());
+      const int column = showingSearch() ? (searchPresentation->proxyModel()->sortColumn() == 1 ? Browser::KindColumn : Browser::NameColumn) : browser()->sortColumn();
+      a->setChecked(a->data().toInt() == column);
     }
     {
       QSignalBlocker blocker(descending);
-      descending->setChecked(!browser()->sortAscending());
+      descending->setChecked(showingSearch() ? searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder : !browser()->sortAscending());
     }
     for (auto name : {"open", "openWith", "copyPath", "rename", "duplicate", "trash", "quickLook"})
       if (namedActions.contains(name))
