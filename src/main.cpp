@@ -645,6 +645,7 @@ public:
       LocalFileSearch::Options options;
       options.requiredTag = tag;
       options.showHidden = true;
+      options.preferredPath = browser()->url().toLocalFile();
       fileSearch->start(searchRoot, QString(), options);
       refresh();
     });

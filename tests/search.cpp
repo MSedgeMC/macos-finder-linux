@@ -115,6 +115,17 @@ int main(int argc, char **argv) {
         result = scan(search, url, QString(), tags);
         require(result.count == 0, "tags use full values rather than substring matching");
         cases.append("tag results read real xattrs without following symlinks or matching partial tags");
+        tags.requiredTag = "Blue";
+        tags.preferredPath = root + "/nested/deeper";
+        const QByteArray preferred = QFile::encodeName(tags.preferredPath + "/needle-photo.png");
+        require(setxattr(preferred.constData(), "user.xdg.tags", "Blue", 4, 0) == 0, "preferred tag fixture");
+        tags.maxEntries = 1;
+        result = scan(search, url, QString(), tags);
+        require(result.count == 1 && result.urls.first() == QUrl::fromLocalFile(tags.preferredPath + "/needle-photo.png"), "preferred folder scanned within entry budget");
+        tags.maxEntries = 250000;
+        result = scan(search, url, QString(), tags);
+        require(result.count == 2, "preferred subtree results duplicated");
+        cases.append("preferred descendant is searched first without duplicate results or new budgets");
         auto bounded = hidden;
         bounded.maxResults = 2;
         result = scan(search, url, "needle", bounded);

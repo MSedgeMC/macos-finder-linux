@@ -199,6 +199,20 @@ private:
         }
         std::vector<Frame> stack;
         stack.push_back({rootPath, std::move(directory)});
+        QByteArray preferredPath;
+        if (!request.options.preferredPath.isEmpty()) {
+            const auto preferred = QFile::encodeName(QDir::cleanPath(request.options.preferredPath));
+            if (preferred != rootPath && preferred.startsWith(rootPath == "/" ? rootPath : rootPath + '/')) {
+                const int preferredDescriptor = openRoot(preferred, mounts, request.cancel);
+                if (preferredDescriptor >= 0) {
+                    Directory first(fdopendir(preferredDescriptor));
+                    if (first) {
+                        preferredPath = preferred;
+                        stack.push_back({preferred, std::move(first)});
+                    } else close(preferredDescriptor);
+                }
+            }
+        }
         while (!stack.empty() && !canceled()) {
             if (examined >= request.options.maxEntries || elapsed.elapsed() >= request.options.maxElapsedMs) {
                 limited = true;
@@ -217,6 +231,8 @@ private:
             ++examined;
             if (!request.options.showHidden && name.startsWith('.')) continue;
             const QByteArray path = frame.path == "/" ? '/' + name : frame.path + '/' + name;
+            // This subtree was already scanned first. Do not duplicate results.
+            if (path == preferredPath) continue;
             // Do not even stat a remote or pseudo mount entry.
             if (!localPath(path, mounts)) { ++skipped; continue; }
             unsigned char type = entry->d_type;

@@ -19,6 +19,8 @@ public:
         int maxEntries = 250000;
         int maxElapsedMs = 15000;
         QString requiredTag;
+        // Scan this descendant first, within the same total search budgets.
+        QString preferredPath;
     };
 
     explicit LocalFileSearch(QObject *parent = nullptr);
