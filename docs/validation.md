@@ -66,6 +66,17 @@ both application and FileManager1 service names, and the private input/render
 test interface was absent. This is a deployment observation on that machine,
 not a claim that installation changes are exercised against every distribution.
 
+## Standalone portable build
+
+The exported Qt/KDE-target CMake configuration and complete Release build of
+this standalone repository passed on 2026-11-15. Both CTest programs passed:
+11 recursive-search cases and 9 tag cases. A binary-only staged installation
+contained exactly `bin/finder`. Matching development dependencies were supplied
+through a private extracted prefix; these checks installed no system packages,
+opened no GUI windows and changed no production desktop files. The installed
+desktop executable remains the separately verified integration build described
+above.
+
 ## Repeating GUI checks safely
 
 The development workspace used its headless virtual-screen runner for GUI
