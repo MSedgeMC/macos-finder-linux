@@ -1124,6 +1124,10 @@ public:
         }
       }
       tabs->setTabText(tabs->indexOf(b), title(url));
+      auto recent = QSettings().value("History/recentFolders").toStringList();
+      recent.removeAll(url.toString()); recent.prepend(url.toString());
+      while (recent.size() > 15) recent.removeLast();
+      QSettings().setValue("History/recentFolders", recent);
       if (b == browser()) {
         if (explicitNavigation || b->mode() != Browser::Columns)
           restoreView();
@@ -1736,9 +1740,11 @@ private:
       QSignalBlocker blocker(descending);
       descending->setChecked(!browser()->sortAscending());
     }
-    for (auto name : {"open", "rename", "duplicate", "trash", "quickLook"})
+    for (auto name : {"open", "openWith", "copyPath", "rename", "duplicate", "trash", "quickLook"})
       if (namedActions.contains(name))
         namedActions[name]->setEnabled(!selectedUrls().isEmpty());
+    if (namedActions.contains("newFolderSelection"))
+      namedActions["newFolderSelection"]->setEnabled(!showingSearch() && browser()->canNewFolderWithSelection());
     tagButton->setEnabled(!selectedUrls().isEmpty());
     for (auto name : {"newFolder", "paste", "moveHere"})
       if (namedActions.contains(name))
@@ -1880,6 +1886,12 @@ private:
                 if (!showingSearch())
                   browser()->newFolder();
               });
+    addAction(file, "newFolderSelection", "New Folder with Selection", {"Meta+Ctrl+N"}, [this] {
+      if (!showingSearch()) browser()->newFolderWithSelection();
+    });
+    addAction(file, "openWith", "Open With…", {}, [this] {
+      for (const auto &url : selectedUrls()) openWith(url);
+    });
     addAction(file, "open", "Open", {"Meta+Down"}, [this] {
       for (auto u : selectedUrls())
         openUrl(u);
@@ -1932,6 +1944,10 @@ private:
         searchResults->selectAll();
       else
         browser()->activeView()->selectAll();
+    });
+    addAction(edit, "copyPath", "Copy as Pathname", {"Meta+Alt+C"}, [this] {
+      QStringList paths; for (const auto &url : selectedUrls()) paths << url.toDisplayString(QUrl::PreferLocalFile);
+      QApplication::clipboard()->setText(paths.join('\n'));
     });
     addAction(view, "search", "Find", {"Ctrl+F", "Meta+F"},
               [this] { showSearch(); });
@@ -1988,12 +2004,32 @@ private:
     });
     addAction(go, "location", "Go to Folder…", {"Ctrl+L", "Meta+Shift+G"},
               [this] { revealLocation(); });
+    addAction(go, "applications", "Applications", {"Meta+Shift+A"}, [this] { navigate(QUrl::fromLocalFile("/usr/share/applications")); });
+    addAction(go, "computer", "Computer", {"Meta+Shift+C"}, [this] { navigate(QUrl::fromLocalFile("/")); });
+    addAction(go, "network", "Network", {"Meta+Shift+K"}, [this] { navigate(QUrl("remote:/")); });
+    addAction(go, "recentFiles", "Recents", {"Meta+Shift+F"}, [this] { places->setUrl(QUrl("recentlyused:/files")); navigate(QUrl("recentlyused:/files")); });
+    auto *recentMenu = go->addMenu("Recent Folders");
+    connect(recentMenu, &QMenu::aboutToShow, this, [this, recentMenu] {
+      recentMenu->clear();
+      const auto recent = QSettings().value("History/recentFolders").toStringList();
+      for (const auto &value : recent) {
+        const QUrl url(value);
+        auto *action = recentMenu->addAction(title(url), this, [this, url] { navigate(url); });
+        action->setToolTip(url.toDisplayString(QUrl::PreferLocalFile));
+      }
+      recentMenu->addSeparator();
+      recentMenu->addAction("Clear Menu", this, [] { QSettings().remove("History/recentFolders"); });
+    });
     for (auto entry : QList<QPair<QString, QStandardPaths::StandardLocation>>{
              {"Home", QStandardPaths::HomeLocation},
              {"Desktop", QStandardPaths::DesktopLocation},
              {"Documents", QStandardPaths::DocumentsLocation},
              {"Downloads", QStandardPaths::DownloadLocation}})
-      addAction(go, "go" + entry.first, entry.first, {}, [this, entry] {
+      addAction(go, "go" + entry.first, entry.first,
+                entry.first == "Home" ? QStringList{"Meta+Shift+H"} :
+                entry.first == "Desktop" ? QStringList{"Meta+Shift+D"} :
+                entry.first == "Documents" ? QStringList{"Meta+Shift+O"} :
+                QStringList{"Meta+Alt+L"}, [this, entry] {
         navigate(QUrl::fromLocalFile(
             QStandardPaths::writableLocation(entry.second)));
       });
@@ -2023,7 +2059,9 @@ private:
       namedActions["detachTab"]->setEnabled(tabs->count() > 1);
       namedActions["closeOtherTabs"]->setEnabled(tabs->count() > 1);
     });
-    for (auto n : {"newFolder", "open", "quickLook", "rename", "duplicate", "compress",
+    auto *help = menuBar()->addMenu("Help");
+    help->addAction("Finder Help", this, [this] { openUrl(QUrl("https://github.com/MSedgeMC/macos-finder-linux#readme")); });
+    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress",
                    "trash", "info"})
       actionsMenu->addAction(namedActions[n]);
     actionsMenu->addSeparator();
@@ -2033,7 +2071,7 @@ private:
     actionsMenu->addAction(namedActions["preview"]);
     actionsMenu->addAction(namedActions["viewOptions"]);
     actionsMenu->addSeparator();
-    for (auto menu : {finder, file, edit, view, go, window})
+    for (auto menu : {finder, file, edit, view, go, window, help})
       actionsMenu->addMenu(menu);
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable,
             namedActions["undo"], &QAction::setEnabled);
