@@ -22,6 +22,7 @@ public:
 public slots:
     void setUrl(const QUrl &url);
     void setTag(const QString &tag);
+    void refreshPreferences();
 
 signals:
     // Color names match the real user.xdg.tags values used by FileTags.

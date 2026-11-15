@@ -5,6 +5,7 @@
 #include "preview.h"
 #include "search.h"
 #include "tags.h"
+#include "settings.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -1396,7 +1397,8 @@ private:
       contentStack->setCurrentWidget(tabs);
       return;
     }
-    searchRoot = browser()->url();
+    searchRoot = QSettings().value("Search/currentFolder", true).toBool()
+                     ? browser()->url() : QUrl::fromLocalFile(QDir::homePath());
     searchModel->removeRows(0, searchModel->rowCount());
     contentStack->setCurrentWidget(searchPage);
     searchSummary->setText("Searching " + title(searchRoot) + "…");
@@ -1513,8 +1515,28 @@ private:
     search->selectAll();
     layoutHeader();
   }
+  void settingsDialog() {
+    if (auto *existing = findChild<FinderSettings *>()) {
+      existing->show(); existing->raise(); existing->activateWindow(); return;
+    }
+    auto *dialog = new FinderSettings(this);
+    connect(dialog, &FinderSettings::preferencesChanged, this, [this] {
+      for (auto *window : QApplication::topLevelWidgets()) {
+        auto *finder = qobject_cast<FinderWindow *>(window);
+        if (!finder) continue;
+        finder->places->refreshPreferences();
+        for (auto *b : finder->states.keys())
+          b->setFoldersFirst(QSettings().value("View/foldersFirst", false).toBool());
+        finder->refresh();
+      }
+    });
+    dialog->open();
+  }
   void viewOptions() {
+    auto *existing = findChild<QDialog *>("finderViewOptions");
+    if (existing) { existing->show(); existing->raise(); existing->activateWindow(); return; }
     auto *dialog = new QDialog(this);
+    dialog->setObjectName("finderViewOptions");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle("View Options — " + title(browser()->url()));
     auto *layout = new QVBoxLayout(dialog);
@@ -1763,12 +1785,12 @@ private:
       connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
       layout->addWidget(buttons); dialog->open();
     });
-    addAction(finder, "settings", "Settings…", {"Meta+,", "Ctrl+,"}, [this] { viewOptions(); });
+    addAction(finder, "settings", "Settings…", {"Meta+,", "Ctrl+,"}, [this] { settingsDialog(); });
     finder->addSeparator();
     addAction(finder, "quit", "Quit Finder", {"Ctrl+Q", "Meta+Q"}, [this] { close(); });
     addAction(file, "newWindow", "New Finder Window", {"Ctrl+N", "Meta+N"},
               [this] {
-                emit newWindowRequested(QUrl::fromLocalFile(QDir::homePath()));
+                emit newWindowRequested(QUrl::fromLocalFile(QSettings().value("General/newWindowFolder", QDir::homePath()).toString()));
               });
     addAction(file, "newTab", "New Tab", {"Ctrl+T", "Meta+T"},
               [this] { addTab(browser()->url(), true); });

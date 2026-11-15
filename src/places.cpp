@@ -22,6 +22,7 @@
 #include <QPainterPath>
 #include <QPersistentModelIndex>
 #include <QScrollBar>
+#include <QSettings>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyleOptionViewItem>
@@ -548,6 +549,33 @@ public:
             item->setData(tag, TagRole); item->setData(QColor("#8e8e93"), TagColorRole);
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         }
+        const auto favorites = QSettings().value("Tags/favorites").toStringList();
+        for (const auto &tag : favorites) {
+            bool present = false;
+            for (int row = 0; row < rows->rowCount(); ++row)
+                present |= rows->item(row)->data(TagRole).toString() == tag;
+            if (present) continue;
+            auto *item = append("tag:" + tag, tag, {}, {});
+            item->setData(tag, TagRole); item->setData(QColor("#8e8e93"), TagColorRole);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        }
+        const auto hiddenKeys = QSettings().value("Sidebar/hiddenKeys").toStringList();
+        const auto hiddenTags = QSettings().value("Sidebar/hiddenTags").toStringList();
+        for (int row = rows->rowCount() - 1; row >= 0; --row) {
+            auto *item = rows->item(row);
+            const auto key = item->data(KeyRole).toString();
+            const auto url = item->data(UrlRole).toUrl();
+            const auto tag = item->data(TagRole).toString();
+            bool hide = hiddenKeys.contains(key) || (!tag.isEmpty() && hiddenTags.contains(tag));
+            if (key.startsWith("device:")) hide |= hiddenKeys.contains("devices");
+            if (key.startsWith("remote:")) hide |= hiddenKeys.contains("network");
+            for (const auto &entry : QList<QPair<QString, QStandardPaths::StandardLocation>>{
+                {"home", QStandardPaths::HomeLocation}, {"music", QStandardPaths::MusicLocation},
+                {"pictures", QStandardPaths::PicturesLocation}, {"videos", QStandardPaths::MoviesLocation}})
+                if (url == QUrl::fromLocalFile(QStandardPaths::writableLocation(entry.second)))
+                    hide |= hiddenKeys.contains(entry.first);
+            if (hide) rows->removeRow(row);
+        }
         bool busy = false;
         for (int row = 0; row < rows->rowCount(); ++row) busy |= rows->index(row, 0).data(BusyRole).toBool();
         if (busy && !busyTimer.isActive()) busyTimer.start();
@@ -697,6 +725,8 @@ FinderPlacesView::FinderPlacesView(QWidget *parent) : KFilePlacesView(parent), d
     setFocusProxy(d->tree);
 }
 FinderPlacesView::~FinderPlacesView() = default;
+
+void FinderPlacesView::refreshPreferences() { d->schedule(); }
 void FinderPlacesView::setModel(QAbstractItemModel *model) {
     auto *places = qobject_cast<KFilePlacesModel *>(model);
     if (!places) { emit errorMessage("The sidebar requires a native KFilePlacesModel."); return; }
