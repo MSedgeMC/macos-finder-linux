@@ -951,9 +951,21 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->list->setColumnWidth(KDirModel::ModifiedTime, 185); d->list->setColumnWidth(KDirModel::Type, 160);
     for (int column : {KDirModel::Permissions, KDirModel::Owner, KDirModel::Group}) d->list->hideColumn(column);
     d->list->header()->moveSection(d->list->header()->visualIndex(KDirModel::Type), 3);
+    d->list->header()->setStretchLastSection(false);
+    d->list->header()->setSectionResizeMode(QHeaderView::Interactive);
+    d->list->header()->setMinimumSectionSize(48);
+    // Explicit fitting samples a bounded number of loaded rows. Qt's default
+    // precision is 1000; -1 would visit the entire folder on each fit.
+    d->list->header()->setResizeContentsPrecision(200);
+    connect(d->list->header(), &QHeaderView::sectionHandleDoubleClicked, this, &Browser::autoSizeListColumns);
     d->list->header()->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(d->list->header(), &QWidget::customContextMenuRequested, this, [this](const QPoint &point) {
         QMenu menu(d->list->header());
+        const int section = d->list->header()->logicalIndexAt(point);
+        menu.addAction(QStringLiteral("Resize Column to Fit"), this, [this, section] { autoSizeListColumns(section); })
+            ->setEnabled(section >= 0);
+        menu.addAction(QStringLiteral("Resize All Columns to Fit"), this, [this] { autoSizeListColumns(); });
+        menu.addSeparator();
         for (int column = 0; column < KDirModel::ColumnCount; ++column) {
             auto *action = menu.addAction(d->proxy->headerData(column, Qt::Horizontal).toString());
             action->setCheckable(true); action->setChecked(!d->list->isColumnHidden(column));
@@ -963,6 +975,8 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         menu.exec(d->list->header()->mapToGlobal(point));
     });
     d->stack->addWidget(d->icons); d->stack->addWidget(d->list); d->stack->addWidget(d->columns); d->stack->addWidget(d->gallery);
+    setFocusProxy(d->icons);
+    d->gallery->setFocusProxy(d->strip);
     // A private KDE profile need not have PreviewSettings populated. Native
     // default thumbnailers include installed image/PDF workers and their cache.
     d->updateThumbnailGenerator();
@@ -1061,6 +1075,7 @@ void Browser::setMode(Mode mode) {
     const auto urls = selectedUrls(); const QUrl current = d->currentUrl;
     const bool collapseColumns = d->currentMode == Columns && current != d->rootUrl;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
+    setFocusProxy(activeView());
     d->updateThumbnailGenerator();
     d->updatePreviewVisibility(); d->layoutIcons();
     if (collapseColumns) navigate(current);
@@ -1174,6 +1189,13 @@ void Browser::newFolderWithSelection() {
         });
     });
 }
+void Browser::autoSizeListColumns(int column) {
+    if (column < -1 || column >= KDirModel::ColumnCount) return;
+    for (int current = 0; current < KDirModel::ColumnCount; ++current) {
+        if ((column == -1 || column == current) && !d->list->isColumnHidden(current))
+            d->list->resizeColumnToContents(current);
+    }
+}
 void Browser::copySelected(bool cut) {
     const auto urls = selectedUrls(); if (urls.isEmpty()) return;
     auto *mime = new QMimeData; mime->setUrls(urls);
@@ -1264,6 +1286,21 @@ bool Browser::eventFilter(QObject *object, QEvent *event) {
     }
     if (event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
+        if ((object == d->strip || object == d->strip->viewport()) &&
+            (key->key() == Qt::Key_PageUp || key->key() == Qt::Key_PageDown) && key->modifiers() == Qt::NoModifier) {
+            const auto current = d->selection->currentIndex();
+            const auto parent = d->strip->rootIndex();
+            const int count = d->proxy->rowCount(parent);
+            if (count) {
+                const int page = qMax(1, d->strip->viewport()->width() / qMax(1, d->strip->gridSize().width()));
+                const int step = key->key() == Qt::Key_PageDown ? page : -page;
+                const int row = current.isValid() ? qBound(0, current.row() + step, count - 1) : 0;
+                const auto target = d->proxy->index(row, KDirModel::Name, parent);
+                d->selection->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                d->strip->scrollTo(target);
+            }
+            return true;
+        }
         if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter || key->key() == Qt::Key_F2) && key->modifiers() == Qt::NoModifier) {
             renameSelected(); return true;
         }

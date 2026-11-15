@@ -62,6 +62,7 @@ public slots:
     void renameSelected();
     void newFolder();
     void newFolderWithSelection();
+    void autoSizeListColumns(int column = -1);
     void copySelected(bool cut = false);
     void paste(bool move = false);
     void trashSelected();
