@@ -199,19 +199,54 @@ static QIcon symbol(const QString &name) {
 class Material : public QWidget {
 public:
   bool blur = false;
+  int sidebarWidth = 256;
   using QWidget::QWidget;
 
 protected:
   void paintEvent(QPaintEvent *) override {
     QPainter p(this);
-    p.fillRect(rect(), QColor(38, 38, 42, blur ? 178 : 250));
+    p.fillRect(rect(), QColor(34, 34, 37, blur ? 120 : 255));
     if (objectName() == "finderHeader") {
+      // The sidebar material continues through its titlebar; the content
+      // toolbar has a quiet solid base beneath its grouped glass controls.
+      p.fillRect(QRect(sidebarWidth, 0, width() - sidebarWidth, height()),
+                 QColor(30, 30, 30));
       p.setPen(QColor(255, 255, 255, 26));
       p.drawLine(0, 0, width(), 0);
       p.setPen(QColor(0, 0, 0, 60));
       p.drawLine(0, height() - 1, width(), height() - 1);
     }
   }
+};
+class WindowControl : public QToolButton {
+public:
+  WindowControl(QString kind, QWidget *parent) : QToolButton(parent), kind(std::move(kind)) {
+    setFixedSize(20, 28);
+    setObjectName("window-" + this->kind);
+    setAccessibleName(this->kind == "close" ? "Close" : this->kind == "minimize" ? "Minimize" : "Zoom");
+    setToolTip(accessibleName());
+    setFocusPolicy(Qt::StrongFocus);
+  }
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    QColor color(kind == "close" ? "#ff5f57" : kind == "minimize" ? "#febc2e" : "#28c840");
+    if (!window()->isActiveWindow()) color = QColor("#646466");
+    p.setPen(QPen(color.darker(115), .5));
+    p.setBrush(color);
+    p.drawEllipse(QRectF(1, 7, 14, 14));
+    if (underMouse() || hasFocus()) {
+      p.setPen(QPen(QColor(25, 25, 25, 175), 1.2));
+      if (kind == "close") { p.drawLine(5, 11, 11, 17); p.drawLine(11, 11, 5, 17); }
+      else if (kind == "minimize") p.drawLine(5, 14, 11, 14);
+      else { p.drawLine(5, 14, 11, 14); p.drawLine(8, 11, 8, 17); }
+    }
+  }
+  void enterEvent(QEnterEvent *event) override { QToolButton::enterEvent(event); update(); }
+  void leaveEvent(QEvent *event) override { QToolButton::leaveEvent(event); update(); }
+private:
+  QString kind;
 };
 class SidebarHandle : public QSplitterHandle {
 public:
@@ -361,15 +396,27 @@ public:
     hl->setSpacing(8);
     headerSidebar = new QWidget(header);
     auto *hs = new QHBoxLayout(headerSidebar);
-    hs->setContentsMargins(0, 0, 0, 0);
+    hs->setContentsMargins(5, 0, 6, 0);
+    hs->setSpacing(7);
+    for (auto name : {"close", "minimize", "maximize"}) {
+      auto *control = new WindowControl(QString(name), headerSidebar);
+      hs->addWidget(control);
+      connect(control, &QToolButton::clicked, this, [this, name] {
+        if (QString(name) == "minimize") showMinimized();
+        else if (QString(name) == "maximize") {
+          if (isMaximized()) showNormal(); else showMaximized();
+        } else close();
+      });
+    }
+    hs->addStretch();
     auto *sidebarButton = button("sidebar", "Show Sidebar", headerSidebar);
     sidebarButton->setObjectName("finderSidebarToggle");
     hs->addWidget(sidebarButton);
-    hs->addStretch();
     headerSidebar->setFixedWidth(244);
     hl->addWidget(headerSidebar);
     connect(sidebarButton, &QToolButton::clicked, this, [this] {
       sidebar->setVisible(!sidebar->isVisible());
+      layoutHeader();
       updateMaterial();
     });
     auto *nav = new QWidget;
@@ -457,7 +504,12 @@ public:
     arrange->setMenu(sortMenu);
     arrange->setPopupMode(QToolButton::InstantPopup);
     hl->addWidget(arrange);
-    share = button("share", "Share", header);
+    auto *actionsCapsule = new QWidget(header);
+    actionsCapsule->setObjectName("actionsCapsule");
+    auto *actionsLayout = new QHBoxLayout(actionsCapsule);
+    actionsLayout->setContentsMargins(3, 0, 3, 0);
+    actionsLayout->setSpacing(0);
+    share = button("share", "Share", actionsCapsule);
     auto *shareMenu = new QMenu(share);
     shareMenu->addAction("Copy File Locations", this, [this] {
       QStringList u;
@@ -471,12 +523,12 @@ public:
     });
     share->setMenu(shareMenu);
     share->setPopupMode(QToolButton::InstantPopup);
-    hl->addWidget(share);
-    tagButton = button("tags", "Tags", header);
+    actionsLayout->addWidget(share);
+    tagButton = button("tags", "Tags", actionsCapsule);
     tagMenu = new QMenu(tagButton);
     tagButton->setMenu(tagMenu);
     tagButton->setPopupMode(QToolButton::InstantPopup);
-    hl->addWidget(tagButton);
+    actionsLayout->addWidget(tagButton);
     for (auto tag : FileTags::standardTags()) {
       QPixmap pix(20, 20);
       pix.fill(Qt::transparent);
@@ -504,16 +556,17 @@ public:
     tagMenu->addAction("Remove All Tags", this,
                        [this] { changeTags(QString(), 3); });
     connect(tagMenu, &QMenu::aboutToShow, this, [this] { updateTags(); });
-    auto *more = button("more", "Actions", header);
+    auto *more = button("more", "Actions", actionsCapsule);
     actionsMenu = new QMenu(more);
     more->setMenu(actionsMenu);
     more->setPopupMode(QToolButton::InstantPopup);
-    hl->addWidget(more);
+    actionsLayout->addWidget(more);
+    hl->addWidget(actionsCapsule);
     search = new QLineEdit;
     search->setObjectName("finderSearch");
     search->setPlaceholderText("Search this folder");
     search->setClearButtonEnabled(true);
-    search->setMaximumWidth(190);
+    search->setFixedSize(159, 36);
     search->hide();
     hl->addWidget(search);
     connect(search, &QLineEdit::textChanged, this, [this](const QString &t) {
@@ -525,23 +578,6 @@ public:
     connect(searchButton, &QToolButton::clicked, this,
             [this] { showSearch(); });
     hl->addWidget(searchButton);
-    for (auto name : {"minimize", "maximize", "close"}) {
-      auto *b = button(name, QString(name), header);
-      b->setObjectName("window-" + QString(name));
-      b->setFixedSize(26, 28);
-      hl->addWidget(b);
-      connect(b, &QToolButton::clicked, this, [this, name] {
-        if (QString(name) == "minimize")
-          showMinimized();
-        else if (QString(name) == "maximize") {
-          if (isMaximized())
-            showNormal();
-          else
-            showMaximized();
-        } else
-          close();
-      });
-    }
     outer->addWidget(header);
     location = new QLineEdit;
     location->setObjectName("finderLocation");
@@ -567,6 +603,21 @@ public:
     places->setDropOnPlaceEnabled(true);
     places->setDragAutoActivationDelay(650);
     sl->addWidget(places);
+    connect(places, &FinderPlacesView::tagActivated, this, [this](const QString &tag) {
+      selectedTag = tag;
+      search->hide();
+      searchModel->removeRows(0, searchModel->rowCount());
+      searchRoot = QUrl::fromLocalFile(QDir::homePath());
+      contentStack->setCurrentWidget(searchPage);
+      searchSummary->setText("Tags: " + tag + " — Searching…");
+      LocalFileSearch::Options options;
+      options.requiredTag = tag;
+      fileSearch->start(searchRoot, QString(), options);
+      refresh();
+    });
+    connect(places, &FinderPlacesView::errorMessage, this, [this](const QString &error) {
+      status->setText(error);
+    });
     connect(places, &KFilePlacesView::placeActivated, this,
             [this](const QUrl &u) { navigate(u); });
     connect(places, &KFilePlacesView::tabRequested, this,
@@ -639,7 +690,12 @@ public:
     searchResults->installEventFilter(this);
     resultsLayout->addWidget(searchResults, 1);
     contentStack->addWidget(searchPage);
-    body->addWidget(contentStack);
+    auto *rightPane = new QWidget;
+    auto *rightLayout = new QVBoxLayout(rightPane);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(0);
+    rightLayout->addWidget(contentStack, 1);
+    body->addWidget(rightPane);
     connect(searchResults, &QTreeView::doubleClicked, this,
             [this](const QModelIndex &i) {
               openUrl(i.siblingAtColumn(0).data(Qt::UserRole).toUrl());
@@ -696,7 +752,7 @@ public:
               searchSummary->setText(
                   QString("%1 results in %2%3%4")
                       .arg(count)
-                      .arg(title(searchRoot))
+                      .arg(selectedTag.isEmpty() ? title(searchRoot) : "Tags: " + selectedTag)
                       .arg(limited ? " · Search limit reached" : "")
                       .arg(skipped
                                ? QString(" · %1 unavailable folders skipped")
@@ -723,7 +779,7 @@ public:
     crumbLayout->setSpacing(2);
     crumbs->setFixedHeight(24);
     bl->addWidget(crumbs);
-    auto *statusRow = new QWidget;
+    statusRow = new QWidget;
     auto *sr = new QHBoxLayout(statusRow);
     sr->setContentsMargins(12, 0, 12, 0);
     sr->setSpacing(8);
@@ -734,7 +790,7 @@ public:
     auto *size = iconSlider = new QSlider(Qt::Horizontal);
     size->setObjectName("finderIconSize");
     size->setRange(40, 160);
-    size->setValue(96);
+    size->setValue(64);
     size->setFixedWidth(100);
     size->setToolTip("Icon size");
     connect(size, &QSlider::valueChanged, this, [this](int px) {
@@ -744,7 +800,7 @@ public:
     });
     sr->addWidget(size);
     bl->addWidget(statusRow);
-    outer->addWidget(bottom);
+    rightLayout->addWidget(bottom);
     makeActions();
     applyStyle();
     addTab(initial, true);
@@ -1014,6 +1070,10 @@ public:
         {"height", height()},
         {"blur", header->blur}};
   }
+  void testMaterialBlur(bool enabled) {
+    setProperty("finderDisableBlur", !enabled);
+    updateMaterial();
+  }
   bool key(int key, int modifiers, const QString &text = {}) {
     auto *f = QApplication::focusWidget();
     if (auto *modal = QApplication::activeModalWidget())
@@ -1143,12 +1203,13 @@ private:
   QTimer *searchTimer = nullptr;
   QLabel *searchSummary;
   QUrl searchRoot;
+  QString selectedTag;
   QUrl capacityUrl;
   QString capacityText;
-  QWidget *bottom, *crumbs, *modeBox, *headerSidebar;
+  QWidget *bottom, *crumbs, *statusRow, *modeBox, *headerSidebar;
   QHBoxLayout *crumbLayout;
   QLabel *folderTitle, *status;
-  KFilePlacesView *places;
+  FinderPlacesView *places;
   QLineEdit *location, *search;
   QToolButton *back, *forward, *modePopup, *arrange, *share;
   QSlider *iconSlider;
@@ -1218,6 +1279,7 @@ private:
     return urls;
   }
   void stopSearch() {
+    selectedTag.clear();
     if (fileSearch)
       fileSearch->cancel();
     if (searchTimer)
@@ -1232,6 +1294,7 @@ private:
       refresh();
   }
   void beginSearch() {
+    selectedTag.clear();
     if (!browser())
       return;
     if (search->text().trimmed().isEmpty()) {
@@ -1251,16 +1314,16 @@ private:
   void layoutHeader() {
     if (!modeBox || !sidebar)
       return;
-    const bool narrow = width() < 980;
+    const bool narrow = width() < 850 || search->isVisible();
     modeBox->setVisible(!narrow);
     modePopup->setVisible(narrow);
     headerSidebar->setFixedWidth(
-        sidebar->isVisible() ? qMax(34, sidebar->width() - 12) : 34);
-    if (width() < 840)
-      headerSidebar->setFixedWidth(34);
-    arrange->setVisible(width() >= 840 && !search->isVisible());
-    share->setVisible(width() >= 840 && !search->isVisible());
-    tagButton->setVisible(width() >= 1050 && !search->isVisible());
+        sidebar->isVisible() ? qMax(94, sidebar->width() - 12) : 94);
+    arrange->setVisible(width() >= 740 && !search->isVisible());
+    share->setVisible(width() >= 780 && !search->isVisible());
+    tagButton->setVisible(width() >= 780 && !search->isVisible());
+    header->sidebarWidth = sidebar->isVisible() ? sidebar->width() : 106;
+    header->update();
   }
   QToolButton *button(const QString &name, const QString &label,
                       QWidget *parent) {
@@ -1323,7 +1386,7 @@ private:
     browser()->setMode(Browser::Mode(qBound(0, mode, 3)));
     browser()->setIconSize(
         settings
-            .value("iconSize", QSettings().value("View/defaultIconSize", 96))
+            .value("iconSize", QSettings().value("View/defaultIconSize", 64))
             .toInt());
     const auto tree = browser()->findChild<QTreeView *>("finderListView");
     if (tree)
@@ -1434,7 +1497,8 @@ private:
     }
     folderTitle->setText(title(u));
     folderTitle->setToolTip(u.toDisplayString());
-    places->setUrl(u);
+    if (!selectedTag.isEmpty() && showingSearch()) places->setTag(selectedTag);
+    else places->setUrl(u);
     auto &s = states[browser()];
     back->setEnabled(s.historyIndex > 0);
     forward->setEnabled(s.historyIndex + 1 < s.history.size());
@@ -1500,23 +1564,24 @@ private:
   void updateMaterial() {
     if (!windowHandle() || !sidebar)
       return;
-    bool available =
-        KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
-    header->blur = sidebar->blur = available;
+    const bool supported = KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
+    const bool available = supported && !property("finderDisableBlur").toBool();
+    header->blur = sidebar->blur = supported;
     header->update();
     sidebar->update();
-    QRegion region(header->geometry());
+    QRegion region(QRect(0, 0, header->sidebarWidth, header->height()));
     if (sidebar->isVisible())
       region += QRegion(
           sidebar->rect().translated(sidebar->mapTo(this, QPoint(0, 0))));
     KWindowEffects::enableBlurBehind(windowHandle(), available, region);
+    KWindowEffects::enableBackgroundContrast(windowHandle(), available, 1.04, 1.10, 1.0, region);
   }
   void applyStyle() {
     setStyleSheet(R"(
-        QWidget{color:#ededf2;font-weight:500;} QMainWindow{background:transparent;}
-        #finderFolderTitle{font-size:14px;font-weight:500;background:transparent;} 
-        #navigationCapsule,#modeCapsule{background:rgba(255,255,255,15);border:1px solid rgba(255,255,255,30);border-radius:18px;}
-        QToolButton{border:0;border-radius:10px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,24);} QToolButton:checked{background:rgba(255,255,255,38);} QToolButton:disabled{opacity:.4;}
+        QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;}
+        #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
+        #navigationCapsule,#modeCapsule,#actionsCapsule{background:rgba(255,255,255,12);border:1px solid rgba(255,255,255,25);border-radius:18px;}
+        QToolButton{border:0;border-radius:16px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,20);} QToolButton:checked{background:rgba(255,255,255,35);} QToolButton:disabled{opacity:.4;}
         QToolButton::menu-indicator{image:none;width:0;height:0;}
         #window-close:hover{background:#bb4949;} #finderPlaces{background:transparent;border:0;}
         #finderPlaces::item{min-height:30px;border:0;border-radius:8px;} #finderPlaces::item:selected{background:rgba(255,255,255,28);color:white;} #finderPlaces::item:hover{background:rgba(255,255,255,15);}
@@ -1977,6 +2042,16 @@ public slots:
     m->active()->resize(width, height);
     return true;
   }
+  bool moveWindow(int x, int y) {
+    if (!m->active()) return false;
+    m->active()->move(x, y);
+    return true;
+  }
+  bool setMaterialBlur(bool enabled) {
+    if (!m->active()) return false;
+    m->active()->testMaterialBlur(enabled);
+    return true;
+  }
   bool dragSidebar(int distance) {
     if (!m->active())
       return false;
@@ -2019,8 +2094,12 @@ int main(int argc, char **argv) {
   app.setQuitOnLastWindowClosed(false);
   app.setStyle("Fusion");
   QIcon::setThemeName("MacTahoe-dark");
-  QFont font("Ubuntu", 10);
-  font.setWeight(QFont::Medium);
+  // Use an already installed native reference font when available. The repo
+  // does not ship or install Apple fonts; Inter is the portable fallback.
+  QFont font("SF Pro Display", 10);
+  font.setFamilies({"SF Pro Display", "Inter", "sans-serif"});
+  font.setPixelSize(13);
+  font.setWeight(QFont::Normal);
   app.setFont(font);
   QPalette pal;
   pal.setColor(QPalette::Window, QColor("#26262a"));
