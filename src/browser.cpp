@@ -22,12 +22,15 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMimeType>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPointer>
 #include <QProcess>
+#include <QQueue>
 #include <QScrollBar>
+#include <QSet>
 #include <QStandardPaths>
 #include <QStackedWidget>
 #include <QThread>
@@ -53,6 +56,7 @@
 #include <KIO/MkdirJob>
 #include <KIO/PasteJob>
 #include <KIO/PreviewJob>
+#include <KIO/UDSEntry>
 
 #include <functional>
 #include <algorithm>
@@ -62,6 +66,12 @@ using DropHandler = std::function<void(QDropEvent *, const QModelIndex &)>;
 constexpr int TagsRole = Qt::UserRole + 131;
 constexpr int SectionStartRole = Qt::UserRole + 132;
 constexpr int SectionHeight = 30;
+
+QString itemType(const KFileItem &item) {
+    const auto supplied = item.entry().stringValue(KIO::UDSEntry::UDS_DISPLAY_TYPE);
+    // Unlike mimeComment(), this does not open .desktop/.directory files.
+    return supplied.isEmpty() ? item.currentMimeType().comment() : supplied;
+}
 
 // Files remain real KDirModel rows. Categorization changes their order and
 // supplies section metadata, without inserting selectable dummy file indexes.
@@ -73,7 +83,13 @@ public:
         tagTimer.setSingleShot(true);
         tagTimer.setInterval(40);
         QObject::connect(&tagTimer, &QTimer::timeout, this, [this] { readTags(); });
+        groupTimer.setSingleShot(true);
+        groupTimer.setInterval(200);
+        QObject::connect(&groupTimer, &QTimer::timeout, this, [this] {
+            if (grouping == Browser::GroupTags) invalidate();
+        });
     }
+    ~FinderProxy() override { if (tagWorker) tagWorker->requestInterruption(); }
     Browser::Group grouping = Browser::GroupNone;
 
     void setGroup(Browser::Group value) {
@@ -82,7 +98,12 @@ public:
         invalidate();
     }
     void watchSource() {
-        QObject::connect(sourceModel(), &QAbstractItemModel::rowsInserted, this, [this] { tagTimer.start(); });
+        QObject::connect(sourceModel(), &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &parent, int first, int last) {
+            enqueueTags(parent, first, last);
+        });
+        QObject::connect(sourceModel(), &QAbstractItemModel::rowsAboutToBeRemoved, this, [this](const QModelIndex &parent, int first, int last) {
+            forgetTags(parent, first, last);
+        });
         QObject::connect(sourceModel(), &QAbstractItemModel::modelReset, this, [this] { refreshTags(); });
         // DecorationRole updates can omit the roles list in KDirModel. Never
         // treat thumbnail delivery as a reason to reread filesystem metadata.
@@ -90,13 +111,21 @@ public:
     }
     void refreshTags() {
         ++tagRevision;
+        if (tagWorker) tagWorker->requestInterruption();
+        tagTimer.stop();
+        groupTimer.stop();
+        tagQueue.clear();
+        queuedTags.clear();
         tagCache.clear();
         tagErrors.clear();
+        tagCategories.clear();
         if (grouping == Browser::GroupTags) invalidate();
-        tagTimer.start();
+        enqueueTags({}, 0, sourceModel()->rowCount() - 1);
     }
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
         if (role == TagsRole) return tagCache.value(index.data(KDirModel::FileItemRole).value<KFileItem>().url());
+        if (role == Qt::DisplayRole && index.column() == KDirModel::Type)
+            return itemType(mapToSource(index).data(KDirModel::FileItemRole).value<KFileItem>());
         if (role == CategoryDisplayRole || role == CategorySortRole) {
             const auto info = category(mapToSource(index));
             return role == CategoryDisplayRole ? info.second : info.first;
@@ -109,6 +138,24 @@ public:
         return KDirSortFilterProxyModel::data(index, role);
     }
 protected:
+    bool subSortLessThan(const QModelIndex &left, const QModelIndex &right) const override {
+        if (left.column() != KDirModel::Type) return KDirSortFilterProxyModel::subSortLessThan(left, right);
+        const auto a = left.data(KDirModel::FileItemRole).value<KFileItem>();
+        const auto b = right.data(KDirModel::FileItemRole).value<KFileItem>();
+        const bool ascending = sortOrder() == Qt::AscendingOrder;
+        if (sortHiddenFilesLast() && a.isHidden() != b.isHidden()) return a.isHidden() != ascending;
+        if (sortFoldersFirst() && a.isDir() != b.isDir()) return a.isDir() == ascending;
+        // KDirSortFilterProxyModel's Type comparison calls mimetype(), which
+        // can sniff file contents. The lister's delayed MIME types are enough
+        // for ordering; native thumbnail delivery can refine them afterwards.
+        const auto aMime = a.currentMimeType();
+        const auto bMime = b.currentMimeType();
+        int result = aMime.name() == bMime.name() ? 0 : collator.compare(itemType(a), itemType(b));
+        if (!result) result = collator.compare(a.text(), b.text());
+        if (!result) result = QString::compare(a.text(), b.text(), Qt::CaseSensitive);
+        if (!result) result = QString::compare(a.url().toString(), b.url().toString(), Qt::CaseSensitive);
+        return result < 0;
+    }
     int compareCategories(const QModelIndex &left, const QModelIndex &right) const override {
         return collator.compare(category(left).first, category(right).first);
     }
@@ -116,7 +163,12 @@ private:
     QCollator collator;
     QHash<QUrl, QStringList> tagCache;
     QHash<QUrl, QString> tagErrors;
+    QHash<QUrl, QPair<QString, QString>> tagCategories;
+    QQueue<QUrl> tagQueue;
+    QSet<QUrl> queuedTags;
     QTimer tagTimer;
+    QTimer groupTimer;
+    QPointer<QThread> tagWorker;
     bool readingTags = false;
     quint64 tagRevision = 0;
 
@@ -129,8 +181,8 @@ private:
                     first.isEmpty() || !first.at(0).isLetter() ? QStringLiteral("#") : first};
         }
         case Browser::GroupKind: {
-            const auto mime = item.mimetype();
             if (item.isDir()) return {"0", "Folders"};
+            const auto mime = item.currentMimeType().name();
             if (mime.startsWith("image/")) return {"1", "Images"};
             if (mime == "application/pdf") return {"2", "PDF Documents"};
             if (mime.startsWith("text/") || mime.contains("document") || mime.contains("spreadsheet") || mime.contains("presentation"))
@@ -139,7 +191,7 @@ private:
             if (mime.startsWith("video/")) return {"5", "Movies"};
             if (mime.contains("zip") || mime.contains("tar") || mime.contains("compressed") || mime.contains("archive")) return {"6", "Archives"};
             if (mime.contains("executable") || mime == "application/x-desktop") return {"7", "Applications"};
-            const QString kind = source.siblingAtColumn(KDirModel::Type).data().toString();
+            const QString kind = itemType(item);
             return {"8" + kind, kind.isEmpty() ? QStringLiteral("Other") : kind};
         }
         case Browser::GroupDateModified: {
@@ -168,24 +220,45 @@ private:
             if (!item.url().isLocalFile() || item.isLink() || tagErrors.contains(item.url()))
                 return {"3", "Tags Unavailable"};
             if (!tagCache.contains(item.url())) return {"2", "Reading Tags…"};
-            QStringList tags = tagCache.value(item.url());
-            if (tags.isEmpty()) return {"1", "No Tags"};
+            if (tagCache.value(item.url()).isEmpty()) return {"1", "No Tags"};
             // A file has one real index, including when it has several tags.
             // Group by the canonical full tag set rather than duplicate rows.
-            std::sort(tags.begin(), tags.end(), [this](const QString &a, const QString &b) { return collator.compare(a, b) < 0; });
-            const QString names = tags.join(", ");
-            return {"0" + names, names};
+            return tagCategories.value(item.url());
         }
         default: return {};
         }
     }
+    void enqueueTags(const QModelIndex &parent, int first, int last) {
+        for (int row = first; row <= last; ++row) {
+            const auto index = sourceModel()->index(row, 0, parent);
+            const auto item = index.data(KDirModel::FileItemRole).value<KFileItem>();
+            if (!item.isNull() && item.url().isLocalFile() && !item.isLink() &&
+                !tagCache.contains(item.url()) && !queuedTags.contains(item.url())) {
+                tagQueue.enqueue(item.url());
+                queuedTags.insert(item.url());
+            }
+            // Only visit already loaded children; never fetch directories for tags.
+            const int children = sourceModel()->rowCount(index);
+            if (children) enqueueTags(index, 0, children - 1);
+        }
+        if (!readingTags && !tagQueue.isEmpty() && !tagTimer.isActive()) tagTimer.start();
+    }
+    void forgetTags(const QModelIndex &parent, int first, int last) {
+        for (int row = first; row <= last; ++row) {
+            const auto index = sourceModel()->index(row, 0, parent);
+            const auto url = index.data(KDirModel::FileItemRole).value<KFileItem>().url();
+            tagCache.remove(url); tagErrors.remove(url); tagCategories.remove(url); queuedTags.remove(url);
+            const int children = sourceModel()->rowCount(index);
+            if (children) forgetTags(index, 0, children - 1);
+        }
+    }
     void readTags() {
-        if (readingTags) return; // The finishing worker schedules the next scan.
+        if (readingTags) return;
         QList<QUrl> urls;
-        for (int row = 0; row < sourceModel()->rowCount(); ++row) {
-            const auto item = sourceModel()->index(row, 0).data(KDirModel::FileItemRole).value<KFileItem>();
-            if (!item.isNull() && item.url().isLocalFile() && !tagCache.contains(item.url())) urls.append(item.url());
-            if (urls.size() >= 128) break;
+        while (!tagQueue.isEmpty() && urls.size() < 128) {
+            const auto url = tagQueue.dequeue();
+            if (!queuedTags.contains(url) || tagCache.contains(url)) continue;
+            urls.append(url);
         }
         if (urls.isEmpty()) return;
         readingTags = true;
@@ -194,20 +267,50 @@ private:
         auto errors = std::make_shared<QHash<QUrl, QString>>();
         auto *worker = QThread::create([urls, result, errors] {
             for (const auto &url : urls) {
+                if (QThread::currentThread()->isInterruptionRequested()) break;
                 QString error;
                 result->insert(url, FileTags::tags(url, &error));
                 if (!error.isEmpty()) errors->insert(url, error);
             }
         });
-        QObject::connect(worker, &QThread::finished, this, [this, revision, result, errors] {
+        tagWorker = worker;
+        QObject::connect(worker, &QThread::finished, this, [this, revision, urls, result, errors] {
             readingTags = false;
+            tagWorker = nullptr;
             if (revision == tagRevision) {
-                for (auto it = result->cbegin(); it != result->cend(); ++it) tagCache.insert(it.key(), it.value());
-                for (auto it = errors->cbegin(); it != errors->cend(); ++it) tagErrors.insert(it.key(), it.value());
-                if (grouping == Browser::GroupTags) invalidate();
-                if (rowCount()) emit dataChanged(index(0, 0), index(rowCount() - 1, columnCount() - 1), {TagsRole});
+                QModelIndexList changed;
+                for (const auto &url : urls) {
+                    queuedTags.remove(url);
+                    const auto source = static_cast<KDirModel *>(sourceModel())->indexForUrl(url);
+                    if (!source.isValid()) continue;
+                    if (!result->contains(url)) continue;
+                    const auto tags = result->value(url);
+                    tagCache.insert(url, tags);
+                    if (errors->contains(url)) tagErrors.insert(url, errors->value(url));
+                    auto ordered = tags;
+                    std::sort(ordered.begin(), ordered.end(), [this](const auto &a, const auto &b) { return collator.compare(a, b) < 0; });
+                    const auto names = ordered.join(", ");
+                    tagCategories.insert(url, {"0" + names, names});
+                    const auto mapped = mapFromSource(source);
+                    if (mapped.isValid()) changed.append(mapped);
+                }
+                // Repaint only delivered names. A full-model signal per batch
+                // makes large list views repeatedly lay out unchanged rows.
+                std::sort(changed.begin(), changed.end(), [](const auto &a, const auto &b) {
+                    if (a.parent() != b.parent()) return a.parent() < b.parent();
+                    return a.row() < b.row();
+                });
+                for (int first = 0; first < changed.size();) {
+                    int last = first;
+                    while (last + 1 < changed.size() && changed[last + 1].parent() == changed[first].parent() &&
+                           changed[last + 1].row() == changed[last].row() + 1) ++last;
+                    emit dataChanged(changed[first], changed[last], {TagsRole});
+                    first = last + 1;
+                }
+                if (grouping == Browser::GroupTags && !groupTimer.isActive()) groupTimer.start();
             }
-            tagTimer.start();
+            if (!tagQueue.isEmpty()) tagTimer.start(0);
+            else if (groupTimer.isActive()) groupTimer.start(0);
         });
         QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
         worker->start();
@@ -775,6 +878,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->model->setDropsAllowed(KDirModel::DropOnDirectory);
     d->model->dirLister()->setMainWindow(window());
     d->model->dirLister()->setAutoErrorHandlingEnabled(true);
+    d->model->dirLister()->setDelayedMimeTypes(true);
     d->proxy = new FinderProxy(this);
     d->proxy->setSourceModel(d->model);
     d->proxy->watchSource();
