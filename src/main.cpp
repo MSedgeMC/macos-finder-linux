@@ -16,6 +16,7 @@
 #include "appearance.h"
 #include "inspector.h"
 #include "searchresults.h"
+#include "taboverview.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KFilePlacesModel>
@@ -534,6 +535,7 @@ public:
     folderTitle->setObjectName("finderFolderTitle");
     folderTitle->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(folderTitle, &QWidget::customContextMenuRequested, this, [this](const QPoint &point) { ancestorMenu(folderTitle->mapToGlobal(point)); });
+    folderTitle->installEventFilter(this);
     folderTitle->setTextFormat(Qt::PlainText);
     folderTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     folderTitle->setMinimumWidth(50);
@@ -703,8 +705,8 @@ public:
       if (ok && !tag.trimmed().isEmpty())
         changeTags(tag, 1);
     });
-    tagMenu->addAction("Remove All Tags", this,
-                       [this] { changeTags(QString(), 3); });
+    auto *removeTags = tagMenu->addAction("Remove All Tags", this, [this] { changeTags(QString(), 3); });
+    removeTags->setShortcut(QKeySequence("Ctrl+0")); QMainWindow::addAction(removeTags);
     connect(tagMenu, &QMenu::aboutToShow, this, [this] { updateTags(true); });
     auto *more = button("more", "Actions", actionsCapsule);
     actionsMenu = new QMenu(more);
@@ -1549,6 +1551,7 @@ public:
         }
       }
       tabs->setTabText(tabs->indexOf(b), title(url));
+      tabs->setTabToolTip(tabs->indexOf(b), url.toDisplayString(QUrl::RemovePassword | QUrl::PreferLocalFile));
       auto recent = QSettings().value("History/recentFolders").toStringList();
       recent.removeAll(url.toString()); recent.prepend(url.toString());
       while (recent.size() > 15) recent.removeLast();
@@ -1702,19 +1705,14 @@ public:
   }
   void tabOverview() {
     if (auto *existing = findChild<QDialog *>("finderTabOverview")) { existing->close(); return; }
-    auto *dialog = new QDialog(this); dialog->setObjectName("finderTabOverview"); dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle("All Tabs"); dialog->resize(620, 420);
-    auto *layout = new QVBoxLayout(dialog);
-    auto *view = new QListWidget(dialog); view->setObjectName("finderTabOverviewList"); layout->addWidget(view);
-    for (int i = 0; i < tabs->count(); ++i) {
-      auto *b = qobject_cast<Browser *>(tabs->widget(i));
-      auto *item = new QListWidgetItem(QIcon::fromTheme("folder"), tabs->tabText(i) + "\n" + b->url().toDisplayString(QUrl::PreferLocalFile), view);
-      item->setData(Qt::UserRole, i); item->setSizeHint(QSize(0, 64));
-    }
-    view->setCurrentRow(tabs->currentIndex());
-    connect(view, &QListWidget::itemActivated, dialog, [this, dialog](QListWidgetItem *item) { tabs->setCurrentIndex(item->data(Qt::UserRole).toInt()); dialog->accept(); });
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject); dialog->open(); installScrolling(dialog);
+    auto *dialog = new FinderTabOverview(tabs, this);
+    connect(dialog, &FinderTabOverview::newTabRequested, this, [this] { addTab(configuredNewFolder(), true); });
+    connect(dialog, &FinderTabOverview::closeTabRequested, this, [this, dialog](int index) {
+      if (tabs->count() == 1) dialog->close();
+      tabs->tabCloseRequested(index);
+    });
+    connect(dialog, &QDialog::finished, this, [this] { focusContent(); });
+    dialog->open(); installScrolling(dialog);
   }
   void connectToServer() {
     if (auto *existing = findChild<QDialog *>("finderConnectServer")) { existing->show(); existing->raise(); return; }
@@ -1858,6 +1856,12 @@ protected:
     QTimer::singleShot(0, this, [this] { updateMaterial(); });
   }
   bool eventFilter(QObject *o, QEvent *e) override {
+    if (o == folderTitle && e->type() == QEvent::MouseButtonPress) {
+      const auto *mouse = static_cast<QMouseEvent *>(e);
+      if (mouse->button() == Qt::LeftButton && mouse->modifiers().testFlag(Qt::MetaModifier)) {
+        ancestorMenu(mouse->globalPosition().toPoint()); return true;
+      }
+    }
     if (e->type() == QEvent::Show) {
       if (auto *area = qobject_cast<QAbstractScrollArea *>(o); area && area->window() == this && !qobject_cast<FinderPlacesView *>(area)) {
         FinderScroll::Options options;
@@ -1881,8 +1885,10 @@ protected:
           browser()->activeView()->setFocus();
           return true;
         }
-        if (o == searchResults && k->modifiers() == Qt::NoModifier && (k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter)) { renameSelection(); return true; }
-        if (o == searchResults && k->modifiers() == Qt::NoModifier &&
+        const auto *searchView = searchPresentation ? searchPresentation->activeView() : nullptr;
+        const bool searchInput = showingSearch() && searchView && (o == searchView || o == searchView->viewport());
+        if (searchInput && k->modifiers() == Qt::NoModifier && (k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter)) { renameSelection(); return true; }
+        if (searchInput && k->modifiers() == Qt::NoModifier &&
             k->key() == Qt::Key_Space) {
           quickLook(searchSelection());
           return true;
@@ -2019,11 +2025,15 @@ private:
     for (auto *action : tagActions) { tagMenu->removeAction(action); namedActions.remove(action->objectName()); action->deleteLater(); }
     tagActions.clear();
     auto *before = tagMenu->actions().isEmpty() ? nullptr : tagMenu->actions().first();
-    for (const auto &tag : FinderPreferences::favoriteTags()) {
+    const auto favorites = FinderPreferences::favoriteTags();
+    for (int slot = 0; slot < favorites.size(); ++slot) {
+      const auto &tag = favorites[slot];
       if (tag.isEmpty()) continue;
       auto *action = new QAction(tag, tagMenu); action->setObjectName("tag" + tag); action->setCheckable(true);
       QPixmap pixmap(20, 20); pixmap.fill(Qt::transparent); QPainter painter(&pixmap); painter.setRenderHint(QPainter::Antialiasing); painter.setPen(Qt::NoPen); painter.setBrush(FileTags::tagColor(tag)); painter.drawEllipse(QRectF(4,4,12,12)); painter.end();
       action->setIcon(QIcon(pixmap)); tagMenu->insertAction(before, action); tagActions << action; namedActions["tag" + tag] = action;
+      action->setShortcut(QKeySequence(QString("Ctrl+%1").arg(slot + 1)));
+      QMainWindow::addAction(action);
       connect(action, &QAction::triggered, this, [this, tag](bool checked) { changeTags(tag, checked ? 1 : 2); });
     }
     updateTags(true);
@@ -2670,6 +2680,9 @@ private:
     auto &s = states[browser()];
     back->setEnabled(s.historyIndex > 0);
     forward->setEnabled(s.historyIndex + 1 < s.history.size());
+    if (namedActions.contains("back")) namedActions["back"]->setEnabled(back->isEnabled());
+    if (namedActions.contains("forward")) namedActions["forward"]->setEnabled(forward->isEnabled());
+    if (namedActions.contains("parent")) namedActions["parent"]->setEnabled(u.isValid() && u.path() != "/" && !u.path().isEmpty());
     modeActions->actions()[showingSearch() ? searchPresentation->mode() : int(browser()->mode())]->setChecked(true);
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns",
                                         "gallery"}[showingSearch() ? searchPresentation->mode() : int(browser()->mode())]));
@@ -3132,7 +3145,7 @@ private:
       addAction(
           view, "mode" + QString::number(i),
           QStringList{"as Icons", "as List", "as Columns", "as Gallery"}[i],
-          {"Ctrl+" + QString::number(i + 1), "Meta+" + QString::number(i + 1)},
+          {"Alt+" + QString::number(i + 1), "Meta+" + QString::number(i + 1)},
           [this, i] { setMode(i); });
     addAction(go, "back", "Back", {"Alt+Left", "Meta+["},
               [this] { history(-1); });
@@ -3221,7 +3234,7 @@ private:
     }
     addAction(window, "bringAll", "Bring All to Front", {}, [this] { emit bringAllRequested(); });
     addAction(window, "mergeWindows", "Merge All Windows", {}, [this] { emit mergeRequested(); });
-    addAction(window, "reopenWindow", "Reopen Last Closed Window", {"Meta+Shift+N"}, [this] { emit reopeningRequested(false); });
+    addAction(window, "reopenWindow", "Reopen Last Closed Window", {}, [this] { emit reopeningRequested(false); });
     addAction(window, "reopenSession", "Reopen Previous Session", {}, [this] { emit reopeningRequested(true); });
     addAction(window, "detachTab", "Move Tab to New Window", {}, [this] { detachTab(tabs->currentIndex()); });
     addAction(window, "closeOtherTabs", "Close Other Tabs", {}, [this] {
