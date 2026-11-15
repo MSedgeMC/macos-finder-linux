@@ -6,8 +6,9 @@ import subprocess
 import sys
 import tempfile
 import signal
+import shutil
 from pathlib import Path
-with tempfile.TemporaryDirectory(prefix="finder-headless-") as temporary:
+with tempfile.TemporaryDirectory(prefix="finder-headless-", ignore_cleanup_errors=True) as temporary:
     root = Path(temporary)
     env = os.environ.copy()
     for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
@@ -30,4 +31,11 @@ with tempfile.TemporaryDirectory(prefix="finder-headless-") as temporary:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        # A private document portal can leave a disconnected FUSE mount after
+        # its bus exits. Unmount only this test's runtime/doc before cleanup.
+        document_mount = root / "runtime" / "doc"
+        if document_mount.exists() or document_mount.is_mount():
+            fusermount = shutil.which("fusermount3") or shutil.which("fusermount")
+            if fusermount:
+                subprocess.run([fusermount, "-u", "-z", str(document_mount)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     raise SystemExit(result)
