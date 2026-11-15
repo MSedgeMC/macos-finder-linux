@@ -1899,6 +1899,7 @@ private:
   QRegion materialContour;
   bool materialContourSquare = false;
   qreal materialContourScale = 0;
+  int materialContourAlpha = 0;
   QToolButton *persistentMenu = nullptr;
   Header *header;
   Material *sidebar;
@@ -2813,21 +2814,28 @@ private:
     // KWin can change fully transparent client pixels. Cache a matching
     // contour in surface units, without rounding each scaled row separately.
     const bool square = isMaximized() || isFullScreen();
-    if (materialContourSize != size() || materialContourSquare != square || materialContourScale != surfaceScale) {
+    const int coatingAlpha = FinderAppearance::materialTint().alpha();
+    if (materialContourSize != size() || materialContourSquare != square || materialContourScale != surfaceScale || materialContourAlpha != coatingAlpha) {
       const int sw = qRound(width() * surfaceScale), sh = qRound(height() * surfaceScale);
       materialContour = QRegion(QRect(0, 0, sw, sh));
       if (!square) {
-        const auto contour = surfaceTransform.map(windowContour(QRectF(rect()), 16));
+        // Match the client antialias raster, including partial coverage. A
+        // whole-cell geometric test left a sharp backdrop fringe at corners.
+        QImage coverage(QSize(sw, sh), QImage::Format_ARGB32_Premultiplied);
+        coverage.setDevicePixelRatio(surfaceScale); coverage.fill(Qt::transparent);
+        QPainter maskPainter(&coverage); maskPainter.setRenderHint(QPainter::Antialiasing);
+        maskPainter.setPen(Qt::NoPen); maskPainter.setBrush(Qt::white);
+        maskPainter.drawPath(windowContour(QRectF(rect()), 16)); maskPainter.end();
         const int span = qMin(int(std::ceil(26 * surfaceScale)), qMin(sw, sh) / 2);
         materialContour = QRegion(QRect(0, span, sw, sh - 2 * span));
         for (int row = 0; row < span; ++row) for (int y : {row, sh - row - 1}) {
           int left = 0, right = 0;
-          while (left < span && !contour.contains(QRectF(left, y, 1, 1))) ++left;
-          while (right < span && !contour.contains(QRectF(sw - right - 1, y, 1, 1))) ++right;
+          while (left < span && (qAlpha(coverage.pixel(left, y)) * coatingAlpha + 127) / 255 == 0) ++left;
+          while (right < span && (qAlpha(coverage.pixel(sw - right - 1, y)) * coatingAlpha + 127) / 255 == 0) ++right;
           materialContour += QRegion(QRect(left, y, sw - left - right, 1));
         }
       }
-      materialContourSize = size(); materialContourSquare = square; materialContourScale = surfaceScale;
+      materialContourSize = size(); materialContourSquare = square; materialContourScale = surfaceScale; materialContourAlpha = coatingAlpha;
     }
     region &= materialContour;
     KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
@@ -2835,7 +2843,7 @@ private:
   }
   void applyStyle() {
     QString sheet = R"(
-        QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;}
+        QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;border:0;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
         #navigationCapsule,#modeCapsule,#actionsCapsule{background:rgba(255,255,255,12);border:1px solid rgba(255,255,255,25);border-radius:18px;}
         #finderArrange,#finderSearchButton{background:rgba(255,255,255,8);border:1px solid rgba(255,255,255,22);border-radius:18px;}

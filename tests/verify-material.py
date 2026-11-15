@@ -83,7 +83,11 @@ def capture(name):
 try:
     wait_for(lambda:bus.name_has_owner('org.local.FinderTest'),'test service')
     api=dbus.Interface(bus.get_object('org.local.FinderTest','/Test'),'org.local.FinderTest')
-    if float(os.environ.get('QT_SCALE_FACTOR','1'))>1: assert api.resizeWindow(780,440)
+    wait_for(lambda:json.loads(str(api.diagnostics()))['count']==1,'listing and initial configure')
+    QTest.qWait(400)
+    if float(os.environ.get('QT_SCALE_FACTOR','1'))>1:
+        assert api.resizeWindow(780,440);QTest.qWait(300)
+        wait_for(lambda:json.loads(str(api.diagnostics()))['width']==780,'scaled resize')
     assert api.moveWindow(100,20)
     QTest.qWait(300)
     assert api.setMaterialBlur(True)
@@ -118,6 +122,21 @@ try:
                 changedOutside+=delta>2
     assert samples>40, samples
     assert changedOutside==0, ('compositor effect outside rounded alpha',changedOutside,samples,maxOutsideDelta)
+    # Partial contour coverage must receive the material too, rather than
+    # exposing the sharp backdrop as a fringe. The center gives coating alpha.
+    coating=alpha.getpixel((round(100*scale),round(40*scale)))[3]
+    partial=partialChanged=0
+    for y in range(radius):
+        for x in range(radius):
+            if not 0<alpha.getpixel((x,y))[3]<coating: continue
+            point=(origin[0]+x,origin[1]+y)
+            partial+=1
+            partialChanged+=max(abs(a-b) for a,b in zip(blurred.getpixel(point),sharp.getpixel(point)))>2
+    assert partial>20 and partialChanged>=partial*.9,('sharp corner fringe',partialChanged,partial)
+    # Straight outer boundaries have no separately painted/plugin outline.
+    for x in (round(100*scale),round(300*scale)):
+        a=blurred.getpixel((origin[0]+x,origin[1]));b=blurred.getpixel((origin[0]+x,origin[1]+1))
+        assert max(abs(v-w) for v,w in zip(a,b))<=3,('outer top outline',x,a,b)
     # Header/sidebar must join without a separately painted shadow line.
     assert alpha.getpixel((round(80*scale),round(50*scale))) == alpha.getpixel((round(80*scale),round(51*scale))) == alpha.getpixel((round(80*scale),round(52*scale))), 'painted header shadow'
     blurred.crop((origin[0]-8,origin[1]-8,origin[0]+80,origin[1]+80)).save(out/'corner-composited.png')
@@ -136,7 +155,7 @@ try:
     changed=capture('backdrop-changed')
     delta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(inside),changed.crop(inside))).mean)/3
     assert delta>10,delta
-    result={'passed':True,'cornerTransparentSamples':samples,'cornerChangedOutside':changedOutside,'cornerMaximumDelta':maxOutsideDelta,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,
+    result={'passed':True,'cornerTransparentSamples':samples,'cornerChangedOutside':changedOutside,'cornerMaximumDelta':maxOutsideDelta,'partialCornerSamples':partial,'partialCornerMaterialSamples':partialChanged,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,
             'sharpDetail':sharp_detail,'detailRatio':blurred_detail/sharp_detail,
             'backdropColorDelta':delta,'opaqueFilePaneUnchanged':True,
             'privateWayland':True,'noWorkingDesktopInput':True}
