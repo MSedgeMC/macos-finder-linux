@@ -470,6 +470,7 @@ public:
       updateMaterial();
     });
     auto *nav = new QWidget;
+    toolbarWidgets["navigation"] = nav;
     nav->setObjectName("navigationCapsule");
     auto *nl = new QHBoxLayout(nav);
     nl->setContentsMargins(2, 0, 3, 0);
@@ -494,6 +495,7 @@ public:
       });
     }
     folderTitle = new QLabel;
+    toolbarWidgets["title"] = folderTitle;
     folderTitle->setObjectName("finderFolderTitle");
     folderTitle->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(folderTitle, &QWidget::customContextMenuRequested, this, [this](const QPoint &point) { ancestorMenu(folderTitle->mapToGlobal(point)); });
@@ -502,6 +504,7 @@ public:
     folderTitle->setMinimumWidth(50);
     hl->addWidget(folderTitle, 1);
     modeBox = new QWidget;
+    toolbarWidgets["views"] = modeBox;
     modeBox->setObjectName("modeCapsule");
     auto *ml = new QHBoxLayout(modeBox);
     ml->setContentsMargins(3, 0, 3, 0);
@@ -531,6 +534,7 @@ public:
     modePopup->hide();
     hl->addWidget(modePopup);
     arrange = button("sort", "Sort By", header);
+    toolbarWidgets["sort"] = arrange;
     arrange->setObjectName("finderArrange");
     arrange->setFixedWidth(44);
     auto *sortMenu = new QMenu(arrange);
@@ -587,6 +591,7 @@ public:
     arrange->setPopupMode(QToolButton::InstantPopup);
     hl->addWidget(arrange);
     auto *actionsCapsule = new QWidget(header);
+    toolbarWidgets["actions"] = actionsCapsule;
     actionsCapsule->setObjectName("actionsCapsule");
     auto *actionsLayout = new QHBoxLayout(actionsCapsule);
     actionsLayout->setContentsMargins(3, 0, 3, 0);
@@ -667,6 +672,7 @@ public:
         searchTimer->start();
     });
     auto *searchButton = button("search", "Search", header);
+    toolbarWidgets["search"] = searchButton;
     searchButton->setObjectName("finderSearchButton");
     searchButton->setFixedWidth(36);
     connect(searchButton, &QToolButton::clicked, this,
@@ -935,6 +941,7 @@ public:
     bl->addWidget(statusRow);
     rightLayout->addWidget(bottom);
     makeActions();
+    applyToolbarOrder();
     applyStyle();
     addTab(initial, true);
     qApp->installEventFilter(this);
@@ -1657,6 +1664,7 @@ private:
   QAction *descending;
   QMenu *actionsMenu;
   QuickActions *quickActions = nullptr;
+  QHash<QString, QWidget *> toolbarWidgets;
   QToolButton *tagButton;
   QMenu *tagMenu;
   QList<QAction *> tagActions;
@@ -1813,15 +1821,66 @@ private:
     if (!modeBox || !sidebar)
       return;
     const bool narrow = width() < 850 || search->isVisible();
-    modeBox->setVisible(!narrow);
-    modePopup->setVisible(narrow);
+    const auto hidden = QSettings().value("Window/toolbarHidden").toStringList();
+    modeBox->setVisible(!narrow && !hidden.contains("views"));
+    modePopup->setVisible(narrow && !hidden.contains("views"));
+    toolbarWidgets.value("navigation")->setVisible(!hidden.contains("navigation"));
+    folderTitle->setVisible(!hidden.contains("title"));
+    toolbarWidgets.value("actions")->setVisible(!hidden.contains("actions"));
+    toolbarWidgets.value("search")->setVisible(!hidden.contains("search"));
     headerSidebar->setFixedWidth(
         sidebar->isVisible() ? qMax(94, sidebar->width() - 12) : 94);
-    arrange->setVisible(width() >= 740 && !search->isVisible());
+    arrange->setVisible(width() >= 740 && !search->isVisible() && !hidden.contains("sort"));
     share->setVisible(width() >= 780 && !search->isVisible());
     tagButton->setVisible(width() >= 780 && !search->isVisible());
     header->sidebarWidth = sidebar->isVisible() ? sidebar->width() : 106;
     header->update();
+  }
+  void applyToolbarOrder() {
+    const QStringList standard{"navigation", "title", "views", "sort", "actions", "search"};
+    auto order = QSettings().value("Window/toolbarOrder", standard).toStringList();
+    order.removeIf([&standard](const QString &key) { return !standard.contains(key); });
+    order.removeDuplicates(); for (const auto &key : standard) if (!order.contains(key)) order << key;
+    auto *layout = qobject_cast<QHBoxLayout *>(header->layout());
+    for (auto *widget : toolbarWidgets) layout->removeWidget(widget);
+    layout->removeWidget(modePopup); layout->removeWidget(search);
+    for (const auto &key : order) {
+      layout->addWidget(toolbarWidgets.value(key), key == "title" ? 1 : 0);
+      if (key == "views") layout->addWidget(modePopup);
+      if (key == "search") { layout->removeWidget(toolbarWidgets.value(key)); layout->addWidget(search); layout->addWidget(toolbarWidgets.value(key)); }
+    }
+    layoutHeader();
+  }
+  void customizeToolbar() {
+    if (auto *existing = findChild<QDialog *>("finderCustomizeToolbar")) { existing->raise(); existing->activateWindow(); return; }
+    auto *dialog = new QDialog(this); dialog->setObjectName("finderCustomizeToolbar"); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle("Customize Toolbar"); auto *layout = new QVBoxLayout(dialog);
+    auto *description = new QLabel("Drag items to arrange the toolbar. Uncheck an item to hide it.", dialog); description->setWordWrap(true); layout->addWidget(description);
+    auto *list = new QListWidget(dialog); list->setObjectName("finderToolbarItems"); list->setDragDropMode(QAbstractItemView::InternalMove); layout->addWidget(list);
+    const QStringList standard{"navigation", "title", "views", "sort", "actions", "search"};
+    const QHash<QString, QString> names{{"navigation", "Back and Forward"}, {"title", "Folder Title"}, {"views", "View"}, {"sort", "Sort and Group"}, {"actions", "Share, Tags and Actions"}, {"search", "Search"}};
+    auto populate = [list, standard, names] {
+      const QSignalBlocker block(list); list->clear();
+      auto order = QSettings().value("Window/toolbarOrder", standard).toStringList(); order.removeDuplicates();
+      for (const auto &key : standard) if (!order.contains(key)) order << key;
+      const auto hidden = QSettings().value("Window/toolbarHidden").toStringList();
+      for (const auto &key : order) if (standard.contains(key)) {
+        auto *item = new QListWidgetItem(names.value(key), list); item->setData(Qt::UserRole, key);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable); item->setCheckState(hidden.contains(key) ? Qt::Unchecked : Qt::Checked);
+      }
+    }; populate();
+    auto apply = [this, list] {
+      QStringList order, hidden;
+      for (int i = 0; i < list->count(); ++i) { auto *item = list->item(i); const auto key = item->data(Qt::UserRole).toString(); order << key; if (item->checkState() == Qt::Unchecked) hidden << key; }
+      QSettings().setValue("Window/toolbarOrder", order); QSettings().setValue("Window/toolbarHidden", hidden); applyToolbarOrder();
+    };
+    connect(list, &QListWidget::itemChanged, dialog, apply);
+    connect(list->model(), &QAbstractItemModel::rowsMoved, dialog, apply);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::RestoreDefaults | QDialogButtonBox::Close, dialog); layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, dialog, [this, populate] {
+      QSettings().remove("Window/toolbarOrder"); QSettings().remove("Window/toolbarHidden"); populate(); applyToolbarOrder();
+    }); dialog->resize(390, 350); dialog->open();
   }
   QToolButton *button(const QString &name, const QString &label,
                       QWidget *parent) {
@@ -2503,6 +2562,7 @@ private:
       header->setVisible(namedActions["toolbar"]->isChecked());
       sidebar->setVisible(namedActions["toolbar"]->isChecked() && namedActions["sidebar"]->isChecked()); updateMaterial();
     }); toolbarAction->setCheckable(true); toolbarAction->setChecked(true);
+    addAction(view, "customizeToolbar", "Customize Toolbar…", {}, [this] { customizeToolbar(); });
     auto *tabsAction = addAction(view, "tabBar", "Show Tab Bar", {"Meta+Shift+T"}, [this] {
       tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
       tabs->tabBar()->setVisible(namedActions["tabBar"]->isChecked() || tabs->count() > 1);
