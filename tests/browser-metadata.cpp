@@ -28,6 +28,7 @@
 #include <iostream>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace {
 void check(bool value, const char *message) {
@@ -201,6 +202,23 @@ int main(int argc, char **argv) {
     browser.calculateAllSizes();
     check(waitFor([&] { return !browser.sizeCalculationRunning(); }), "fresh calculation after navigation");
     check(browser.metadata(folder, Browser::LogicalSizeRole).toULongLong() == 23, "fresh sizes replace canceled generation");
+    // Real create/select/unlink, with directory timestamps pinned to the same
+    // second, reproduces KDE 6.24's dropped DELETE even on fast filesystems.
+    const auto watched = files.filePath("watched.txt");
+    for (int cycle = 0; cycle < 6; ++cycle) {
+        writeFile(watched, 4);
+        check(waitFor([&] { return browser.itemCount() == 5; }), "native external addition reaches listing");
+        const auto watchedUrl = QUrl::fromLocalFile(watched);
+        browser.selectUrls({watchedUrl});
+        check(waitFor([&] { return browser.selectedUrls().contains(watchedUrl); }), "new external file selected");
+        struct stat directoryState {};
+        check(::stat(QFile::encodeName(files.path()).constData(), &directoryState) == 0, "directory timestamp fixture");
+        check(QFile::remove(watched), "external selected file removal");
+        const struct timespec times[]{directoryState.st_atim, directoryState.st_mtim};
+        check(::utimensat(AT_FDCWD, QFile::encodeName(files.path()).constData(), times, 0) == 0, "retain same directory timestamp");
+        check(waitFor([&] { return browser.itemCount() == 4 && !browser.selectedUrls().contains(watchedUrl); }),
+              "event-driven native diff removes same-timestamp row and stale selection");
+    }
     // Repeated reads use already-delivered caches; no metadata queue/timer is started by paint roles.
     for (int i = 0; i < 1000; ++i) browser.metadata(QUrl::fromLocalFile(files.filePath("folder-z/other")), Browser::DateCreatedRole);
     browser.hide();

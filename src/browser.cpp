@@ -20,6 +20,7 @@
 #include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QHeaderView>
 #include <QHash>
 #include <QHBoxLayout>
@@ -1223,6 +1224,9 @@ public:
     QWidget *sidePreviewHost;
     QSplitter *previewSplitter;
     int sidePreviewWidth = 280;
+    QFileSystemWatcher directoryWatcher;
+    QTimer directoryRefreshTimer;
+    QSet<QString> changedDirectories;
     QTimer thumbnailTimer;
     QPointer<KIO::PreviewJob> thumbnailJob;
     QSet<QUrl> thumbnailRequests;
@@ -1305,7 +1309,37 @@ public:
         q->setPreviewShown(options.sidePreview);
     }
 
+    void syncDirectoryWatches(const QUrl &started = {}) {
+        // Observe only loaded local directories. Qt's inotify directory signal
+        // retains DELETE events which KDirWatch 6.24 can discard after its
+        // whole-second mtime comparison. Native KIO still owns the listing diff.
+        QSet<QString> wanted;
+        auto urls = model->dirLister()->directories();
+        if (!started.isEmpty()) urls.prepend(started);
+        for (const auto &url : urls)
+            if (url.isLocalFile() && wanted.size() < 256) wanted.insert(url.toLocalFile());
+        const auto watched = directoryWatcher.directories();
+        for (const auto &path : watched)
+            if (!wanted.contains(path)) { directoryWatcher.removePath(path); changedDirectories.remove(path); }
+        for (const auto &path : wanted)
+            if (!watched.contains(path)) directoryWatcher.addPath(path);
+    }
+
     explicit Private(Browser *owner) : q(owner) {
+        directoryRefreshTimer.setSingleShot(true);
+        directoryRefreshTimer.setInterval(60);
+        QObject::connect(&directoryWatcher, &QFileSystemWatcher::directoryChanged, q, [this](const QString &path) {
+            changedDirectories.insert(path);
+            if (!directoryRefreshTimer.isActive()) directoryRefreshTimer.start();
+        });
+        QObject::connect(&directoryRefreshTimer, &QTimer::timeout, q, [this] {
+            const auto changed = std::exchange(changedDirectories, {});
+            const auto loaded = model->dirLister()->directories();
+            for (const auto &path : changed) {
+                const auto url = QUrl::fromLocalFile(path);
+                if (loaded.contains(url)) model->dirLister()->updateDirectory(url);
+            }
+        });
         sizeProgressTimer.setInterval(100);
         QObject::connect(&sizeProgressTimer, &QTimer::timeout, q, [this] {
             if (sizeScan) emit q->sizeCalculationProgress(sizeScan->entries.load(), sizeScan->completed.load(), sizeRoots);
@@ -1939,6 +1973,8 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
             const auto item = d->item(index); emit previewRequested(item.isFile() ? item.url() : QUrl());
         }
     });
+    connect(d->model->dirLister(), &KDirLister::started, this, [this](const QUrl &url) { d->syncDirectoryWatches(url); });
+    connect(d->model->dirLister(), qOverload<>(&KDirLister::completed), this, [this] { d->syncDirectoryWatches(); });
     connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) { emit errorOccurred(job->errorString()); });
     connect(d->model->dirLister(), &KDirLister::itemsDeleted, this, [this] { d->invalidateSizes(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->invalidateSizes(); });
