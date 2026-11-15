@@ -20,6 +20,7 @@
 #include <QPainter>
 #include <QProcess>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QSettings>
 #include <QShowEvent>
@@ -34,6 +35,18 @@
 namespace {
 constexpr auto tagMimeType = "application/x-finder-tag-id";
 constexpr auto favoriteMimeType = "application/x-finder-favorite-slot";
+
+class SettingsPage : public QScrollArea {
+public:
+    using QScrollArea::QScrollArea;
+    QFormLayout *form = nullptr;
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        if (form) form->setRowWrapPolicy(event->size().width() < 500
+            ? QFormLayout::WrapAllRows : QFormLayout::WrapLongRows);
+        QScrollArea::resizeEvent(event);
+    }
+};
 
 QIcon tagIcon(const QColor &color) {
     QPixmap pixmap(20, 20);
@@ -111,12 +124,13 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     tabs->setObjectName("finderSettingsTabs");
     layout->addWidget(tabs);
     auto page = [&](const QString &label, const QString &name) {
-        auto *scroll = new QScrollArea(tabs);
+        auto *scroll = new SettingsPage(tabs);
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
         auto *widget = new QWidget(scroll);
         widget->setObjectName(name);
         auto *form = new QFormLayout(widget);
+        scroll->form = form;
         form->setContentsMargins(24, 20, 24, 20);
         form->setSpacing(12);
         form->setRowWrapPolicy(QFormLayout::WrapLongRows);
@@ -350,11 +364,12 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         {"recents", tr("Recents")}, {"shared", tr("Shared")}, {"applications", tr("Applications")},
         {"desktop", tr("Desktop")}, {"documents", tr("Documents")}, {"downloads", tr("Downloads")},
         {"home", tr("Home")}, {"music", tr("Music")}, {"pictures", tr("Pictures")},
-        {"videos", tr("Movies")}, {"internalDisks", tr("Hard disks (including Linux Filesystem)")},
-        {"externalDisks", tr("External disks")}, {"opticalMedia", tr("CDs, DVDs, and other removable media")},
+        {"videos", tr("Movies")}, {"internalDisks", tr("Hard disks")},
+        {"externalDisks", tr("External disks")}, {"opticalMedia", tr("CDs, DVDs, and removable media")},
         {"connectedServers", tr("Connected servers")}, {"network", tr("Network")}, {"trash", tr("Trash")}}) {
         auto *box = new QCheckBox(entry.second, this);
         box->setObjectName("finderSettingsSidebar_" + entry.first);
+        if (entry.first == "internalDisks") box->setToolTip(tr("Includes Linux Filesystem."));
         box->setProperty("sidebarKey", entry.first);
         box->setChecked(FinderPreferences::sidebarItemVisible(entry.first)); sidebar->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key = entry.first](bool checked) {

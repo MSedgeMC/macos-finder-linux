@@ -11,7 +11,6 @@ class QPushButton;
 class QCloseEvent;
 class QShowEvent;
 
-
 class FinderSettings : public QDialog {
     Q_OBJECT
 public:
