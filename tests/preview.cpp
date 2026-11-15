@@ -9,6 +9,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QDir>
 #include <QFile>
 #include <QImage>
 #include <QLabel>
@@ -50,6 +51,20 @@ void check(bool value, const char *message)
 
 int main(int argc, char **argv)
 {
+    // Safe even when launched directly by CTest: no display connection or
+    // writable configuration/data paths belonging to the working desktop.
+    QTemporaryDir isolated;
+    check(isolated.isValid(), "isolated test environment");
+    qunsetenv("DISPLAY"); qunsetenv("WAYLAND_DISPLAY"); qunsetenv("SESSION_MANAGER");
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    for (const auto &entry : QList<QPair<QByteArray, QString>>{
+        {"XDG_CONFIG_HOME", "config"}, {"XDG_DATA_HOME", "data"},
+        {"XDG_CACHE_HOME", "cache"}, {"XDG_RUNTIME_DIR", "runtime"}}) {
+        const QString path = isolated.filePath(entry.second);
+        check(QDir().mkpath(path), "private XDG directory");
+        QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        qputenv(entry.first.constData(), path.toLocal8Bit());
+    }
     QApplication app(argc, argv);
     QTemporaryDir files;
     check(files.isValid(), "temporary files");
@@ -58,6 +73,9 @@ int main(int argc, char **argv)
     const auto pdfPath = files.filePath("pages.pdf");
     QImage red(3600, 2800, QImage::Format_RGB32); red.fill(Qt::red);
     QImage blue(160, 100, QImage::Format_RGB32); blue.fill(Qt::blue);
+    // A visible edge makes panning observable; the centre remains blue for
+    // stale-result checks above.
+    { QPainter marker(&blue); marker.fillRect(QRect(0, 0, 40, blue.height()), Qt::yellow); }
     check(red.save(redPath) && blue.save(bluePath), "image fixtures");
     {
         QPdfWriter writer(pdfPath);
@@ -124,7 +142,7 @@ int main(int argc, char **argv)
     QMouseEvent move(QEvent::MouseMove, centre + QPointF(90, 20), centre + QPointF(90, 20), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease, centre + QPointF(90, 20), centre + QPointF(90, 20), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(image, &press); QApplication::sendEvent(image, &move); QApplication::sendEvent(image, &release);
-    check(!beforePan.isNull() && !image->grab().isNull(), "zoom/pan paints without giant pixmap");
+    check(!beforePan.isNull() && beforePan != image->grab().toImage(), "drag changes visible zoomed raster");
     pane.setZoomFactor(100); check(pane.zoomFactor() == 16, "zoom bounded above");
     pane.resetZoom(); check(pane.zoomFactor() == 1, "fit reset");
     pane.setFocus();
@@ -163,6 +181,10 @@ int main(int argc, char **argv)
     QUrl opened;
     QObject::connect(&pane, &PreviewPane::openRequested, [&](const QUrl &url) { opened = url; });
     pane.openCurrent(); check(opened == blueUrl, "existing open signal retains host action ownership");
+    QUrl rotateSource;
+    QObject::connect(&pane, &PreviewPane::rotateCopyRequested, [&](const QUrl &url) { rotateSource = url; });
+    pane.findChild<QAction *>("previewRotateCopy")->trigger();
+    check(rotateSource == blueUrl && pane.originalImageSize() == green.size(), "Quick Look rotate export keeps original source and geometry");
     QList<QUrl> shared;
     QObject::connect(&pane, &PreviewPane::shareRequested, [&](const QList<QUrl> &urls) { shared = urls; });
     pane.shareCurrent(); check(shared.isEmpty(), "provider unavailable does not emit fake share");
@@ -228,6 +250,16 @@ int main(int argc, char **argv)
     pane.tagChangeFinished(blueUrl, FileTags::addTag(blueUrl, "Portable Test Tag"));
     check(waitFor([&] { return tagEditor->isEnabled(); }), "successful native tag write refreshes");
     check(tagStatus->text().isEmpty(), "success clears tag error");
+    pane.setGallery(false);
+    const auto textPath = files.filePath("preview.txt");
+    { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n"); }
+    pane.setUrls({QUrl::fromLocalFile(textPath)});
+    auto *text = pane.findChild<QTextEdit *>("previewText");
+    check(content->currentWidget() == text, "text preview remains available");
+    text->setFocus();
+    QKeyEvent focusedSpace(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+    QApplication::sendEvent(text, &focusedSpace);
+    check(pane.isVisible(), "Space in focused text preserves Quick Look");
     pane.hide();
     std::cout << "PASS: async preview, stale cancellation, original geometry, PDF pages, hide/destruction\n";
     std::cout << "PASS: reusable lifecycle, primary selection, zoom/pan, contact sheet, slideshow, fullscreen, file freshness\n";

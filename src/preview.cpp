@@ -522,6 +522,11 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_printAction = nativeMenu->addAction(tr("Print…"));
     m_printAction->setObjectName(QStringLiteral("previewPrint"));
     connect(m_printAction, &QAction::triggered, this, &PreviewPane::printCurrent);
+    m_rotateCopy = nativeMenu->addAction(tr("Rotate Left as Copy…"));
+    m_rotateCopy->setObjectName(QStringLiteral("previewRotateCopy"));
+    connect(m_rotateCopy, &QAction::triggered, this, [this] {
+        if (m_rotatableImage && !currentUrl().isEmpty()) emit rotateCopyRequested(currentUrl());
+    });
     auto *shareMenu = nativeMenu->addMenu(tr("Share"));
     m_copyUrlsAction = shareMenu->addAction(tr("Copy File Locations"));
     connect(m_copyUrlsAction, &QAction::triggered, this, [this] {
@@ -799,6 +804,8 @@ void PreviewPane::updateNativeActions()
     m_emailAction->setEnabled(localFiles && bool(emailHandler));
     m_emailAction->setToolTip(emailHandler ? QString() : tr("No native email application is configured."));
     m_printAction->setEnabled(canPrintCurrent());
+    m_rotateCopy->setVisible(m_rotatableImage && !m_contactSheet);
+    m_rotateCopy->setEnabled(m_rotatableImage && !m_contactSheet && !currentUrl().isEmpty());
 #if !defined(FINDER_PREVIEW_PRINT_SUPPORT) || !FINDER_PREVIEW_PRINT_SUPPORT
     m_printAction->setToolTip(tr("This build does not include Qt PrintSupport."));
 #endif
@@ -1362,11 +1369,7 @@ void PreviewPane::createGallery()
         if (!url.isEmpty()) QGuiApplication::clipboard()->setText(url.isLocalFile()
             ? url.toLocalFile() : url.toDisplayString(QUrl::RemovePassword));
     });
-    m_rotateCopy = menu->addAction(tr("Rotate Left as Copy…"));
-    m_rotateCopy->setObjectName(QStringLiteral("previewRotateCopy"));
-    connect(m_rotateCopy, &QAction::triggered, this, [this] {
-        if (m_rotatableImage && !currentUrl().isEmpty()) emit rotateCopyRequested(currentUrl());
-    });
+    menu->addAction(m_rotateCopy);
     m_moreActions->setMenu(menu);
     actionsLayout->addWidget(m_moreActions, 1);
     details->addWidget(actions);
@@ -1540,12 +1543,13 @@ void PreviewPane::tagChangeFinished(const QUrl &url, const QString &error)
 
 void PreviewPane::updateQuickActions()
 {
-    if (!m_getInfo) return;
     const bool available = !currentUrl().isEmpty() && (!currentUrl().isLocalFile()
         || QFileInfo::exists(currentUrl().toLocalFile()));
-    m_getInfo->setEnabled(available);
-    m_moreActions->setEnabled(available);
-    m_copyLocation->setEnabled(available);
+    if (m_getInfo) {
+        m_getInfo->setEnabled(available);
+        m_moreActions->setEnabled(available);
+        m_copyLocation->setEnabled(available);
+    }
     m_rotateCopy->setVisible(m_rotatableImage);
     m_rotateCopy->setEnabled(available && m_rotatableImage);
 }
@@ -1568,13 +1572,14 @@ void PreviewPane::requestNativePreview(bool contentPreview)
     if (plugins.isEmpty()) return;
     cancelNativePreview();
     const QString fingerprint = m_fingerprint;
+    const quint64 generation = m_previewGeneration;
     auto *job = KIO::filePreview({KFileItem(url, m_mime, 0)}, contentPreview ? QSize(1024, 768) : QSize(96, 96), &plugins);
     m_nativePreview = job;
     job->setScaleType(KIO::PreviewJob::ScaledAndCached);
     job->setIgnoreMaximumSize(false);
     connect(job, &KIO::PreviewJob::gotPreview, this,
-        [this, url, fingerprint, contentPreview](const KFileItem &, const QPixmap &pixmap) {
-            if (url != currentUrl() || fingerprint != m_fingerprint || pixmap.isNull()) return;
+        [this, url, fingerprint, generation, contentPreview](const KFileItem &, const QPixmap &pixmap) {
+            if (url != currentUrl() || fingerprint != m_fingerprint || generation != m_previewGeneration || pixmap.isNull()) return;
             QImage image = pixmap.toImage();
             if (image.width() > renderLimit.width() || image.height() > renderLimit.height())
                 image = image.scaled(renderLimit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
