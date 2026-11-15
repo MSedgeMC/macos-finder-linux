@@ -42,6 +42,7 @@
 #include <QScopedValueRollback>
 #include <QSettings>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStackedWidget>
 #include <QSplitter>
@@ -1066,13 +1067,21 @@ public:
         const auto contextItems = q->selectedItems();
         const bool hasSelection = !contextItems.isEmpty();
         QMenu menu(q);
-        auto *open = menu.addAction(QStringLiteral("Open"), [this] { activate(activeSelection()->currentIndex()); });
+        auto *open = menu.addAction(QStringLiteral("Open"), [this, contextItems] {
+            // Capture items, not model indexes: opening a folder can replace
+            // the model before the remaining selected files are activated.
+            for (const auto &entry : contextItems) {
+                if (entry.isDir()) emit q->folderOpenRequested(entry.url(), Qt::NoModifier);
+                else emit q->openRequested(entry.url());
+            }
+        });
         open->setEnabled(hasSelection);
         KFileItemActions nativeActions;
         nativeActions.setParentWidget(q->window());
         if (hasSelection) {
             nativeActions.setItemListProperties(KFileItemListProperties(contextItems));
             nativeActions.insertOpenWithActionsTo(nullptr, &menu, {});
+            nativeActions.addActionsTo(&menu);
         }
         auto *look = menu.addAction(QStringLiteral("Quick Look"), [this] {
             const auto urls = q->selectedUrls();
@@ -1111,6 +1120,7 @@ public:
             action->setCheckable(true); action->setChecked(q->group() == Group(number));
             QObject::connect(action, &QAction::triggered, q, [this, number] { q->setGroup(Group(number)); });
         }
+        emit q->contextMenuRequested(&menu, contextItems);
         menu.exec(view->viewport()->mapToGlobal(point));
     }
 
@@ -1354,6 +1364,9 @@ void Browser::restoreViewState(const QByteArray &state) {
     setPreviewWidth(object.value("previewWidth").toInt(280));
     const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
     if (!header.isEmpty()) d->list->header()->restoreState(header);
+    // Header state includes a sort indicator and may sort the proxy as a side
+    // effect. Per-mode saved sort remains authoritative after geometry restore.
+    setSort(d->viewOptions[mode()].sort, d->viewOptions[mode()].ascending);
     QList<int> widths;
     for (const auto &width : object.value("columnWidths").toArray()) widths.append(qBound(80, width.toInt(220), 900));
     if (!widths.isEmpty()) d->columns->setColumnWidths(widths);
@@ -1467,7 +1480,14 @@ void Browser::setMode(Mode mode) {
 }
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }
 void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
-void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, column, int(KDirModel::ColumnCount)-1), ascending ? Qt::AscendingOrder : Qt::DescendingOrder); d->scheduleThumbnails(); }
+void Browser::setSort(int column, bool ascending) {
+    column = qBound(0, column, int(KDirModel::ColumnCount) - 1);
+    const auto order = ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
+    const QSignalBlocker blocker(d->list->header());
+    d->list->header()->setSortIndicator(column, order);
+    d->proxy->sort(column, order);
+    d->scheduleThumbnails();
+}
 void Browser::setIconSize(int size) {
     if (mode() == Columns) return;
     size = mode() == List ? qBound(16, size, 32) : qBound(32, size, 256);

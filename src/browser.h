@@ -9,6 +9,7 @@
 
 class QAbstractItemView;
 class QDropEvent;
+class QMenu;
 class KDirModel;
 
 class Browser : public QWidget {
@@ -77,6 +78,9 @@ public slots:
     void undo();
     void drop(QDropEvent *event, QUrl destination = {});
 signals:
+    // Emitted synchronously before exec(); the menu is stack-owned and valid
+    // only during this call. Connect directly to append shared app actions.
+    void contextMenuRequested(QMenu *menu, const KFileItemList &items);
     void urlChanged(const QUrl &url);
     void selectionChanged(const KFileItemList &items);
     void countChanged(int count);
