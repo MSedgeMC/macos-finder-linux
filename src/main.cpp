@@ -277,6 +277,16 @@ protected:
     }
   }
 };
+// An opaque preview backdrop is independent of child stylesheet painting.
+class PreviewSurface : public QWidget {
+public:
+  using QWidget::QWidget;
+protected:
+  void paintEvent(QPaintEvent *) override {
+    QPainter painter(this);
+    painter.fillRect(rect(), palette().color(QPalette::Base));
+  }
+};
 class WindowControl : public QToolButton {
 public:
   WindowControl(QString kind, QWidget *parent) : QToolButton(parent), kind(std::move(kind)) {
@@ -1378,8 +1388,10 @@ public:
     if (!quickWindow) {
       auto *window = new QMainWindow(this, Qt::Window);
       window->setObjectName("finderQuickLookWindow");
-      window->setWindowTitle("Quick Look"); window->resize(840, 620);
-      auto *base = new QWidget(window); base->setGraphicsEffect(new ContourEffect(base));
+      window->setWindowTitle("Quick Look");
+      const QRect available = screen()->availableGeometry();
+      window->resize(qMin(800, available.width() - 80), qMin(560, available.height() - 80));
+      auto *base = new PreviewSurface(window); base->setGraphicsEffect(new ContourEffect(base));
       auto *layout = new QVBoxLayout(base); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
       auto *previewHeader = new Header(base); previewHeader->setObjectName("finderQuickLookHeader"); previewHeader->setFixedHeight(40);
       auto *controls = new QHBoxLayout(previewHeader); controls->setContentsMargins(12,4,12,4); controls->setSpacing(7);
@@ -1387,15 +1399,15 @@ public:
         auto *control = new WindowControl(kind, previewHeader); controls->addWidget(control);
         connect(control, &QToolButton::clicked, window, [window, kind] {
           if (QString(kind) == "close") window->hide(); else if (QString(kind) == "minimize") window->showMinimized();
-          else if (window->isFullScreen()) window->showNormal(); else window->showFullScreen();
+          else if (auto *pane = window->findChild<PreviewPane *>()) pane->setFullScreen(!window->isFullScreen());
         });
       }
-      auto *caption = new QLabel("Quick Look", previewHeader); caption->setAlignment(Qt::AlignCenter); controls->addWidget(caption, 1);
-      layout->addWidget(previewHeader);
-      auto *pane = new PreviewPane(base); pane->setHostWindowControls(true); layout->addWidget(pane);
+      auto *pane = new PreviewPane(base); pane->setHostedQuickLook(true);
+      controls->addWidget(pane->quickLookHeaderWidget(), 1);
+      layout->addWidget(previewHeader); layout->addWidget(pane, 1);
       quickWindow = window; quickPane = pane;
       window->setWindowFlags(Qt::Window | Qt::FramelessWindowHint); window->setAttribute(Qt::WA_TranslucentBackground);
-      window->setMinimumSize(480, 320); window->setCentralWidget(base); wirePreview(pane);
+      window->setMinimumSize(qMin(480, available.width()), qMin(320, available.height())); window->setCentralWidget(base); wirePreview(pane);
       FinderWindowFrame::install(window);
       connect(pane, &PreviewPane::printReadinessChanged, this, [this, pane](bool ready) {
         if (ready && !printRequestedUrl.isEmpty() && pane->currentUrl() == printRequestedUrl) {
@@ -3660,6 +3672,26 @@ public slots:
     for (auto *w : QApplication::topLevelWidgets())
       if (w->isVisible() && w->windowTitle() == title)
         return w->grab().save(path);
+    return false;
+  }
+  QString topLevelDiagnostics(const QString &title) {
+    for (auto *window : QApplication::topLevelWidgets()) {
+      if (!window->isVisible() || window->windowTitle() != title) continue;
+      QJsonArray widgets;
+      for (auto *widget : window->findChildren<QWidget *>()) {
+        if (widget->objectName().isEmpty()) continue;
+        const auto pos = widget->mapTo(window, QPoint());
+        widgets << QJsonObject{{"name", widget->objectName()}, {"visible", widget->isVisible()},
+          {"x", pos.x()}, {"y", pos.y()}, {"width", widget->width()}, {"height", widget->height()}};
+      }
+      return QString::fromUtf8(QJsonDocument(QJsonObject{{"width", window->width()}, {"height", window->height()},
+        {"fullscreen", window->isFullScreen()}, {"widgets", widgets}}).toJson(QJsonDocument::Compact));
+    }
+    return {};
+  }
+  bool resizeTopLevel(const QString &title, int width, int height) {
+    for (auto *window : QApplication::topLevelWidgets())
+      if (window->isVisible() && window->windowTitle() == title) { window->resize(width, height); return true; }
     return false;
   }
   bool clickObject(const QString &name) {
