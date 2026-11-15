@@ -17,6 +17,9 @@
 #include <QHash>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QListView>
@@ -37,6 +40,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QStackedWidget>
+#include <QSplitter>
 #include <QThread>
 #include <QTimer>
 #include <QTreeView>
@@ -68,6 +72,7 @@
 
 #include <functional>
 #include <algorithm>
+#include <array>
 
 namespace {
 using DropHandler = std::function<void(QDropEvent *, const QModelIndex &)>;
@@ -689,6 +694,8 @@ public:
     QWidget *galleryHost;
     QWidget *columnHost;
     QWidget *sidePreviewHost;
+    QSplitter *previewSplitter;
+    int sidePreviewWidth = 280;
     QTimer thumbnailTimer;
     QPointer<KIO::PreviewJob> thumbnailJob;
     QSet<QUrl> thumbnailRequests;
@@ -701,6 +708,41 @@ public:
     bool previews = true;
     bool sidePreview = false;
     IconOptions iconOptions;
+    struct ViewOptions {
+        int size = 64;
+        int sort = KDirModel::Name;
+        bool ascending = true;
+        Group group = GroupNone;
+        bool previews = true;
+        bool sidePreview = false;
+        IconOptions icons;
+        int horizontal = 0;
+        int vertical = 0;
+    };
+    std::array<ViewOptions, 4> viewOptions;
+    bool pendingScrollRestore = false;
+    void restoreScroll() {
+        const auto options = viewOptions[currentMode];
+        q->activeView()->horizontalScrollBar()->setValue(options.horizontal);
+        q->activeView()->verticalScrollBar()->setValue(options.vertical);
+        scheduleThumbnails();
+    }
+    void saveModeOptions() {
+        auto *view = q->activeView();
+        viewOptions[currentMode] = {q->iconSize(), q->sortColumn(), q->sortAscending(), q->group(), previews, sidePreview, iconOptions,
+                                    view->horizontalScrollBar()->value(), view->verticalScrollBar()->value()};
+    }
+    void restoreModeOptions() {
+        const auto options = viewOptions[currentMode];
+        q->setIconSize(options.size);
+        q->setSort(options.sort, options.ascending);
+        q->setGroup(options.group);
+        q->setGridSpacing(options.icons.spacing);
+        q->setTextSize(options.icons.textSize);
+        q->setLabelPosition(options.icons.label);
+        q->setIconPreviewsShown(options.previews);
+        q->setPreviewShown(options.sidePreview);
+    }
 
     explicit Private(Browser *owner) : q(owner) {
         thumbnailTimer.setSingleShot(true);
@@ -716,19 +758,23 @@ public:
         const int height = iconOptions.label == LabelRight ? qMax(size + 16, 2 * lineHeight + 20) : size + 24 + 2 * lineHeight;
         icons->setGridSize(QSize(width, height));
         icons->viewport()->update();
-        // Gallery uses 64px thumbnails independently of the Icons zoom, with
+        // Gallery keeps its own thumbnail size independently of Icons zoom, with
         // modest extra space spread across the visible horizontal filmstrip.
         const int available = strip->viewport()->width();
-        const int columns = qMax(1, available / 96);
-        const int stripWidth = qBound(96, available / columns, 112);
-        const QSize stripGrid(stripWidth, 64 + 20 + 2 * lineHeight);
+        const int gallerySize = strip->iconSize().width();
+        const int minimumWidth = gallerySize + 32;
+        const int columns = qMax(1, available / minimumWidth);
+        const int stripWidth = qBound(minimumWidth, available / columns, minimumWidth + 16);
+        const QSize stripGrid(stripWidth, gallerySize + 20 + 2 * lineHeight);
         if (strip->gridSize() != stripGrid) strip->setGridSize(stripGrid);
         strip->setFixedHeight(stripGrid.height() + 16);
         strip->viewport()->update();
     }
 
     void updatePreviewVisibility() {
-        sidePreviewHost->setVisible(sidePreview && currentMode != Gallery && currentMode != Columns);
+        const bool shown = sidePreview && currentMode != Gallery && currentMode != Columns;
+        sidePreviewHost->setVisible(shown);
+        if (shown) previewSplitter->setSizes({qMax(240, previewSplitter->width() - sidePreviewWidth), sidePreviewWidth});
     }
 
     void resetThumbnailRequests() {
@@ -1004,10 +1050,23 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     // QColumnView swaps its selection among its child columns. Keep it separate
     // so hidden columns cannot react to selections or clear another view's state.
     d->columnSelection = new QItemSelectionModel(d->proxy, this);
-    d->stack = new QStackedWidget(this);
-    auto *layout = new QHBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0); layout->addWidget(d->stack, 1);
-    d->sidePreviewHost = new QWidget(this); d->sidePreviewHost->setObjectName("finderSidePreview");
-    d->sidePreviewHost->setFixedWidth(280); layout->addWidget(d->sidePreviewHost); d->sidePreviewHost->hide();
+    d->previewSplitter = new QSplitter(Qt::Horizontal, this);
+    d->previewSplitter->setObjectName(QStringLiteral("finderPreviewSplitter"));
+    d->previewSplitter->setChildrenCollapsible(false);
+    d->previewSplitter->setHandleWidth(5);
+    d->stack = new QStackedWidget(d->previewSplitter); d->stack->setMinimumWidth(240);
+    auto *layout = new QHBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0); layout->addWidget(d->previewSplitter, 1);
+    d->sidePreviewHost = new QWidget(d->previewSplitter); d->sidePreviewHost->setObjectName("finderSidePreview");
+    d->sidePreviewHost->setMinimumWidth(180); d->previewSplitter->setCollapsible(1, true);
+    d->previewSplitter->setStretchFactor(0, 1); d->previewSplitter->setStretchFactor(1, 0);
+    d->sidePreviewWidth = qBound(180, QSettings().value("View/previewWidth", 280).toInt(), 900);
+    d->sidePreviewHost->hide();
+    connect(d->previewSplitter, &QSplitter::splitterMoved, this, [this] {
+        const int width = d->previewSplitter->sizes().value(1);
+        if (!width) { d->sidePreview = false; d->sidePreviewHost->hide(); d->selected(); return; }
+        d->sidePreviewWidth = width;
+        QSettings().setValue("View/previewWidth", width);
+    });
     d->icons = new DropView<KCategorizedView>(d->stack); d->icons->setObjectName("finderIconView");
     d->icons->setViewMode(QListView::IconMode); d->icons->setResizeMode(QListView::Adjust);
     d->icons->setMovement(QListView::Static); d->icons->setIconSize({64, 64});
@@ -1099,7 +1158,14 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
     connect(d->model, &QAbstractItemModel::rowsRemoved, this, [this] { d->count(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->count(); });
-    connect(d->model->dirLister(), &KDirLister::completed, this, [this] { d->count(); d->applySelection(); emit statusMessage({}); });
+    connect(d->model->dirLister(), &KDirLister::completed, this, [this] {
+        d->count(); d->applySelection();
+        if (d->pendingScrollRestore) {
+            d->pendingScrollRestore = false;
+            QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
+        }
+        emit statusMessage({});
+    });
     connect(d->model->dirLister(), &KDirLister::started, this, [this](const auto &) { emit statusMessage("Loading…"); });
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
         d->proxy->cutUrls.clear();
@@ -1122,13 +1188,65 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
 Browser::~Browser() = default;
 QUrl Browser::url() const { return d->currentUrl; }
 Browser::Mode Browser::mode() const { return d->currentMode; }
-int Browser::iconSize() const { return d->icons->iconSize().width(); }
+int Browser::iconSize() const { return (mode() == Gallery ? static_cast<QListView *>(d->strip) : d->icons)->iconSize().width(); }
 Browser::Group Browser::group() const { return d->proxy->grouping; }
 int Browser::gridSpacing() const { return d->iconOptions.spacing; }
 int Browser::textSize() const { return d->iconOptions.textSize; }
 Browser::LabelPosition Browser::labelPosition() const { return d->iconOptions.label; }
 bool Browser::iconPreviewsShown() const { return d->previews; }
 bool Browser::previewShown() const { return d->sidePreview; }
+int Browser::previewWidth() const { return d->sidePreviewWidth; }
+QByteArray Browser::saveViewState() const {
+    d->saveModeOptions();
+    QJsonArray modes;
+    for (const auto &options : d->viewOptions) {
+        modes.append(QJsonObject{{"iconSize", options.size}, {"sort", options.sort}, {"ascending", options.ascending},
+            {"group", int(options.group)}, {"previews", options.previews}, {"preview", options.sidePreview},
+            {"spacing", options.icons.spacing}, {"textSize", options.icons.textSize}, {"labels", int(options.icons.label)},
+            {"horizontal", options.horizontal}, {"vertical", options.vertical}});
+    }
+    QJsonArray columns;
+    for (int width : d->columns->columnWidths()) columns.append(width);
+    return QJsonDocument(QJsonObject{{"version", 1}, {"mode", int(mode())}, {"modes", modes},
+        {"previewWidth", previewWidth()}, {"listHeader", QString::fromLatin1(d->list->header()->saveState().toBase64())},
+        {"columnWidths", columns}}).toJson(QJsonDocument::Compact);
+}
+void Browser::restoreViewState(const QByteArray &state) {
+    const auto object = QJsonDocument::fromJson(state).object();
+    const auto modes = object.value("modes").toArray();
+    if (object.value("version").toInt() != 1 || modes.size() != 4) return;
+    for (int number = 0; number < modes.size(); ++number) {
+        const auto saved = modes[number].toObject();
+        auto &options = d->viewOptions[number];
+        options.size = qBound(32, saved.value("iconSize").toInt(64), 256);
+        options.sort = qBound(0, saved.value("sort").toInt(), int(KDirModel::ColumnCount) - 1);
+        options.ascending = saved.value("ascending").toBool(true);
+        options.group = Group(qBound(0, saved.value("group").toInt(), int(GroupTags)));
+        options.previews = saved.value("previews").toBool(true);
+        options.sidePreview = saved.value("preview").toBool();
+        options.icons.spacing = qBound(0, saved.value("spacing").toInt(16), 128);
+        options.icons.textSize = qBound(9, saved.value("textSize").toInt(13), 20);
+        options.icons.label = LabelPosition(qBound(0, saved.value("labels").toInt(), int(LabelRight)));
+        options.horizontal = qMax(0, saved.value("horizontal").toInt());
+        options.vertical = qMax(0, saved.value("vertical").toInt());
+    }
+    const bool previousChanging = d->changing;
+    d->changing = true;
+    d->currentMode = Mode(qBound(0, object.value("mode").toInt(), int(Gallery)));
+    d->stack->setCurrentIndex(int(mode())); setFocusProxy(activeView());
+    d->restoreModeOptions();
+    setPreviewWidth(object.value("previewWidth").toInt(280));
+    const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
+    if (!header.isEmpty()) d->list->header()->restoreState(header);
+    QList<int> widths;
+    for (const auto &width : object.value("columnWidths").toArray()) widths.append(qBound(80, width.toInt(220), 900));
+    if (!widths.isEmpty()) d->columns->setColumnWidths(widths);
+    d->resetThumbnailRequests();
+    d->pendingScrollRestore = true;
+    QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
+    d->changing = previousChanging;
+    d->selected();
+}
 bool Browser::canCompressSelection() const {
     const auto urls = selectedUrls();
     return !urls.isEmpty() && !QStandardPaths::findExecutable(QStringLiteral("ark")).isEmpty() &&
@@ -1216,13 +1334,19 @@ void Browser::setMode(Mode mode) {
     if (mode < Icons || mode > Gallery || d->currentMode == mode) return;
     const auto urls = selectedUrls(); const QUrl current = d->currentUrl;
     const bool collapseColumns = d->currentMode == Columns && current != d->rootUrl;
+    d->saveModeOptions();
+    const bool previousChanging = d->changing;
+    d->changing = true;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
     setFocusProxy(activeView());
+    d->restoreModeOptions();
     d->resetThumbnailRequests();
     d->updatePreviewVisibility(); d->layoutIcons();
     if (collapseColumns) navigate(current);
     selectUrls(urls);
+    d->changing = previousChanging;
     activeView()->setFocus(); d->selected();
+    QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
 }
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }
 void Browser::setFilter(const QString &filter) { d->proxy->setFilterFixedString(filter); d->count(); d->scheduleThumbnails(); }
@@ -1230,9 +1354,10 @@ void Browser::setSort(int column, bool ascending) { d->proxy->sort(qBound(0, col
 void Browser::setIconSize(int size) {
     size = qBound(32, size, 256);
     if (iconSize() == size) return;
-    d->icons->setIconSize(QSize(size, size));
+    auto *view = mode() == Gallery ? d->strip : static_cast<QListView *>(d->icons);
+    view->setIconSize(QSize(size, size));
     d->layoutIcons();
-    if (mode() == Icons) d->resetThumbnailRequests();
+    if (mode() == Icons || mode() == Gallery) d->resetThumbnailRequests();
 }
 void Browser::setGroup(Group value) {
     if (value < GroupNone || value > GroupTags || group() == value) return;
@@ -1279,6 +1404,10 @@ void Browser::setPreviewShown(bool shown) {
     d->sidePreview = shown;
     d->updatePreviewVisibility();
     d->selected();
+}
+void Browser::setPreviewWidth(int width) {
+    d->sidePreviewWidth = qBound(180, width, 900);
+    d->updatePreviewVisibility();
 }
 void Browser::refreshTags() { d->proxy->refreshTags(); }
 void Browser::setFoldersFirst(bool enabled) { d->proxy->setFoldersFirstPreference(enabled); }
