@@ -461,14 +461,22 @@ try:
         assert copied.read_bytes() == content
         record("nativeUndoRename")
 
+        before_jobs = json.loads(str(api.nativeJobState()))
         trigger("newFolder")
         until(lambda: (artwork / "Untitled Folder").is_dir(), "new folder inline rename")
         assert api.dialogText("New Test Folder", timeout=3)
         created = artwork / "New Test Folder"
         until(created.is_dir, "native new folder")
-        operation_complete("folder")
+        until(lambda: json.loads(str(api.nativeJobState()))["recordings"] >= before_jobs["recordings"] + 2,
+              "folder creation and inline rename recording")
         trigger("undo")
-        until(lambda: not created.exists(), "undo new folder")
+        until(lambda: json.loads(str(api.nativeJobState()))["undoCompletions"] == before_jobs["undoCompletions"] + 1,
+              "undo inline folder rename finished")
+        assert not created.exists() and (artwork / "Untitled Folder").is_dir()
+        trigger("undo")
+        until(lambda: json.loads(str(api.nativeJobState()))["undoCompletions"] == before_jobs["undoCompletions"] + 2,
+              "undo folder creation finished")
+        assert not (artwork / "Untitled Folder").exists()
         record("nativeNewFolderAndUndo")
 
         select(copied)
