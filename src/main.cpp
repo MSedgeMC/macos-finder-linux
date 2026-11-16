@@ -17,15 +17,20 @@
 #include "inspector.h"
 #include "searchresults.h"
 #include "taboverview.h"
+#include "batchrename.h"
+#include "filedetails.h"
 #include <KDirLister>
 #include <KDirModel>
+#include <KPageWidgetItem>
+#include <KPageWidget>
+#include <KPageWidgetModel>
 #include <KFilePlacesModel>
 #include <KFilePlacesView>
 #include <KIO/ApplicationLauncherJob>
 #include <KIO/CopyJob>
+#include <KIO/StatJob>
 #include <KIO/DeleteJob>
 #include <KIO/RestoreJob>
-#include <KIO/RenameFileDialog>
 #include <KProtocolInfo>
 #include <KRecentDocument>
 #include <KProtocolManager>
@@ -1240,13 +1245,86 @@ public:
     if (urls.size() == 1) { selectedOperation("rename"); return; }
     KFileItemList items;
     if (!showingSearch()) items = browser()->selectedItems();
-    else for (const auto &url : urls) items << KFileItem(url);
-    auto *dialog = new KIO::RenameFileDialog(items, this);
-    connect(dialog, &KIO::RenameFileDialog::renamingFinished, this, [this](const QList<QUrl> &renamed) {
-      if (showingSearch()) beginSearch(); else browser()->selectUrls(renamed);
+    QPointer<Browser> target = browser(); const auto origin = target->url();
+    const bool wasSearch = showingSearch(); const auto originalQuery = search->text();
+    if (wasSearch) {
+      struct Pending { QList<QUrl> urls; KFileItemList items; int next = 0, active = 0; bool failed = false; };
+      auto pending = std::make_shared<Pending>(); pending->urls = urls; pending->items.resize(urls.size());
+      auto advance = std::make_shared<std::function<void()>>();
+      *advance = [this, pending, target, origin, originalQuery, weak = std::weak_ptr<std::function<void()>>(advance)] {
+        if (!target || target != browser() || target->url() != origin || !showingSearch() || search->text() != originalQuery) { pending->failed = true; return; }
+        if (pending->failed) return;
+        if (pending->next == pending->urls.size() && !pending->active) { showBatchRename(pending->items, target, origin, true, originalQuery); return; }
+        while (pending->active < 4 && pending->next < pending->urls.size()) {
+          const int position = pending->next++; const auto url = pending->urls.at(position);
+          auto *job = KIO::stat(url, KIO::StatJob::SourceSide, KIO::StatBasic, KIO::HideProgressInfo);
+          ++pending->active;
+          connect(job, &KJob::result, this, [this, pending, url, position, keep = weak.lock()](KJob *done) {
+            --pending->active;
+            if (done->error()) { pending->failed = true; status->setText(done->errorString()); return; }
+            pending->items[position] = KFileItem(static_cast<KIO::StatJob *>(done)->statResult(), url);
+            if (keep) (*keep)();
+          });
+        }
+      };
+      status->setText(tr("Reading selected filenames…")); (*advance)(); return;
+    }
+    showBatchRename(items, target, origin, false, originalQuery);
+  }
+  void showBatchRename(const KFileItemList &items, QPointer<Browser> target, const QUrl &origin, bool wasSearch, const QString &originalQuery) {
+    auto *dialog = new BatchRenameDialog(items, this);
+    connect(dialog, &BatchRenameDialog::renamingFinished, this, [this, target, origin, wasSearch, originalQuery](const QList<QUrl> &renamed) {
+      if (!target || target != browser() || target->url() != origin) return;
+      if (wasSearch) { if (showingSearch() && search->text() == originalQuery) beginSearch(); }
+      else if (!showingSearch()) target->selectUrls(renamed);
     });
-    connect(dialog, &KIO::RenameFileDialog::error, this, [this](KJob *job) { status->setText(job->errorText()); });
-    dialog->open();
+    connect(dialog, &BatchRenameDialog::error, this, [this](KJob *job) { status->setText(job->errorText()); });
+    dialog->show();
+  }
+  void showInfo(const QUrl &url) {
+    auto *native = new KPropertiesDialog(url, this);
+    native->setAttribute(Qt::WA_DeleteOnClose);
+    if (url.isLocalFile()) {
+      auto *page = new QScrollArea(native); page->setWidgetResizable(true); page->setFrameShape(QFrame::NoFrame);
+      auto *details = new FileDetailsDialog(page);
+      details->setWindowFlags(Qt::Widget);
+      // Native properties remains the host for General/permissions/Open With.
+      // Its close buttons own the dialog; metadata saves remain explicit.
+      if (auto *box = details->findChild<QDialogButtonBox *>()) {
+        if (auto *close = box->button(QDialogButtonBox::Close)) close->hide();
+        if (auto *properties = details->findChild<QPushButton *>("fileDetailsNativeProperties")) properties->hide();
+      }
+      details->setExtensionPresentation(QMimeDatabase().suffixForFileName(url.fileName()),
+          QSettings().value("Advanced/showAllExtensions", false).toBool());
+      details->setUrl(url); page->setWidget(details);
+      auto *item = native->addPage(page, tr("Name & Comments"));
+      item->setObjectName("finderFileDetailsItem");
+      connect(native, &KPropertiesDialog::applied, details, [native, details] { details->setUrl(native->url()); });
+      connect(details, &FileDetailsDialog::metadataSaved, this, [this](const QUrl &) {
+        for (auto *tab : states.keys()) tab->refreshFileDetails();
+      });
+      connect(details, &FileDetailsDialog::renameRequested, this, [this, native, details](const QUrl &source, const QString &requested) {
+        const auto metadata = details->metadataCache()->cached(source);
+        if (!metadata || !metadata->available()) { status->setText(tr("Refresh file metadata before renaming.")); return; }
+        KIO::UDSEntry entry;
+        entry.fastInsert(KIO::UDSEntry::UDS_NAME, source.fileName());
+        entry.fastInsert(KIO::UDSEntry::UDS_FILE_TYPE, metadata->directory ? S_IFDIR : S_IFREG);
+        QPointer<FinderWindow> owner(this);
+        QPointer<KPropertiesDialog> host(native); QPointer<FileDetailsDialog> editor(details);
+        const auto name = Browser::confirmedRenameName(KFileItem(entry, source), requested, native);
+        if (!owner || !host || !editor || editor->url() != source) return;
+        if (name.isEmpty() || name == source.fileName()) return;
+        QUrl destination = source; destination.setPath(source.path().left(source.path().lastIndexOf('/') + 1) + name);
+        auto *job = KIO::moveAs(source, destination);
+        runCopyJob(job);
+        auto actual = std::make_shared<QUrl>(destination);
+        connect(job, &KIO::CopyJob::renamed, this, [actual](KIO::Job *, const QUrl &, const QUrl &renamed) { *actual = renamed; });
+        connect(job, &KJob::result, this, [host, editor, actual, source](KJob *done) {
+          if (!done->error() && editor && editor->url() == source) { if (host) host->updateUrl(*actual); editor->setUrl(*actual); }
+        });
+      });
+    }
+    native->show();
   }
   void makeAliases() {
     for (const auto &url : selectedUrls()) {
@@ -3035,8 +3113,7 @@ private:
       auto urls = selectedUrls();
       if (urls.isEmpty()) urls << browser()->url();
       for (const auto &url : urls) {
-        auto *d = new KPropertiesDialog(url, this);
-        d->setAttribute(Qt::WA_DeleteOnClose); d->show();
+        showInfo(url);
       }
     });
     addAction(file, "summaryInfo", "Summary Info", {"Meta+Ctrl+I"}, [this] {
