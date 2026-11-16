@@ -23,6 +23,17 @@ Clean Up and spring-loaded folders. PDF previews support search, selection and
 multipage scrolling; media can export a trimmed copy through installed FFmpeg.
 Quick Actions provide image conversion/markup and image or rasterized PDF combination.
 
+The v7 additions include Show All Tabs with cached cards for switching, closing,
+creating and reordering tabs. New Folder creates an unused `Untitled Folder`
+(or numbered sibling) and starts inline naming; creation and rename each have
+native Undo. Multi-selection Rename opens a Qt BatchRename dialog with Replace
+Text, Add Text and Format previews for up to 4,096 local files or folders.
+Native KIO renames handle dependencies and cycles, with Undo for each successful
+step, including temporary cycle names. Get Info hosts full Name & Extension,
+per-file Show/Hide/Inherit extension choices and explicit comment saves inside
+native `KPropertiesDialog`, alongside permissions and Open With. These metadata
+fields use Linux extended attributes on supported storage.
+
 Settings include a persistent tag registry and favorite slots, light/dark/system
 appearance, increased contrast and reduced transparency. Inspector follows the
 selection or pins its real metadata. Closed windows and explicitly saved sessions
@@ -73,9 +84,24 @@ successful backup path is recorded in `last-backup.txt`. The installer restarts
 only the file-manager daemon. It does not restart Plasma, KWin or Spotlight.
 CMake's ordinary install installs only the binary.
 
-Space opens Quick Look; Return/F2 renames. Ctrl+1..4 switches views, Ctrl+T opens
-a tab, Ctrl+F searches, Ctrl+L opens Go to Folder, and Ctrl+J opens View Options.
-Meta equivalents are provided for common Finder shortcuts.
+Space opens Quick Look; Return/F2 renames. Meta is the Linux Super/Windows key;
+Alt supplies Option-style shortcuts.
+
+| Action | Shortcuts |
+| --- | --- |
+| Icons / List / Columns / Gallery | Meta+1..4 or Alt+1..4 |
+| Toggle favorite tag slots | Ctrl+1..7 |
+| Clear all tags | Ctrl+0 |
+| New tab | Meta+T or Ctrl+T |
+| Find | Meta+F or Ctrl+F |
+| Go to Folder | Meta+Shift+G or Ctrl+L |
+| View Options | Meta+J or Ctrl+J |
+| New Folder | Meta+Shift+N or Ctrl+Shift+N |
+| Show/Hide Sidebar | Meta+Alt+S (also Meta+Ctrl+S) |
+| Enclosing Folder in New Window | Meta+Ctrl+Up |
+| Add selected folders to Sidebar | Meta+Ctrl+T |
+| Slideshow (multiple selected files) | Meta+Alt+Y |
+| Show All Tabs | Meta+Shift+\\ |
 
 ## License
 

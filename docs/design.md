@@ -27,6 +27,14 @@ use cached native file thumbnails, a neutral rounded icon selection and a blue
 filename selection. A two-line filename and the inline rename editor occupy
 the area below each icon.
 
+The v7 Show All Tabs overview presents cached native widget thumbnails, tab
+titles and location tooltips for up to 100 tabs. The overview switches, creates
+or closes tabs through the existing window actions. Cards reorder the actual
+tab bar by dragging or Alt+Left/Right. Return opens the selected tab; Delete/Backspace
+closes it. Thumbnails refresh with overview/tab changes rather than continuously
+capturing the compositor. Each tab retains its independent navigation and view
+state; the overview is a portable Qt interaction, not a macOS window service.
+
 ![Icons with native filename selection](../screenshots/icons.png)
 
 ![Gallery with a right information panel](../screenshots/gallery.png)
@@ -136,6 +144,59 @@ their own licenses and authorship. The screenshots show an existing desktop
 icon theme; the theme itself is not included.
 
 ## Portable interaction additions
+
+New Folder creates a real `Untitled Folder`, choosing a numbered sibling when
+the name is occupied and retrying native creation conflicts. Once the native
+listing contains the new folder, the active view selects it and starts inline
+naming. Escape leaves the created folder with its current name. KIO records
+creation and any subsequent rename separately, so file Undo reverses the rename
+before removing the created folder. Navigating away prevents the delayed editor
+from targeting another location.
+
+Multi-selection Rename uses the native Qt `BatchRenameDialog`. Replace Text
+operates case-sensitively on full filenames, including hidden extensions, and
+honors the extension-change warning setting. Add Text inserts before or after
+the stem; Format offers Name and Index, Name and Counter, or Name and Date with
+a custom name and starting number. Add/Format preserve compound extensions and
+unknown final suffixes, treating single-component dotfiles as extensionless.
+Preview uses the captured selection order and full old/new filenames; later
+selection or navigation cannot retarget it.
+Date spelling and separators are a Linux approximation.
+
+Batch rename accepts at most 4,096 local files or folders, keeps each item in
+its original parent and rejects a selected folder together with its descendants.
+Asynchronous KIO checks reject duplicate targets, existing unselected targets
+and sources that would require cross-filesystem copying. Dependency chains are
+ordered to free target names; each cycle uses one temporary sibling name. Every
+successful KIO rename, including temporary moves, has native per-step Undo;
+the batch is not an atomic transaction. Cancel finishes the current dependency
+group before stopping. Errors or native conflict cancellation can leave partial
+results or a temporary name, with actual resulting URLs reported and successful
+steps still undoable. Native conflict handling supports alternate names, Skip
+for independent items and Cancel; overwrite/merge is unavailable. Remote batch
+rename is excluded because the supported KIO API can fall back to copying.
+
+Single-file Get Info embeds the Name & Comments editor in native
+`KPropertiesDialog`, retaining General, permissions and Open With. Name &
+Extension always shows the real full filename and delegates renames to native
+KIO conflict handling and Undo. The Hide extension checkbox stores explicit
+Hide or Show; Use default restores Inherit. Inherit follows the existing
+known-suffix presentation, Hide can also hide an unknown final suffix, and the
+global Show All Extensions preference overrides either choice. Directory names
+remain complete. All four Browser views share this presentation without
+changing file URLs or names.
+
+Extension overrides use Linux `user.finder.hide_extension` (`1` for Hide, `0`
+for Show, absent for Inherit); comments use KDE-compatible `user.xdg.comment`.
+Save Comment explicitly writes valid UTF-8 up to 16 KiB; clearing it removes the
+attribute. These are inode attributes, not macOS Finder flags or a private
+database. They preserve file contents, tags and unrelated attributes; filesystem
+ctime may change. Reads/writes use pinned, verified local regular files or
+directories and reject symlinks and special files. Asynchronous metadata reads
+are bounded to 4,096 entries and a cooperative five-second budget, with cached
+results refreshed by listing/metadata changes rather than polling. Unsupported
+storage, permissions, malformed values and stale inode identities produce
+visible errors. Metadata saves are explicit and are separate from file Undo.
 
 Icons can save positions by file URL, return to them after sorting/grouping,
 snap to a grid and clean up by real metadata. Spring loading navigates temporary
