@@ -21,6 +21,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--measure-only", action="store_true")
+parser.add_argument("--wheel-lines", type=int, choices=range(1,13), default=3)
 args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -59,6 +60,7 @@ try:
         folder = Path(os.environ["XDG_CONFIG_HOME"]) / "LocalDesktop"
         folder.mkdir(exist_ok=True)
         (folder / "Finder.conf").write_text("[Search]\ndefaultScope=current\n")
+        (folder.parent / "kdeglobals").write_text(f"[KDE]\nWheelScrollLines={args.wheel_lines}\n")
         log = (out / "finder.log").open("w")
         process = subprocess.Popen([str(args.binary.resolve()), "--test-mode", str(root)], stdout=log, stderr=log)
         until(lambda: bus.name_has_owner("org.local.FinderTest"), "startup")
@@ -84,6 +86,13 @@ try:
                 assert scrolling(name)==final, "second momentum tail"
                 assert unquote(state()["selected"][0])==unquote(selected.as_uri())
                 record(f"mode-{mode}-bounded-wheel-direct-pixels-momentum-and-selection")
+        if not args.measure_only:
+            assert api.setMode(2); QTest.qWait(150)
+            start("finderColumnView")
+            column=step("finderColumnView")
+            assert 0 < column[0] <= 72, column
+            assert step("finderColumnView",angle=0,pixel=-17,phase=2)==(17,0)
+            record("columns-preserve-vertical-wheel-and-precise-motion")
         assert api.setMode(0)
         assert api.trigger("viewOptions")
         QTest.qWait(180)
@@ -128,6 +137,17 @@ try:
             assert not scrolling("finderIconView")["animating"]
             assert api.capture(str(out / "window.png"))
             record("tab-navigation-stops-pending-wheel-animation")
+            assert api.trigger("search")
+            assert api.setControl("finderSearchScope",1)
+            assert api.setText("finderSearch","File")
+            until(lambda: not state()["searchRunning"] and state()["searchResults"]==350,"search hits")
+            for mode,name in ((0,"finderSearchIcons"),(1,"finderSearchResults"),(2,"finderSearchColumns"),(3,"finderSearchGalleryStrip")):
+                assert api.setMode(mode); QTest.qWait(120)
+                start(name)
+                travel=step(name)
+                assert 0 < (travel[1] if mode==3 else travel[0]) <= 72,(mode,travel)
+                assert step(name,angle=0,pixel=-17,phase=2)==((0,17) if mode==3 else (17,0))
+            record("all-four-search-presentations-use-the-same-scroll-policy")
         result={"passed":True,"checks":checks,"measurements":measurements,"measureOnly":args.measure_only,"privateWayland":True}
 except Exception as error:
     result={"passed":False,"checks":checks,"measurements":measurements,"error":repr(error)}
