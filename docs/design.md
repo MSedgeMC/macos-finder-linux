@@ -153,7 +153,7 @@ creation and any subsequent rename separately, so file Undo reverses the rename
 before removing the created folder. Navigating away prevents the delayed editor
 from targeting another location.
 
-Multi-selection Rename uses the native Qt `BatchRenameDialog`. Replace Text
+Multi-selection Rename uses the application's Qt Widgets `BatchRenameDialog`. Replace Text
 operates case-sensitively on full filenames, including hidden extensions, and
 honors the extension-change warning setting. Add Text inserts before or after
 the stem; Format offers Name and Index, Name and Counter, or Name and Date with
@@ -194,9 +194,21 @@ database. They preserve file contents, tags and unrelated attributes; filesystem
 ctime may change. Reads/writes use pinned, verified local regular files or
 directories and reject symlinks and special files. Asynchronous metadata reads
 are bounded to 4,096 entries and a cooperative five-second budget, with cached
-results refreshed by listing/metadata changes rather than polling. Unsupported
+results refreshed by listing/metadata changes rather than polling. The read
+budget is cooperative between filesystem calls; blocked kernel/network calls
+can exceed it. Conservative read-only reopening can make metadata unavailable
+for unreadable files. Unsupported
 storage, permissions, malformed values and stale inode identities produce
 visible errors. Metadata saves are explicit and are separate from file Undo.
+Get Info and its
+Finder owner refuse closure/Quit while an admitted save or custom rename is
+pending, without waiting on the GUI thread. Embedded Escape reaches the native
+host. Hidden-page saves still refresh their cache; retargeted results cannot
+replace another file's fields. A custom rename requires saved comment/native
+property drafts, then rebuilds General/type/Open With from fresh native data.
+If reload fails, the old properties window closes and Finder reports the error.
+Search batch preflight admits one request per window, with four active stat
+jobs at most; navigation or changed criteria cancels it.
 
 Icons can save positions by file URL, return to them after sorting/grouping,
 snap to a grid and clean up by real metadata. Spring loading navigates temporary

@@ -246,3 +246,44 @@ content over changing patterned backdrop, unclipped controls at 480x320 and
 appearance and gesture CTest targets passed. Screenshots were inspected from
 files. These checks establish the repaired Linux behavior, not literal Apple
 pixel or gesture parity.
+
+
+## Finder v7 portable UX and lifecycle verification (2026-11-16)
+
+All 19 CTest targets passed after the metadata lifecycle corrections. A later
+full rerun printed all preview assertions as PASS but timed out during process
+shutdown; its exact recheck passed in 7.13 seconds. The rebuilt metadata
+consumers passed their component checks. The new
+native Get Info host test occupies both metadata workers, admits a comment
+save, attempts OK, Cancel, window close and embedded Escape, then releases the
+workers and verifies the real xattr. The host remains alive during saving and
+rename-busy guarding. File-details tests also cover hidden-page write delivery,
+retargeting, drafts, failure and standalone/embedded close behavior.
+
+The private Wayland integration suite passed 32 checks, the expanded feature
+suite passed 34, and ordinary windowing passed 17. These overlap; their counts
+must not be added as unique functionality. All 15 checks in the final v7 UX
+harness passed, including post-rename General-page/name coherence. It additionally
+covers real native view/tag/sidebar/new-folder shortcuts, native batch format
+and per-step Undo, Get Info comments/extensions, safe path completion and tilde
+navigation, enclosing-folder windows, native sidebar bookmarks, ancestor path
+copy, slideshow reuse, all four search views, bounded repeated search Rename,
+Escape, native properties reload and tab drag-out. The harness is
+[tests/verify-finder-ux.py](../tests/verify-finder-ux.py); run it on a private
+Wayland screen with `KWIN_WAYLAND_NO_PERMISSION_CHECKS=1`.
+
+A warm tmpfs diagnostic exercised 1,000- and 10,000-file directories with 88
+operations. Comparing native modification-time seconds directly replaced
+repeated date conversions: the largest 10,000-file sort dispatch fell from
+about 758 ms to 140 ms in single before/after runs, and the largest whole-case
+10 ms heartbeat gap fell from 761 ms to 148 ms. These busy-machine samples are
+not cold-disk throughput, a distribution-wide guarantee or macOS speed parity.
+Large sorts remain synchronous. The diagnostic executable
+`finder-browser-performance` is not a timing-based CTest assertion.
+It measures the offscreen Browser/KIO components without compositor presentation
+or a connected Preview controller. Dispatch timings are synchronous API durations;
+whole-case heartbeat gaps include correctness scans.
+
+All rendering, input and filesystem fixtures remained private. The final
+installation is verified separately; component and native tests do not prove
+Apple pixel equality, physical touchpad feel or access to Apple-only services.
