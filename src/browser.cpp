@@ -2,6 +2,7 @@
 // Copyright 2026 kubuntu-customization contributors
 // Public Qt/KIO views and jobs; no private Dolphin ABI or shell file mutations.
 #include "browser.h"
+#include "filetarget.h"
 #include "appearance.h"
 #include "tags.h"
 #include "preferences.h"
@@ -414,6 +415,23 @@ public:
     QHash<QUrl, DirectorySize> directorySizes;
     QSize decorationSize{64, 64};
     qreal decorationScale = 1;
+
+    QMimeData *mimeData(const QModelIndexList &indexes) const override {
+        auto *mime = KDirSortFilterProxyModel::mimeData(indexes);
+        if (!mime) return nullptr;
+        QList<QUrl> targets;
+        QSet<QUrl> seen;
+        for (const auto &index : indexes) {
+            if (index.column() != 0) continue;
+            const auto entry = index.data(KDirModel::FileItemRole).value<KFileItem>();
+            const auto target = FileTarget::url(entry);
+            if (!entry.isNull() && !seen.contains(target)) { seen.insert(target); targets.append(target); }
+        }
+        // Replace both URL flavors so another native app cannot resurrect a
+        // synthetic listing URL via the preferred local-URL clipboard format.
+        KUrlMimeData::setUrls(targets, targets, mime);
+        return mime;
+    }
 
     void refreshPreferences() {
         showAllExtensions = QSettings().value("Advanced/showAllExtensions", false).toBool();
@@ -1546,7 +1564,7 @@ public:
         beginSpring(view, event->mimeData());
         if (!springActive) return;
         const auto entry = item(view->indexAt(event->position().toPoint()));
-        QUrl target = entry.isDir() ? normalized(entry.url()) : QUrl();
+        QUrl target = entry.isDir() ? normalized(FileTarget::url(entry)) : QUrl();
         const auto sources = KUrlMimeData::urlsFromMimeData(event->mimeData(), KUrlMimeData::PreferLocalUrls);
         for (const auto &source : sources) {
             const auto url = normalized(source);
@@ -1729,7 +1747,7 @@ public:
     }
 
     void activate(const QModelIndex &index, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
-        const auto entry = item(index);
+        const auto entry = FileTarget::item(item(index));
         if (entry.isNull()) return;
         if (entry.isDir()) {
             if (modifiers & (Qt::MetaModifier | Qt::ControlModifier | Qt::AltModifier)) {
@@ -1746,13 +1764,23 @@ public:
         } else emit q->openRequested(entry.url());
     }
 
+    QModelIndex indexForTarget(const QUrl &url) const {
+        const auto direct = model->indexForUrl(url);
+        if (direct.isValid()) return direct;
+        for (const auto &folder : {currentUrl, rootUrl}) {
+            for (const auto &entry : model->dirLister()->itemsForDir(folder, KDirLister::AllItems))
+                if (FileTarget::url(entry) == url) return model->indexForUrl(entry.url());
+        }
+        return {};
+    }
+
     void applySelection() {
         if (pendingSelection.isEmpty()) return;
         QItemSelection selected;
         QModelIndex current;
         bool complete = true;
         for (const auto &url : pendingSelection) {
-            const auto index = proxy->mapFromSource(model->indexForUrl(url));
+            const auto index = proxy->mapFromSource(indexForTarget(url));
             if (!index.isValid()) { complete = false; continue; }
             selected.select(index, index);
             if (!current.isValid()) current = index;
@@ -1766,7 +1794,7 @@ public:
         activeSelection()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
         q->activeView()->scrollTo(current);
         if (complete) springRestoreColumns = QUrl();
-        if (complete && !pendingRename.isEmpty() && item(current).url() == pendingRename) {
+        if (complete && !pendingRename.isEmpty() && FileTarget::url(item(current)) == pendingRename) {
             pendingRename = QUrl();
             QTimer::singleShot(0, q, [this, index = QPersistentModelIndex(current)] {
                 if (!index.isValid() || !q->isVisible()) return;
@@ -1796,7 +1824,7 @@ public:
     }
 
     void rename(const QModelIndex &index, const QString &name) {
-        const auto entry = item(index);
+        const auto entry = FileTarget::item(item(index));
         if (entry.isNull() || name == entry.name()) return;
         if (!validName(name)) { emit q->errorOccurred("Enter a valid filename without a slash."); return; }
         const auto confirmed = Browser::confirmedRenameName(entry, name, q->window());
@@ -1981,7 +2009,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     const auto dropped = [this](QDropEvent *event, const QModelIndex &index) {
         if (d->arrangeDrop(event, index)) { d->finishSpring(true); return; }
         const auto entry = d->item(index);
-        drop(event, entry.isDir() ? entry.url() : (index.isValid() ? parentUrl(entry.url()) :
+        drop(event, entry.isDir() ? FileTarget::url(entry) : (index.isValid() ? parentUrl(FileTarget::url(entry)) :
              (d->currentMode == Columns ? d->rootUrl : url())));
     };
     d->icons->handler = dropped; d->list->handler = dropped; d->columns->handler = dropped; d->strip->handler = dropped;
@@ -2038,7 +2066,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->columnSelection, &QItemSelectionModel::currentChanged, this, [this] { if (d->currentMode == Columns) d->selected(); });
     connect(d->columns, &QColumnView::updatePreviewWidget, this, [this](const auto &index) {
         if (d->currentMode == Columns) {
-            const auto item = d->item(index); emit previewRequested(item.isFile() ? item.url() : QUrl());
+            const auto item = d->item(index); emit previewRequested(item.isFile() ? FileTarget::url(item) : QUrl());
         }
     });
     connect(d->model->dirLister(), &KDirLister::started, this, [this](const QUrl &url) { d->syncDirectoryWatches(url); });
@@ -2380,10 +2408,11 @@ KFileItemList Browser::selectedItems() const {
     KFileItemList result;
     for (const auto &index : d->selectedNames()) {
         const auto item = d->item(index);
-        if (!item.isNull()) result.append(item);
+        if (!item.isNull()) result.append(FileTarget::item(item));
     }
     return result;
 }
+QUrl Browser::primaryUrl() const { return FileTarget::url(d->item(d->activeSelection()->currentIndex())); }
 QList<QUrl> Browser::selectedUrls() const { QList<QUrl> urls; for (const auto &item : selectedItems()) urls.append(item.url()); return urls; }
 int Browser::itemCount() const {
     const auto index = d->currentUrl == d->rootUrl ? QModelIndex() : d->proxy->mapFromSource(d->model->indexForUrl(d->currentUrl));
@@ -2840,7 +2869,7 @@ bool Browser::eventFilter(QObject *object, QEvent *event) {
                 else {
                     if (!index.isValid()) index = dragView->rootIndex();
                     const auto entry = d->item(index);
-                    drop(dropEvent, entry.isDir() ? entry.url() : index.isValid() ? parentUrl(entry.url()) :
+                    drop(dropEvent, entry.isDir() ? FileTarget::url(entry) : index.isValid() ? parentUrl(FileTarget::url(entry)) :
                          d->currentMode == Columns ? d->rootUrl : url());
                 }
                 if (dragView == d->icons) d->icons->endDragState();

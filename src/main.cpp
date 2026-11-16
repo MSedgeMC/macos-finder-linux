@@ -1521,7 +1521,7 @@ public:
     QList<QUrl> ordered = urls;
     QUrl current;
     if (showingSearch()) current = searchPresentation->selectionModel()->currentIndex().siblingAtColumn(0).data(Qt::UserRole).toUrl();
-    else current = browser()->activeView()->currentIndex().data(KDirModel::FileItemRole).value<KFileItem>().url();
+    else current = browser()->primaryUrl();
     if (ordered.removeOne(current)) ordered.prepend(current);
     return ordered;
   }
@@ -1710,7 +1710,7 @@ public:
               for (auto i : items)
                 urls << i.url();
               auto &s = states[b];
-              const auto primary = b->activeView()->currentIndex().data(KDirModel::FileItemRole).value<KFileItem>().url();
+              const auto primary = b->primaryUrl();
               if (b->mode() == Browser::Gallery) updatePreviewSelection(s.gallery, urls, primary);
               if (b->mode() == Browser::Columns) updatePreviewSelection(s.column, urls, primary);
               if (b->previewShown()) updatePreviewSelection(s.preview, urls, primary);

@@ -56,6 +56,7 @@ public:
     ~Browser() override;
     QUrl url() const;
     QList<QUrl> selectedUrls() const;
+    QUrl primaryUrl() const;
     KFileItemList selectedItems() const;
     int itemCount() const;
     Mode mode() const;
