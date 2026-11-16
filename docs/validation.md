@@ -284,6 +284,10 @@ It measures the offscreen Browser/KIO components without compositor presentation
 or a connected Preview controller. Dispatch timings are synchronous API durations;
 whole-case heartbeat gaps include correctness scans.
 
-All rendering, input and filesystem fixtures remained private. The final
-installation is verified separately; component and native tests do not prove
-Apple pixel equality, physical touchpad feel or access to Apple-only services.
+All rendering, input and filesystem fixtures remained private. The scoped
+production installation was verified on 2026-11-16: installed/staged executable
+hashes match, Finder is the directory default, the running service owns both
+Finder and FileManager1 interfaces, and the private test interface is absent.
+Only executable bytes changed; existing launch routes were retained. Component
+and native tests do not prove Apple pixel equality, physical touchpad feel or
+access to Apple-only services.
