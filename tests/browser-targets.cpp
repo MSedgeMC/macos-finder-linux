@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
  uds.fastInsert(KIO::UDSEntry::UDS_MIME_TYPE,QStringLiteral("image/png"));
  const auto virtualUrl=QUrl(QStringLiteral("recentlyused:/files/Photo%20%23%20one.png-0"));
  KFileItem entry(uds,virtualUrl);
- check(FileTarget::url(entry)==target && FileTarget::item(entry).name()==target.fileName(),"native provider target/name");
+ check(FileTarget::url(entry)==target && FileTarget::item(entry).name()==target.fileName() && FileTarget::item(entry).isLocalFile(),"native provider target/name");
  check(FileTarget::url(KFileItem(target))==target,"ordinary files stay native");
  check(FileTarget::url(KFileItem()).isEmpty(),"null entry");
  // KDirModel receives the same public provider signal as a worker listing.
