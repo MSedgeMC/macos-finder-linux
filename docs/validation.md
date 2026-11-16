@@ -320,6 +320,11 @@ four modes, bounded rename preflight and tab detaching/overview. Appearance,
 gesture and Get Info component checks passed. All 17 windowing checks passed:
 native move/resize, fullscreen restoration, visible controls, text-focused
 Copy/Cut/Paste/Undo, pinch, Quick Look ownership and tab opening/closing.
+The expanded feature harness also passed all 34 checks for native file
+operations, archive outputs/Undo, search, tab state and session restoration.
+These suites overlap; their counts must not be added as unique functionality.
+The reviewed behavior/provider boundaries are recorded in
+[UX compatibility](ux-compatibility.md).
 
 All automation remains on private offscreen/Wayland sessions. No physical
 device or macOS side-by-side latency test was performed. Apple-only services,
