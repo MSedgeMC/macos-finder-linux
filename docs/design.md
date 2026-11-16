@@ -217,6 +217,15 @@ folder preferences change only after a committed drop. Pixel/momentum scroll
 input remains native; wheel easing is interruptible with reduced motion. No
 measurement establishes Apple's exact scroll physics.
 
+Mouse-wheel distance uses the system wheel-line count multiplied by a capped
+24px view step and the app's speed percentage (50% by default). Large Icons and
+Gallery tiles therefore cannot multiply one notch into several tile heights.
+Settings → Advanced exposes Mouse wheel speed (10–200%). Turning smooth
+scrolling off removes easing while retaining the same distance. Angle-only
+phased input uses this bounded distance directly; precise touchpad pixels and
+their momentum remain 1:1, without an added animation tail. Keyboard paging,
+scrollbar actions and drag autoscroll keep their native Qt behavior.
+
 Quick Look adds PDF page navigation, bounded search/text selection and lazy
 multipage scrolling. Image actions operate at original resolution; image/PDF
 combination is a raster fallback, not structural PDF editing. FFmpeg trim
@@ -242,6 +251,12 @@ and tested portable behavior do not establish literal 1:1 Finder parity.
 Native two-finger pinch zooms file icons and image/PDF previews through the existing bounded size/zoom APIs. Touchscreen dragging pans noninteractive preview details through QScroller, with cancellation and reduced motion. Item views retain native tap selection and file drag/drop; pixel/momentum wheel scrolling keeps its existing direct input path. No idle gesture polling is added. Qt Wayland exposes pinch but does not expose normal two-finger scrolling as a native Swipe, so two-finger history cannot be promised on that backend. A genuine native Swipe from a supported backend invokes the enabled history action. Physical-device feel is unverified.
 
 Text-focused Copy/Cut/Paste/Select All/Undo use the actual editor, including menu and Meta paths; text Undo cannot invoke a file Undo. File context menus share selection, Trash and destination policy with File/More actions. Search/tab transfers focus the displayed content; Settings retains the most recently activated Finder owner. Folder entry points use one policy, and Option-open closes its source window only after the destination's native listing succeeds.
+
+Get Info from the File menu, Quick Look and Inspector uses the same guarded
+native-properties host with Name & Comments, per-file extension settings and
+native permissions/Open With. Metadata save and custom rename completion keep
+the host alive. External FileManager1 properties requests and multi-item Summary
+Info retain the native KDE properties presentation.
 
 KDE Rounded Corners can add a second outline over this client contour. On that compositor, `python3 tools/fix-kwin-outline.py --apply` appends only `org.local.finder` to `Round-Corners/Exclusions`, preserving other entries and recording a backup. The helper recreates only the loaded Rounded Corners effect so existing windows refresh its cached exclusions. It preserves the three Breeze keys that the upstream effect writes during reload; KWin keeps running. Other applications retain their desktop corner settings.
 

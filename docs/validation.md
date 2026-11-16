@@ -291,3 +291,44 @@ Finder and FileManager1 interfaces, and the private test interface is absent.
 Only executable bytes changed; existing launch routes were retained. Component
 and native tests do not prove Apple pixel equality, physical touchpad feel or
 access to Apple-only services.
+
+## Wheel sensitivity and everyday UX verification (2026-11-16)
+
+A private Wayland baseline with three system wheel lines moved one notch by
+354px in 64px Icons, 69px in List, 297px in Gallery and 568px in 256px Icons.
+The view's native `singleStep` was multiplied by the system line count, making
+tile size affect wheel sensitivity. Capping the wheel step at 24px and applying
+the default 50% app speed yields 36px, 34/35px, 36px and 36px respectively.
+With four system lines, matching the user's desktop setting, the updated
+measurements are 48px, 46px, 48px and 48px. Fine-angle fractions are retained;
+keyboard and scrollbar steps remain native. These are measured Linux event
+distances, not macOS input-device feel or physics comparisons.
+
+The scroll component test passed bounded/fractional/phase input, immediate
+reversal, endpoints, live preference defaults/validation, reduced motion, view
+replacement, click/drag takeover and zero idle animation callbacks. Eight
+private Wayland checks cover every Browser and search mode, large icons,
+direct pixel/momentum input, live speed adjustment, identical distance with
+easing disabled and cancellation on tab navigation. Reproduction uses
+`tests/verify-scrolling.py --wheel-lines 4` inside the private virtual screen.
+
+All 16 native UX checks passed, including Get Info from Quick Look and Inspector
+using the same metadata editor/guarded host. Existing checks cover actual Meta
+shortcuts, selection, folder creation, batch rename/conflicts/Undo, safe pathname
+entry, sidebar bookmarks, enclosing-folder windows, slideshow, search in all
+four modes, bounded rename preflight and tab detaching/overview. Appearance,
+gesture and Get Info component checks passed. All 17 windowing checks passed:
+native move/resize, fullscreen restoration, visible controls, text-focused
+Copy/Cut/Paste/Undo, pinch, Quick Look ownership and tab opening/closing.
+
+All automation remains on private offscreen/Wayland sessions. No physical
+device or macOS side-by-side latency test was performed. Apple-only services,
+Finder extension providers, native elasticity and exact macOS gesture physics
+remain absent or unverified; these results establish the exercised Linux
+behavior.
+
+The scoped installer applied the tested update on 2026-11-16 with no open Finder
+windows. Installed/staged hashes and the running executable match; native
+directory defaults and FileManager1 methods pass verification, and the private
+test interface remains absent. Only the executable changed. Existing app wheel
+speed preferences are retained; missing values use the new 50% default.
