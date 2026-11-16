@@ -1380,6 +1380,7 @@ public:
       });
     }
     native->show();
+    installScrolling(native);
   }
   bool metadataBusy() const {
     for (auto *host : findChildren<FinderInfoDialog *>()) if (host->busy()) return true;
@@ -1590,7 +1591,7 @@ public:
     connect(p, &PreviewPane::openRequested, this,
               [this](const QUrl &url) { openUrl(url); });
       connect(p, &PreviewPane::getInfoRequested, this, [this](const QUrl &url) {
-        auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+        showInfo(url);
       });
       connect(p, &PreviewPane::rotateCopyRequested, this, [this](const QUrl &url) {
         if (!url.isLocalFile()) return;
@@ -3229,7 +3230,7 @@ private:
       if (!inspector) {
         inspector = new Inspector(this);
         connect(inspector, &Inspector::propertiesRequested, this, [this](const QUrl &url) {
-          auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+          showInfo(url);
         });
         connect(inspector, &Inspector::revealRequested, this, &FinderWindow::showItems);
       }
@@ -3693,6 +3694,17 @@ public:
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoJobFinished, this, [this] { ++undoCompletions; });
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::jobRecordingFinished, this, [this](KIO::FileUndoManager::CommandType) { ++jobRecordings; });
   }
+  QAbstractScrollArea *scrollArea(const QString &name) const {
+    auto *area = m->active() ? m->active()->findChild<QAbstractScrollArea *>(name) : nullptr;
+    if (area && name == "finderColumnView") {
+      QAbstractItemView *column = nullptr;
+      for (auto *child : area->findChildren<QAbstractItemView *>())
+        if (child->isVisible() && child->verticalScrollBar()->maximum() > 0 &&
+            (!column || child->mapTo(area, QPoint()).x() > column->mapTo(area, QPoint()).x())) column = child;
+      if (column) return column;
+    }
+    return area;
+  }
 public slots:
   QString renameBurst(int count, bool cancel) {
     auto *window = m->active();
@@ -3789,6 +3801,14 @@ public slots:
     for (auto *widget : QApplication::topLevelWidgets()) if (widget->isVisible() && widget->objectName() == "finderQuickLookWindow")
       if (auto *pane = widget->findChild<PreviewPane *>()) return QString::fromUtf8(QJsonDocument(QJsonObject{{"slideshow", pane->slideshowRunning()}, {"fullscreen", pane->isFullScreen()}}).toJson(QJsonDocument::Compact));
     return "{}";
+  }
+  bool triggerPreviewAction(const QString &name) {
+    for (auto *widget : QApplication::topLevelWidgets())
+      if (widget->isVisible() && widget->objectName() == "finderQuickLookWindow")
+          if (auto *action = widget->findChild<QAction *>(name); action && action->isEnabled()) {
+            action->trigger(); return true;
+          }
+    return false;
   }
   QString diagnostics() {
     if (!m->active())
@@ -3918,7 +3938,7 @@ public slots:
     return QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact));
   }
   QString scrollState(const QString &name) {
-    auto *area = m->active() ? m->active()->findChild<QAbstractScrollArea *>(name) : nullptr;
+    auto *area = scrollArea(name);
     if (!area) return "{}";
     return QString::fromUtf8(QJsonDocument(QJsonObject{
       {"vertical", area->verticalScrollBar()->value()}, {"verticalMaximum", area->verticalScrollBar()->maximum()},
@@ -3928,7 +3948,7 @@ public slots:
       {"animating", FinderScroll::isAnimating(area)}}).toJson(QJsonDocument::Compact));
   }
   bool wheel(const QString &name, int angleX, int angleY, int pixelX, int pixelY, int phase) {
-    auto *area = m->active() ? m->active()->findChild<QAbstractScrollArea *>(name) : nullptr;
+    auto *area = scrollArea(name);
     if (!area || !area->isVisible()) return false;
     const QPointF local = area->viewport()->rect().center();
     QWheelEvent event(local, area->viewport()->mapToGlobal(local.toPoint()), QPoint(pixelX, pixelY),
