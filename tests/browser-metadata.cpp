@@ -6,6 +6,7 @@
 // listing uses a private session bus as well as private XDG/offscreen paths.
 #include "browser.h"
 #include "tags.h"
+#include "filedetails.h"
 #include <QAbstractItemView>
 #include <QAbstractProxyModel>
 #include <QAction>
@@ -22,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QSettings>
 #include <QTreeView>
 #include <KDirModel>
 #include <functional>
@@ -104,6 +106,19 @@ int main(int argc, char **argv) {
     check(!browser.metadata(small, Browser::DateAddedRole).isValid() && !browser.metadata(small, Browser::LastOpenedRole).isValid(),
           "unprovided added/opened dates remain unavailable");
     const auto smallIndex = findUrl(model, small);
+    check(FileDetails::setExtensionOverride(small, FileDetails::ExtensionOverride::Show).ok(), "per-file show extension");
+    browser.refreshFileDetails();
+    check(waitFor([&] { return smallIndex.data().toString() == "small.txt"; }), "async metadata updates displayed name");
+    check(FileDetails::setExtensionOverride(small, FileDetails::ExtensionOverride::Hide).ok(), "per-file hide extension");
+    browser.refreshFileDetails();
+    check(waitFor([&] { return smallIndex.data().toString() == "small"; }), "per-file hidden extension presentation");
+    QSettings().setValue("Advanced/showAllExtensions", true); browser.refreshPreferences();
+    check(smallIndex.data().toString() == "small.txt", "global Show All overrides per-file Hide");
+    QSettings().setValue("Advanced/showAllExtensions", false); browser.refreshPreferences();
+    check(FileDetails::setExtensionOverride(small, FileDetails::ExtensionOverride::Inherit).ok(), "restore inherited extension");
+    browser.refreshFileDetails();
+    check(smallIndex.data(Qt::EditRole).toString() == "small.txt" && smallIndex.data(KDirModel::FileItemRole).value<KFileItem>().url() == small,
+          "metadata presentation preserves edit name and URL");
     check(smallIndex.siblingAtColumn(Browser::DateAddedColumn).data().toString() == QString::fromUtf8("—"), "unavailable date display");
     check(smallIndex.siblingAtColumn(Browser::DateAddedColumn).data(Qt::ToolTipRole).toString().contains("provider"), "unavailable date explanation");
     check(browser.metadata(small, Browser::LogicalSizeRole).toULongLong() == 3, "raw file size");

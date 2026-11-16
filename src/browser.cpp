@@ -5,6 +5,8 @@
 #include "appearance.h"
 #include "tags.h"
 #include "preferences.h"
+#include "batchrename.h"
+#include "filedetails.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -79,7 +81,6 @@
 #include <KIO/MkdirJob>
 #include <KIO/PasteJob>
 #include <KIO/PreviewJob>
-#include <KIO/RenameFileDialog>
 #include <KIO/UDSEntry>
 
 #include <functional>
@@ -384,6 +385,16 @@ void scanDirectorySizes(const QList<QUrl> &urls, Browser::SizeCalculationLimits 
 class FinderProxy : public KDirSortFilterProxyModel {
 public:
     explicit FinderProxy(QObject *parent) : KDirSortFilterProxyModel(parent) {
+        details = new FileDetailsCache(this);
+        detailsTimer.setSingleShot(true); detailsTimer.setInterval(40);
+        QObject::connect(&detailsTimer, &QTimer::timeout, this, [this] { loadDetails(); });
+        QObject::connect(details, &FileDetailsCache::detailsChanged, this, [this](const QList<QUrl> &urls) {
+            for (const auto &url : urls) {
+                nameCache.remove(url);
+                const auto index = mapFromSource(static_cast<KDirModel *>(sourceModel())->indexForUrl(url));
+                if (index.isValid()) emit dataChanged(index, index, {Qt::DisplayRole});
+            }
+        });
         collator.setNumericMode(true);
         collator.setCaseSensitivity(Qt::CaseInsensitive);
         tagTimer.setSingleShot(true);
@@ -445,14 +456,21 @@ public:
                     }
                 }
                 restartTagReads();
+                detailsRefresh = true; detailsTimer.start();
             });
         QObject::connect(sourceModel(), &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex &parent, int first, int last) {
             enqueueTags(parent, first, last);
+            detailsTimer.start();
         });
         QObject::connect(sourceModel(), &QAbstractItemModel::rowsAboutToBeRemoved, this, [this](const QModelIndex &parent, int first, int last) {
             forgetTags(parent, first, last);
+            detailsTimer.start();
         });
-        QObject::connect(sourceModel(), &QAbstractItemModel::modelReset, this, [this] { refreshTags(); });
+        QObject::connect(sourceModel(), &QAbstractItemModel::modelReset, this, [this] {
+            refreshTags(); nameCache.clear(); details->setUrls({}); detailsTimer.start();
+        });
+        QObject::connect(static_cast<KDirModel *>(sourceModel())->dirLister(), qOverload<>(&KDirLister::completed), this,
+            [this] { detailsTimer.start(); });
         // DecorationRole updates can omit the roles list in KDirModel. Never
         // treat thumbnail delivery as a reason to reread filesystem metadata.
         // The host calls refreshTags after its real tag-writing job finishes.
@@ -461,6 +479,7 @@ public:
         tagCache.clear(); tagErrors.clear(); tagCategories.clear();
         restartTagReads();
     }
+    void refreshFileDetails() { detailsRefresh = true; detailsTimer.start(); }
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override {
         if (!index.isValid()) return {};
         const auto item = mapToSource(index).siblingAtColumn(0).data(KDirModel::FileItemRole).value<KFileItem>();
@@ -514,7 +533,10 @@ public:
             // Filename-only MIME globs never read the file. Keep unknown suffixes
             // visible, and preserve EditRole, FileItemRole and URLs unchanged.
             const auto suffix = QMimeDatabase().suffixForFileName(name);
-            const auto display = suffix.isEmpty() || name.size() <= suffix.size() + 1 ? name : name.left(name.size() - suffix.size() - 1);
+            const auto metadata = details->cached(item.url());
+            const auto override = metadata && metadata->available() && metadata->extensionError.ok() ?
+                metadata->extensionOverride : FileDetails::ExtensionOverride::Inherit;
+            const auto display = FileDetails::displayName(name, item.isDir(), suffix, override, showAllExtensions);
             if (nameCache.size() >= 8192) nameCache.clear();
             nameCache.insert(item.url(), {name, display});
             return display;
@@ -608,6 +630,25 @@ protected:
         return collator.compare(category(left).first, category(right).first);
     }
 private:
+    FileDetailsCache *details = nullptr;
+    QTimer detailsTimer;
+    bool detailsRefresh = false;
+    void loadDetails() {
+        QList<QUrl> urls;
+        QQueue<QModelIndex> parents; parents.enqueue({});
+        while (!parents.isEmpty() && urls.size() < FileDetails::maximumMetadataItems) {
+            const auto parent = parents.dequeue();
+            for (int row = 0; row < sourceModel()->rowCount(parent) && urls.size() < FileDetails::maximumMetadataItems; ++row) {
+                const auto index = sourceModel()->index(row, 0, parent);
+                const auto item = index.data(KDirModel::FileItemRole).value<KFileItem>();
+                if (!item.isNull() && item.url().isLocalFile() && !item.isLink()) urls << item.url();
+                if (sourceModel()->rowCount(index)) parents.enqueue(index);
+            }
+        }
+        if (urls != details->urls()) details->setUrls(urls);
+        else if (detailsRefresh) details->refresh();
+        detailsRefresh = false;
+    }
     QCollator collator;
     QHash<QUrl, QStringList> tagCache;
     QHash<QUrl, QString> tagErrors;
@@ -2566,6 +2607,7 @@ void Browser::setPreviewWidth(int width) {
     d->updatePreviewVisibility();
 }
 void Browser::refreshTags() { d->proxy->refreshTags(); }
+void Browser::refreshFileDetails() { d->proxy->refreshFileDetails(); }
 void Browser::refreshPreferences() {
     d->proxy->refreshPreferences();
     // QColumnView's dynamically created child views paint their own viewports.
@@ -2576,12 +2618,11 @@ void Browser::selectUrls(const QList<QUrl> &urls) { d->pendingSelection = urls; 
 void Browser::renameSelected() {
     const auto rows = d->selectedNames(); if (rows.isEmpty()) return;
     if (rows.size() > 1) {
-        // RenameFileDialog exists since KF 5.67 and records native BatchRename
-        // Undo. KF 6.2 supports numbered templates; newer KF adds Replace/Add.
-        auto *dialog = new KIO::RenameFileDialog(selectedItems(), window());
+        const auto origin = url();
+        auto *dialog = new BatchRenameDialog(selectedItems(), window());
         dialog->setObjectName(QStringLiteral("finderBatchRename"));
-        connect(dialog, &KIO::RenameFileDialog::renamingFinished, this, [this](const QList<QUrl> &urls) { selectUrls(urls); });
-        connect(dialog, &KIO::RenameFileDialog::error, this, [this](KJob *job) { emit errorOccurred(job->errorString()); });
+        connect(dialog, &BatchRenameDialog::renamingFinished, this, [this, origin](const QList<QUrl> &urls) { if (url() == origin) selectUrls(urls); });
+        connect(dialog, &BatchRenameDialog::error, this, [this](KJob *job) { emit errorOccurred(job->errorString()); });
         dialog->show();
         return;
     }

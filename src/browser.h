@@ -122,6 +122,8 @@ public slots:
     void restoreViewState(const QByteArray &state);
     void refreshTags();
     void refreshPreferences();
+    // Refresh bounded asynchronous per-inode extension/comment metadata.
+    void refreshFileDetails();
     void setFoldersFirst(bool enabled);
     void selectUrls(const QList<QUrl> &urls);
     void renameSelected();
