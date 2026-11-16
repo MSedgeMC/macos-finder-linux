@@ -3,6 +3,8 @@
 #include "filedetails.h"
 #include <KPropertiesDialogPlugin>
 #include <KPageWidgetItem>
+#include <KPageWidget>
+#include <KPageWidgetModel>
 #include <QCloseEvent>
 #include <QDialogButtonBox>
 #include <QMimeDatabase>
@@ -33,6 +35,14 @@ void FinderInfoDialog::initialize() {
 }
 bool FinderInfoDialog::busy() const { return m_renaming || (m_details && m_details->metadataCache()->isWriting()); }
 FileDetailsDialog *FinderInfoDialog::details() const { return m_details; }
+bool FinderInfoDialog::selectPage(const QString &name) {
+    if (auto *model = qobject_cast<KPageWidgetModel *>(pageWidget()->model()))
+        for (int row = 0; row < model->rowCount(); ++row) {
+            auto *item = model->item(model->index(row,0));
+            if (item && QString(item->name()).remove('&') == name) { setCurrentPage(item); return true; }
+        }
+    return false;
+}
 bool FinderInfoDialog::canRename() const {
     if (busy() || !m_details) return false;
     for (const auto *plugin : findChildren<KPropertiesDialogPlugin *>()) if (plugin->isDirty()) return false;

@@ -184,7 +184,8 @@ try:
         info_name=root/"Renamed Info.txt"
         until(info_name.exists,"Get Info native rename")
         until(lambda: unquote(json.loads(str(api.infoState(""))).get("url","")) == unquote(info_name.as_uri()) and not json.loads(str(api.infoState(""))).get("busy",True), "reloaded native Get Info editor")
-        coherent=json.loads(str(api.infoState("General")))
+        api.infoState("General"); QTest.qWait(150)
+        coherent=json.loads(str(api.infoState("")))
         assert coherent["page"]=="General" and coherent["name"]==info_name.name and info_name.name in coherent["nativeEditorNames"],coherent
         assert coherent["width"]>=500 and coherent["height"]>=600,coherent
         assert api.showFileDetailsPage()

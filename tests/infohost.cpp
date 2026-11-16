@@ -77,6 +77,10 @@ int main(int argc, char **argv) {
         require(host && host->isVisible() && !details->isHidden(), "embedded Escape while saving does not blank editor");
         release(); waitFor([&] { return host && !host->busy(); });
         const auto saved = details->metadataCache()->cached(url); require(saved && saved->comment == "queued comment", "accepted save delivered");
+        QPointer<FinderInfoDialog> fresh = new FinderInfoDialog(host->item()); fresh->show();
+        require(fresh->selectPage("General"), "native page selected");
+        require(fresh->currentPage() && QString(fresh->currentPage()->name()).remove('&') == "General", "fresh native properties has General page");
+        fresh->reject();
         char text[64]{}; const auto length = ::getxattr(QFile::encodeName(path).constData(), FileDetails::commentAttribute,text,sizeof(text));
         require(length == 14 && QByteArray(text,int(length)) == "queued comment", "real xattr saved after blocked close");
         host->setRenameBusy(true); host->reject(); require(host && host->isVisible(), "rename guards close"); host->setRenameBusy(false);

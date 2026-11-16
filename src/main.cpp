@@ -3707,16 +3707,13 @@ public slots:
   }
   QString infoState(const QString &pageName = {}) {
     for (auto *widget : QApplication::topLevelWidgets()) if (auto *host = qobject_cast<FinderInfoDialog *>(widget); host && host->isVisible()) {
-      if (!pageName.isEmpty()) if (auto *pages = host->findChild<KPageWidget *>())
-        if (auto *model = qobject_cast<KPageWidgetModel *>(pages->model()))
-          for (int row = 0; row < model->rowCount(); ++row)
-            if (auto *item = model->item(model->index(row,0)); item && QString(item->name()).remove('&') == pageName) host->setCurrentPage(item);
+      const bool selectedPage = pageName.isEmpty() || host->selectPage(pageName);
       QJsonArray nativeNames;
       for (auto *line : host->findChildren<QLineEdit *>()) if (line->isVisible() && line->objectName() != "fileDetailsName") nativeNames.append(line->text());
       const auto item = host->item();
       return QString::fromUtf8(QJsonDocument(QJsonObject{{"url",host->url().toString()}, {"name",item.name()}, {"mime",item.mimetype()},
         {"nativeEditorNames",nativeNames}, {"page",host->currentPage() ? QString(host->currentPage()->name()).remove('&') : QString()}, {"busy",host->busy()},
-        {"width",host->width()}, {"height",host->height()}}).toJson(QJsonDocument::Compact));
+        {"width",host->width()}, {"height",host->height()}, {"selectedPage",selectedPage}}).toJson(QJsonDocument::Compact));
     }
     return "{}";
   }

@@ -17,6 +17,7 @@ public:
     bool canRename() const;
     void setRenameBusy(bool busy);
     void explainBusy();
+    bool selectPage(const QString &name);
 public slots:
     void accept() override;
     void reject() override;
