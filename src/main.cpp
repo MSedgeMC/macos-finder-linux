@@ -1032,6 +1032,7 @@ public:
     applyStyle();
     connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); refreshToolbarSymbols(); header->update(); sidebar->update(); updateMaterial(); });
     addTab(initial, true);
+    rebuildTagMenu();
     qApp->installEventFilter(this);
     FinderWindowFrame::install(this);
     installScrolling(this);
@@ -1910,7 +1911,7 @@ private:
   Header *header;
   Material *sidebar;
   QSplitter *body;
-  QTabWidget *tabs;
+  QTabWidget *tabs = nullptr;
   QStackedWidget *contentStack;
   QWidget *searchPage;
   QTreeView *searchResults;
@@ -2740,6 +2741,7 @@ private:
     if (namedActions.contains("newFolderSelection"))
       namedActions["newFolderSelection"]->setEnabled(!showingSearch() && browser()->canNewFolderWithSelection());
     tagButton->setEnabled(!selectedUrls().isEmpty());
+    updateTags();
     for (auto name : {"newFolder", "paste", "moveHere"})
       if (namedActions.contains(name))
         namedActions[name]->setEnabled(writableDestination() && (QString(name) == "newFolder" || QApplication::clipboard()->mimeData()->hasUrls()));
