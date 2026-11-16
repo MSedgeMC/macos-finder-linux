@@ -27,6 +27,7 @@
 #include <QSettings>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QUuid>
@@ -428,6 +429,15 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         emit preferencesChanged();
     });
     option(advanced, tr("Use smooth scrolling for mouse wheels"), "Input/smoothScrolling", true, "finderSettingsSmoothScroll");
+    auto *wheelSpeed = new QSpinBox(this);
+    wheelSpeed->setObjectName("finderSettingsWheelSpeed");
+    wheelSpeed->setRange(10, 200); wheelSpeed->setSingleStep(5); wheelSpeed->setSuffix(tr("%"));
+    wheelSpeed->setValue(qBound(10, QSettings().value("Input/wheelSpeed", 50).toInt(), 200));
+    wheelSpeed->setToolTip(tr("Adjusts mouse-wheel distance inside Finder. Default: 50%. Precise touchpad scrolling uses the device's pixel motion."));
+    advanced->addRow(tr("Mouse wheel speed:"), wheelSpeed);
+    connect(wheelSpeed, &QSpinBox::valueChanged, this, [this](int value) {
+        QSettings().setValue("Input/wheelSpeed", value); emit preferencesChanged();
+    });
     option(advanced, tr("Reduce motion"), "Input/reduceMotion", false, "finderSettingsReduceMotion");
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     layout->addWidget(buttons);
@@ -573,6 +583,10 @@ void FinderSettings::completeTagMetadataChange(const QString &requestId, const Q
 
 void FinderSettings::reloadPreferences() {
     FinderPreferences::invalidateTagRegistryCache();
+    if (auto *speed = findChild<QSpinBox *>("finderSettingsWheelSpeed")) {
+        const QSignalBlocker blocker(speed);
+        speed->setValue(qBound(10, QSettings().value("Input/wheelSpeed", 50).toInt(), 200));
+    }
     for (auto *box : findChildren<QCheckBox *>()) {
         const QSignalBlocker blocker(box);
         const auto key = box->property("preferenceKey").toString();

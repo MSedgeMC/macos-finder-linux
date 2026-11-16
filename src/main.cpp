@@ -1089,14 +1089,10 @@ public:
     if (auto *b = qobject_cast<Browser *>(root)) gestures->setZoomTarget(b);
     for (auto *b : root->findChildren<Browser *>()) gestures->setZoomTarget(b);
     for (auto *pane : root->findChildren<PreviewPane *>()) gestures->setZoomTarget(pane);
-    const bool smooth = QSettings().value("Input/smoothScrolling", true).toBool();
-    const bool reduced = QSettings().value("Input/reduceMotion", false).toBool();
     for (auto *area : root->findChildren<QAbstractScrollArea *>()) {
       // This hidden native wrapper is the sidebar backend, not presentation.
       if (qobject_cast<FinderPlacesView *>(area)) continue;
-      FinderScroll::Options options;
-      options.durationMs = smooth && !reduced ? 180 : 0;
-      options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
+      const auto options = FinderScroll::optionsFromPreferences(area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip");
       FinderScroll::install(area, options);
       if (area->objectName() == "previewDetailsScroll") gestures->setTouchPanning(area);
     }
@@ -2032,10 +2028,7 @@ protected:
     }
     if (e->type() == QEvent::Show) {
       if (auto *area = qobject_cast<QAbstractScrollArea *>(o); area && area->window() == this && !qobject_cast<FinderPlacesView *>(area)) {
-        FinderScroll::Options options;
-        options.durationMs = QSettings().value("Input/smoothScrolling", true).toBool() &&
-                                     !QSettings().value("Input/reduceMotion", false).toBool() ? 180 : 0;
-        options.horizontalWheel = area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip";
+        const auto options = FinderScroll::optionsFromPreferences(area->objectName() == "finderGalleryStrip" || area->objectName() == "finderSearchGalleryStrip");
         FinderScroll::install(area, options);
       }
     }
@@ -3930,6 +3923,8 @@ public slots:
     return QString::fromUtf8(QJsonDocument(QJsonObject{
       {"vertical", area->verticalScrollBar()->value()}, {"verticalMaximum", area->verticalScrollBar()->maximum()},
       {"horizontal", area->horizontalScrollBar()->value()}, {"horizontalMaximum", area->horizontalScrollBar()->maximum()},
+      {"wheelLines", QApplication::wheelScrollLines()}, {"verticalStep", area->verticalScrollBar()->singleStep()},
+      {"horizontalStep", area->horizontalScrollBar()->singleStep()},
       {"animating", FinderScroll::isAnimating(area)}}).toJson(QJsonDocument::Compact));
   }
   bool wheel(const QString &name, int angleX, int angleY, int pixelX, int pixelY, int phase) {

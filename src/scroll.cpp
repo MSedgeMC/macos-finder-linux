@@ -352,9 +352,12 @@ private:
 
     bool enqueue(Axis &axis, int delta, double now, int duration) {
         if (!delta || !hasRange(axis)) return false;
+        const int step = std::clamp(axis.bar->singleStep(), 0, qMax(1, m_options.maximumWheelStep));
+        const double speed = std::isfinite(m_options.wheelSpeed)
+            ? std::clamp(m_options.wheelSpeed, 0.1, 2.0) : 0.5;
         const double movement = (axis.bar->invertedControls() ? -1.0 : 1.0) *
                                 double(delta) / 120 * QApplication::wheelScrollLines() *
-                                std::max(0, axis.bar->singleStep());
+                                step * speed;
         if (movement == 0) return false;
         const int direction = movement > 0 ? 1 : -1;
         if (axis.direction != direction) axis.remainder = 0;
@@ -409,12 +412,17 @@ private:
             event->setAccepted(moved);
             return true;
         }
-        if (event->phase() != Qt::NoScrollPhase) {
-            stop();
-            return false; // Preserve native phase/angle sequence, no tail.
+        if (event->angleDelta().isNull()) {
+            if (event->phase() != Qt::NoScrollPhase) stop();
+            return false;
         }
-        if (event->angleDelta().isNull()) return false;
-        const int duration = animationDuration();
+        const bool phased = event->phase() != Qt::NoScrollPhase;
+        if (phased) {
+            // Keep the device's update/momentum cadence, with the same wheel
+            // sensitivity as unphased input and no synthetic momentum tail.
+            m_horizontal.running = m_vertical.running = false;
+        }
+        const int duration = phased ? 0 : animationDuration();
         const double now = m_clock.nsecsElapsed() / 1000000.0;
         if (!duration) {
             // A changed accessibility setting cancels outstanding movement.
@@ -446,6 +454,18 @@ void install(QAbstractScrollArea *area, const Options &options) {
     }
     if (auto *existing = controller(area)) existing->configure(options);
     else new Controller(area, options);
+}
+
+Options optionsFromPreferences(bool horizontalWheel) {
+    QSettings settings;
+    Options options;
+    options.durationMs = settings.value("Input/smoothScrolling", true).toBool() &&
+                         !settings.value("Input/reduceMotion", false).toBool() ? 180 : 0;
+    bool valid = false;
+    const int percent = settings.value("Input/wheelSpeed", 50).toInt(&valid);
+    options.wheelSpeed = valid ? std::clamp(percent, 10, 200) / 100.0 : 0.5;
+    options.horizontalWheel = horizontalWheel;
+    return options;
 }
 
 void stop(QAbstractScrollArea *area) {
