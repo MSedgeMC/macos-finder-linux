@@ -3710,12 +3710,12 @@ public slots:
       if (!pageName.isEmpty()) if (auto *pages = host->findChild<KPageWidget *>())
         if (auto *model = qobject_cast<KPageWidgetModel *>(pages->model()))
           for (int row = 0; row < model->rowCount(); ++row)
-            if (auto *item = model->item(model->index(row,0)); item && item->name() == pageName) host->setCurrentPage(item);
+            if (auto *item = model->item(model->index(row,0)); item && QString(item->name()).remove('&') == pageName) host->setCurrentPage(item);
       QJsonArray nativeNames;
       for (auto *line : host->findChildren<QLineEdit *>()) if (line->isVisible() && line->objectName() != "fileDetailsName") nativeNames.append(line->text());
       const auto item = host->item();
       return QString::fromUtf8(QJsonDocument(QJsonObject{{"url",host->url().toString()}, {"name",item.name()}, {"mime",item.mimetype()},
-        {"nativeEditorNames",nativeNames}, {"page",host->currentPage() ? host->currentPage()->name() : QString()}, {"busy",host->busy()},
+        {"nativeEditorNames",nativeNames}, {"page",host->currentPage() ? QString(host->currentPage()->name()).remove('&') : QString()}, {"busy",host->busy()},
         {"width",host->width()}, {"height",host->height()}}).toJson(QJsonDocument::Compact));
     }
     return "{}";
