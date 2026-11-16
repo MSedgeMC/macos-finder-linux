@@ -19,6 +19,7 @@
 #include "taboverview.h"
 #include "batchrename.h"
 #include "filedetails.h"
+#include "infohost.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -1063,6 +1064,7 @@ public:
     uiReady = true;
     QTimer::singleShot(0, this, [this] { layoutHeader(); });
   }
+  ~FinderWindow() override { cancelRenamePreflight(); }
   Browser *browser() const {
     return qobject_cast<Browser *>(tabs->currentWidget());
   }
@@ -1260,6 +1262,16 @@ public:
     const auto item = browser()->directoryModel()->dirLister()->findByUrl(url);
     return !item.isNull() && item.isDir() && item.isWritable();
   }
+  QJsonObject renameSearchIdentity() const {
+    auto identity = searchDefinition();
+    for (const auto *key : {"selectedResults", "primaryResult", "resultsMode", "resultsSort", "resultsDescending"}) identity.remove(key);
+    return identity;
+  }
+  void cancelRenamePreflight() {
+    ++renamePreflightGeneration; renamePreflightBusy = false;
+    const auto jobs = renamePreflightJobs; renamePreflightJobs.clear();
+    for (auto job : jobs) if (job) job->kill();
+  }
   void renameSelection() {
     const auto urls = selectedUrls();
     if (urls.isEmpty() || trashSelection()) return;
@@ -1269,20 +1281,29 @@ public:
     QPointer<Browser> target = browser(); const auto origin = target->url();
     const bool wasSearch = showingSearch(); const auto originalQuery = search->text();
     if (wasSearch) {
-      struct Pending { QList<QUrl> urls; KFileItemList items; int next = 0, active = 0; bool failed = false; };
+      if (renamePreflightBusy) return;
+      if (batchDialog) { presentWindow(batchDialog); return; }
+      struct Pending { QList<QUrl> urls; KFileItemList items; int next = 0, active = 0; };
       auto pending = std::make_shared<Pending>(); pending->urls = urls; pending->items.resize(urls.size());
+      const auto generation = ++renamePreflightGeneration;
+      const auto definition = renameSearchIdentity();
+      renamePreflightBusy = true; ++renamePreflightStarts;
       auto advance = std::make_shared<std::function<void()>>();
-      *advance = [this, pending, target, origin, originalQuery, weak = std::weak_ptr<std::function<void()>>(advance)] {
-        if (!target || target != browser() || target->url() != origin || !showingSearch() || search->text() != originalQuery) { pending->failed = true; return; }
-        if (pending->failed) return;
-        if (pending->next == pending->urls.size() && !pending->active) { showBatchRename(pending->items, target, origin, true, originalQuery); return; }
+      *advance = [this, pending, target, origin, originalQuery, definition, generation, weak = std::weak_ptr<std::function<void()>>(advance)] {
+        if (generation != renamePreflightGeneration || !renamePreflightBusy) return;
+        if (!target || target != browser() || target->url() != origin || !showingSearch() || renameSearchIdentity() != definition) { cancelRenamePreflight(); return; }
+        if (pending->next == pending->urls.size() && !pending->active) {
+          renamePreflightBusy = false; showBatchRename(pending->items, target, origin, true, originalQuery); return;
+        }
         while (pending->active < 4 && pending->next < pending->urls.size()) {
           const int position = pending->next++; const auto url = pending->urls.at(position);
           auto *job = KIO::stat(url, KIO::StatJob::SourceSide, KIO::StatBasic, KIO::HideProgressInfo);
-          ++pending->active;
-          connect(job, &KJob::result, this, [this, pending, url, position, keep = weak.lock()](KJob *done) {
-            --pending->active;
-            if (done->error()) { pending->failed = true; status->setText(done->errorString()); return; }
+          renamePreflightJobs.append(job); ++pending->active;
+          connect(job, &KJob::result, this, [this, pending, url, position, job, target, origin, definition, generation, keep = weak.lock()](KJob *done) {
+            renamePreflightJobs.removeAll(job); --pending->active;
+            if (generation != renamePreflightGeneration || !renamePreflightBusy) return;
+            if (!target || target != browser() || target->url() != origin || !showingSearch() || renameSearchIdentity() != definition) { cancelRenamePreflight(); return; }
+            if (done->error()) { const auto error = done->errorString(); cancelRenamePreflight(); status->setText(error); return; }
             pending->items[position] = KFileItem(static_cast<KIO::StatJob *>(done)->statResult(), url);
             if (keep) (*keep)();
           });
@@ -1293,7 +1314,8 @@ public:
     showBatchRename(items, target, origin, false, originalQuery);
   }
   void showBatchRename(const KFileItemList &items, QPointer<Browser> target, const QUrl &origin, bool wasSearch, const QString &originalQuery) {
-    auto *dialog = new BatchRenameDialog(items, this);
+    if (batchDialog) { presentWindow(batchDialog); return; }
+    auto *dialog = new BatchRenameDialog(items, this); batchDialog = dialog;
     connect(dialog, &BatchRenameDialog::renamingFinished, this, [this, target, origin, wasSearch, originalQuery](const QList<QUrl> &renamed) {
       if (!target || target != browser() || target->url() != origin) return;
       if (wasSearch) { if (showingSearch() && search->text() == originalQuery) beginSearch(); }
@@ -1302,50 +1324,73 @@ public:
     connect(dialog, &BatchRenameDialog::error, this, [this](KJob *job) { status->setText(job->errorText()); });
     dialog->show();
   }
-  void showInfo(const QUrl &url) {
-    auto *native = new KPropertiesDialog(url, this);
-    native->setAttribute(Qt::WA_DeleteOnClose);
-    if (url.isLocalFile()) {
-      auto *page = new QScrollArea(native); page->setWidgetResizable(true); page->setFrameShape(QFrame::NoFrame);
-      auto *details = new FileDetailsDialog(page);
-      details->setWindowFlags(Qt::Widget);
-      // Native properties remains the host for General/permissions/Open With.
-      // Its close buttons own the dialog; metadata saves remain explicit.
-      if (auto *box = details->findChild<QDialogButtonBox *>()) {
-        if (auto *close = box->button(QDialogButtonBox::Close)) close->hide();
-        if (auto *properties = details->findChild<QPushButton *>("fileDetailsNativeProperties")) properties->hide();
-      }
-      details->setExtensionPresentation(QMimeDatabase().suffixForFileName(url.fileName()),
-          QSettings().value("Advanced/showAllExtensions", false).toBool());
-      details->setUrl(url); page->setWidget(details);
-      auto *item = native->addPage(page, tr("Name & Comments"));
-      item->setObjectName("finderFileDetailsItem");
-      connect(native, &KPropertiesDialog::applied, details, [native, details] { details->setUrl(native->url()); });
+  void showInfo(const QUrl &url) { wireInfo(new FinderInfoDialog(url, this)); }
+  QJsonObject testRenameBurst(int count, bool cancel) {
+    const int before = renamePreflightStarts;
+    for (int i = 0; i < qBound(1, count, 100); ++i) renameSelection();
+    const int active = renamePreflightJobs.size();
+    if (cancel) stopSearch();
+    return {{"starts", renamePreflightStarts - before}, {"activeBeforeCancel", active},
+      {"active", renamePreflightJobs.size()}, {"busy", renamePreflightBusy}};
+  }
+  void wireInfo(FinderInfoDialog *native) {
+    auto *details = native->details();
+    if (details) {
       connect(details, &FileDetailsDialog::metadataSaved, this, [this](const QUrl &) {
         for (auto *tab : states.keys()) tab->refreshFileDetails();
       });
       connect(details, &FileDetailsDialog::renameRequested, this, [this, native, details](const QUrl &source, const QString &requested) {
+        if (!native->canRename()) {
+          details->showOperationMessage(tr("Save the comment and apply or discard native property edits before renaming here.")); return;
+        }
         const auto metadata = details->metadataCache()->cached(source);
-        if (!metadata || !metadata->available()) { status->setText(tr("Refresh file metadata before renaming.")); return; }
+        if (!metadata || !metadata->available()) { details->showOperationMessage(tr("Refresh file metadata before renaming.")); return; }
         KIO::UDSEntry entry;
         entry.fastInsert(KIO::UDSEntry::UDS_NAME, source.fileName());
         entry.fastInsert(KIO::UDSEntry::UDS_FILE_TYPE, metadata->directory ? S_IFDIR : S_IFREG);
         QPointer<FinderWindow> owner(this);
-        QPointer<KPropertiesDialog> host(native); QPointer<FileDetailsDialog> editor(details);
+        QPointer<FinderInfoDialog> host(native); QPointer<FileDetailsDialog> editor(details);
         const auto name = Browser::confirmedRenameName(KFileItem(entry, source), requested, native);
-        if (!owner || !host || !editor || editor->url() != source) return;
+        if (!owner || !host || !editor || editor->url() != source || !host->canRename()) return;
         if (name.isEmpty() || name == source.fileName()) return;
         QUrl destination = source; destination.setPath(source.path().left(source.path().lastIndexOf('/') + 1) + name);
-        auto *job = KIO::moveAs(source, destination);
-        runCopyJob(job);
+        host->setRenameBusy(true);
+        auto *job = KIO::moveAs(source, destination); runCopyJob(job);
         auto actual = std::make_shared<QUrl>(destination);
         connect(job, &KIO::CopyJob::renamed, this, [actual](KIO::Job *, const QUrl &, const QUrl &renamed) { *actual = renamed; });
-        connect(job, &KJob::result, this, [host, editor, actual, source](KJob *done) {
-          if (!done->error() && editor && editor->url() == source) { if (host) host->updateUrl(*actual); editor->setUrl(*actual); }
+        connect(job, &KJob::result, this, [this, host, editor, actual, source](KJob *done) {
+          if (!host) return;
+          if (done->error()) { host->setRenameBusy(false); if (editor) editor->showOperationMessage(done->errorString()); return; }
+          // Rebuild native General/type/Open With from fresh KIO metadata.
+          // updateUrl alone retains the native plugin's previous filename.
+          auto *stat = KIO::stat(*actual, KIO::StatJob::SourceSide, KIO::StatDefaultDetails, KIO::HideProgressInfo);
+          connect(stat, &KJob::result, this, [this, host, editor, actual, source](KJob *result) {
+            if (!host || !editor || editor->url() != source) return;
+            if (result->error()) {
+              host->setRenameBusy(false);
+              host->reject();
+              status->setText(tr("Renamed to %1. Properties could not be reloaded: %2").arg(actual->fileName(), result->errorString()));
+              return;
+            }
+            auto *fresh = new FinderInfoDialog(KFileItem(static_cast<KIO::StatJob *>(result)->statResult(), *actual), this);
+            fresh->resize(host->size()); wireInfo(fresh);
+            if (auto *pages = fresh->findChild<KPageWidget *>())
+              if (auto *model = qobject_cast<KPageWidgetModel *>(pages->model()))
+                for (int row = 0; row < model->rowCount(); ++row)
+                  if (auto *item = model->item(model->index(row,0)); item && item->objectName() == "finderFileDetailsItem") fresh->setCurrentPage(item);
+            host->setRenameBusy(false); host->reject();
+          });
         });
       });
     }
     native->show();
+  }
+  bool metadataBusy() const {
+    for (auto *host : findChildren<FinderInfoDialog *>()) if (host->busy()) return true;
+    return false;
+  }
+  void explainMetadataBusy() {
+    for (auto *host : findChildren<FinderInfoDialog *>()) if (host->busy()) { host->explainBusy(); presentWindow(host); }
   }
   void makeAliases() {
     for (const auto &url : selectedUrls()) {
@@ -1944,6 +1989,8 @@ protected:
     updateMaterial();
   }
   void closeEvent(QCloseEvent *e) override {
+    if (metadataBusy()) { explainMetadataBusy(); e->ignore(); return; }
+    cancelRenamePreflight();
     emit closing(this);
     saveView();
     QSettings s;
@@ -2012,6 +2059,11 @@ protected:
   }
 
 private:
+  bool renamePreflightBusy = false;
+  quint64 renamePreflightGeneration = 0;
+  int renamePreflightStarts = 0;
+  QList<QPointer<KIO::StatJob>> renamePreflightJobs;
+  QPointer<BatchRenameDialog> batchDialog;
   quint64 locationGeneration = 0;
   QPointer<QWidget> draggedTab;
   QPoint tabDragStart;
@@ -2224,6 +2276,7 @@ private:
     }
   }
   void stopSearch() {
+    cancelRenamePreflight();
     pendingSearchSelection.clear();
     selectedTag.clear();
     if (fileSearch)
@@ -2240,6 +2293,7 @@ private:
       refresh();
   }
   void beginSearch() {
+    cancelRenamePreflight();
     if (searchTimer) searchTimer->stop();
     pendingSearchSelection.clear();
     selectedTag.clear();
@@ -3511,6 +3565,7 @@ public:
       }, Qt::SingleShotConnection);
     });
     connect(w, &FinderWindow::quitRequested, this, [this] {
+      for (const auto &window : windows) if (window && window->metadataBusy()) { window->explainMetadataBusy(); return; }
       QJsonArray session; for (const auto &window : windows) if (window && session.size() < 20) session.append(window->sessionState());
       QSettings().setValue("Session/previous", QJsonDocument(session).toJson(QJsonDocument::Compact)); savingQuitSession = true;
       const auto copy = windows; for (const auto &window : copy) if (window) window->close();
@@ -3646,6 +3701,25 @@ public:
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::jobRecordingFinished, this, [this](KIO::FileUndoManager::CommandType) { ++jobRecordings; });
   }
 public slots:
+  QString renameBurst(int count, bool cancel) {
+    auto *window = m->active();
+    return QString::fromUtf8(QJsonDocument(window ? window->testRenameBurst(count, cancel) : QJsonObject()).toJson(QJsonDocument::Compact));
+  }
+  QString infoState(const QString &pageName = {}) {
+    for (auto *widget : QApplication::topLevelWidgets()) if (auto *host = qobject_cast<FinderInfoDialog *>(widget); host && host->isVisible()) {
+      if (!pageName.isEmpty()) if (auto *pages = host->findChild<KPageWidget *>())
+        if (auto *model = qobject_cast<KPageWidgetModel *>(pages->model()))
+          for (int row = 0; row < model->rowCount(); ++row)
+            if (auto *item = model->item(model->index(row,0)); item && item->name() == pageName) host->setCurrentPage(item);
+      QJsonArray nativeNames;
+      for (auto *line : host->findChildren<QLineEdit *>()) if (line->isVisible() && line->objectName() != "fileDetailsName") nativeNames.append(line->text());
+      const auto item = host->item();
+      return QString::fromUtf8(QJsonDocument(QJsonObject{{"url",host->url().toString()}, {"name",item.name()}, {"mime",item.mimetype()},
+        {"nativeEditorNames",nativeNames}, {"page",host->currentPage() ? host->currentPage()->name() : QString()}, {"busy",host->busy()},
+        {"width",host->width()}, {"height",host->height()}}).toJson(QJsonDocument::Compact));
+    }
+    return "{}";
+  }
   QString nativeJobState() {
     auto *undo = KIO::FileUndoManager::self();
     return QString::fromUtf8(QJsonDocument(QJsonObject{{"recordings", jobRecordings}, {"undoCompletions", undoCompletions},
