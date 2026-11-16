@@ -84,7 +84,8 @@ QString displayName(const QString &name, bool directory, const QString &knownSuf
 }
 
 // GUI-thread facade. Across all instances at most two workers run; per instance
-// one latest read and one write can be queued. refresh/setUrls reject old results.
+// one latest read and one write can be queued. refresh rejects old reads;
+// setUrls also rejects write readback from the previous selection.
 // cached() and model()->data() NEVER perform filesystem calls or schedule work.
 // The host queues setUrls as native listings change and refreshes on external
 // metadata changes. There is no polling timer, persistent cache or disk scan.
@@ -137,13 +138,19 @@ public:
     QUrl url() const;
     FileDetailsCache *metadataCache() const;
     void setExtensionPresentation(QString knownSuffix, bool showAllExtensions);
+    // Visible host operation/blocked-close status; cleared by refresh, retarget
+    // or the next write-state transition. An empty string restores normal status.
+    void showOperationMessage(const QString &message);
 public slots:
     void refresh();
+    void reject() override;
 signals:
+    void closeRequested(); // Embedded editor: the host decides whether to close.
     void renameRequested(QUrl url, QString newName);
     void propertiesRequested(QUrl url);
     void metadataSaved(QUrl url); // Successful inode xattr mutation.
 protected:
+    void closeEvent(QCloseEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void showEvent(QShowEvent *event) override;
 private:

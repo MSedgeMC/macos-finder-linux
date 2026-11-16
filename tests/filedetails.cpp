@@ -15,6 +15,7 @@
 #include <QFile>
 #include <QGroupBox>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
@@ -22,6 +23,7 @@
 #include <QTextEdit>
 #include <QThread>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -473,6 +475,147 @@ int main(int argc, char **argv)
         errors(0, 0, 0);
         dialog.setExtensionPresentation("txt", true);
         require(hide->isChecked(), "showAll overrides presentation without deleting stored preference");
+
+        // A hidden page cancels reads, never the freshness of a successful
+        // write. Exercise read cancellation too, not just hiding an idle cache.
+        commentEditor->setPlainText("Draft survives hidden extension save");
+        gate({current}); hide->click();
+        require(waitFor([] { return entered() >= 1; }), "hidden extension write readback gated");
+        dialog.metadataCache()->refresh();
+        dialog.hide();
+        require(!dialog.metadataCache()->isLoading() && dialog.metadataCache()->isWriting(), "hide cancels pending read but retains save");
+        release();
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting(); }), "hidden extension write completed");
+        dialog.show(); drain();
+        require(dialog.metadataCache()->cached(url)->extensionOverride == ExtensionOverride::Show
+            && attr(path, hideExtensionAttribute) == "0" && !hide->isChecked()
+            && commentEditor->toPlainText() == "Draft survives hidden extension save" && save->isEnabled(),
+            "hidden write refreshes cache and checkbox while preserving unrelated draft");
+        gate({current}); save->click();
+        require(waitFor([] { return entered() >= 1; }), "hidden comment write readback gated");
+        dialog.hide(); release();
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting(); }), "hidden comment write completed");
+        dialog.show(); drain();
+        require(dialog.metadataCache()->cached(url)->comment == "Draft survives hidden extension save"
+            && attr(path, commentAttribute) == "Draft survives hidden extension save" && !save->isEnabled(),
+            "hidden comment success updates cache and clears saved draft");
+
+        const auto targetPath = files.filePath("retarget.txt");
+        require(hooks.guiProbes == 0, "hidden dialog performs no filesystem calls on GUI thread");
+        writeFile(targetPath);
+        const auto targetUrl = QUrl::fromLocalFile(targetPath);
+        require(FileDetails::setComment(targetUrl, "Other file comment").ok(), "retarget comment fixture");
+        hooks.guiProbes = 0;
+        const int beforeRetarget = saved;
+        commentEditor->setPlainText("Old URL save");
+        gate({current}); save->click();
+        require(waitFor([] { return entered() >= 1; }), "retarget write readback gated");
+        dialog.setUrl(targetUrl);
+        commentEditor->setPlainText("New URL draft");
+        release();
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting() && !dialog.metadataCache()->isLoading(); }), "real retarget settles");
+        require(!dialog.metadataCache()->cached(url) && dialog.metadataCache()->cached(targetUrl)->comment == "Other file comment"
+            && commentEditor->toPlainText() == "New URL draft" && save->isEnabled() && saved == beforeRetarget,
+            "old write cannot populate retargeted cache or mutate new draft and saved signals");
+        require(attr(path, commentAttribute) == "Old URL save", "retarget does not cancel admitted inode write");
+        // Returning to the same URL is still a new editor revision. An old
+        // completion must not emit metadataSaved for that newer revision.
+        dialog.setUrl(url); completed(*dialog.metadataCache());
+        commentEditor->setPlainText("Save before return");
+        gate({current}); save->click();
+        require(waitFor([] { return entered() >= 1; }), "return retarget write gated");
+        dialog.setUrl(targetUrl); dialog.setUrl(url);
+        commentEditor->setPlainText("Draft after return");
+        release();
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting() && !dialog.metadataCache()->isLoading(); }), "return retarget settles");
+        require(saved == beforeRetarget && commentEditor->toPlainText() == "Draft after return" && save->isEnabled(),
+            "same URL after retarget rejects old completion mutation");
+
+        // Occupy both workers so the dialog save is admitted but not started.
+        // Reject, Escape and window close must remain asynchronous and refuse
+        // destruction until the queued operation completes.
+        FileDetailsCache blockerA, blockerB;
+        require(hooks.guiProbes == 0, "retargeted dialog performs no filesystem calls on GUI thread");
+        const auto targetDetails = FileDetails::read(targetUrl);
+        hooks.guiProbes = 0;
+        gate({current, targetDetails});
+        blockerA.setUrls({url}); blockerB.setUrls({targetUrl});
+        require(waitFor([] { return entered() >= 2; }), "queued close policy occupies both workers");
+        save->click();
+        require(dialog.metadataCache()->isWriting(), "queued standalone save admitted");
+        dispatch.restart(); dialog.reject();
+        require(dispatch.elapsed() < 100 && dialog.isVisible(), "standalone reject refuses queued save without waiting");
+        dispatch.restart();
+        require(!dialog.close() && dispatch.elapsed() < 100 && dialog.isVisible(), "standalone close refuses queued save without waiting");
+        QKeyEvent standaloneEscape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(name, &standaloneEscape);
+        require(dialog.isVisible() && widget<QLabel>(dialog, "fileDetailsStatus")->text().contains("before closing"),
+            "standalone Escape keeps editor and visible blocked-close status");
+        release(); completed(blockerA); completed(blockerB);
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting(); })
+            && attr(path, commentAttribute) == "Draft after return", "queued standalone save survives close attempts");
+        require(dialog.close() && !dialog.isVisible(), "standalone closes after successful save");
+        dialog.show(); drain();
+        commentEditor->setPlainText("Already started save");
+        gate({current}); save->click();
+        require(waitFor([] { return entered() >= 1; }), "standalone started save readback gated");
+        dispatch.restart(); dialog.reject();
+        require(dispatch.elapsed() < 100 && dialog.isVisible() && !dialog.close(),
+            "standalone started save also refuses reject and close without waiting");
+        require(attr(path, commentAttribute) == "Already started save", "started save reached actual xattr before close attempt");
+        release(); require(waitFor([&] { return !dialog.metadataCache()->isWriting(); }), "started save settles after close attempt");
+        require(!save->isEnabled() && dialog.metadataCache()->cached(url)->comment == "Already started save",
+            "started save reports fresh success after blocked close");
+        errors(current.identity.inode, 0, ENOSPC);
+        commentEditor->setPlainText("Failed save draft");
+        gate({current, targetDetails}); blockerA.refresh(); blockerB.refresh();
+        require(waitFor([] { return entered() >= 2; }), "failed queued save workers gated");
+        save->click(); dialog.reject();
+        require(dialog.isVisible() && dialog.metadataCache()->isWriting(), "failed pending save also refuses reject");
+        release(); completed(blockerA); completed(blockerB);
+        require(waitFor([&] { return !dialog.metadataCache()->isWriting(); }) && save->isEnabled()
+            && commentEditor->toPlainText() == "Failed save draft"
+            && widget<QLabel>(dialog, "fileDetailsStatus")->text().contains("space"), "failed save restores draft and error after blocked close");
+        errors(0, 0, 0);
+        dialog.reject(); require(!dialog.isVisible(), "standalone rejection permitted after failed save settles");
+
+        QDialog host;
+        auto *embedded = new FileDetailsDialog(&host);
+        embedded->setWindowFlags(Qt::Widget);
+        auto *hostLayout = new QVBoxLayout(&host); hostLayout->addWidget(embedded);
+        embedded->setUrl(targetUrl); completed(*embedded->metadataCache());
+        host.show(); drain();
+        int closeRequests = 0;
+        QObject::connect(embedded, &FileDetailsDialog::closeRequested, &host, [&] {
+            ++closeRequests;
+            if (embedded->metadataCache()->isWriting()) embedded->showOperationMessage("Host is waiting for the metadata save.");
+            else host.reject();
+        });
+        auto *embeddedComment = widget<QTextEdit>(*embedded, "fileDetailsComment");
+        embeddedComment->setPlainText("Embedded save");
+        gate({targetDetails}); widget<QPushButton>(*embedded, "fileDetailsSaveComment")->click();
+        require(waitFor([] { return entered() >= 1; }), "embedded pending save readback gated");
+        const QList<QWidget *> escapeControls{
+            widget<QLineEdit>(*embedded, "fileDetailsName"), embeddedComment,
+            widget<QCheckBox>(*embedded, "fileDetailsHideExtension"), widget<QPushButton>(*embedded, "fileDetailsRefresh")};
+        for (auto *control : escapeControls) {
+            const int before = closeRequests;
+            control->setFocus();
+            QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QApplication::sendEvent(control, &escape);
+            require(closeRequests == before + 1 && host.isVisible() && embedded->isVisible() && !embedded->isHidden(),
+                "embedded Escape routes close request without hiding or blanking editor");
+        }
+        embedded->reject();
+        require(closeRequests == 5 && embedded->isVisible(), "direct embedded reject forwards to host too");
+        release(); require(waitFor([&] { return !embedded->metadataCache()->isWriting(); }), "embedded save completes");
+        require(attr(targetPath, commentAttribute) == "Embedded save", "embedded Escape preserves save");
+        QKeyEvent finalEscape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(widget<QLineEdit>(*embedded, "fileDetailsName"), &finalEscape);
+        require(closeRequests == 6 && !host.isVisible() && !embedded->isHidden(), "embedded Escape closes host without explicitly hiding editor");
+        host.show(); drain();
+        require(embedded->isVisible(), "embedded page remains recoverable when host is shown again");
+        host.hide(); dialog.show(); drain();
         require(hooks.guiProbes == 0, "dialog performs no filesystem calls on GUI thread");
         for (int i = 1; i + 1 < argc; ++i)
             if (QString::fromLocal8Bit(argv[i]) == "--screenshot") require(dialog.grab().save(QString::fromLocal8Bit(argv[i + 1])), "save isolated screenshot");

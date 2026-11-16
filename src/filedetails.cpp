@@ -4,6 +4,7 @@
 
 #include <QAbstractListModel>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QDialogButtonBox>
 #include <QElapsedTimer>
 #include <QFile>
@@ -259,7 +260,7 @@ struct WriteRequest {
     ExtensionOverride extension = ExtensionOverride::Inherit;
     QString comment;
     bool writesComment = false;
-    quint64 id = 0, generation = 0;
+    quint64 id = 0, selectionGeneration = 0;
 };
 struct WorkerState {
     std::mutex mutex;
@@ -267,7 +268,9 @@ struct WorkerState {
     std::optional<WriteRequest> pendingWrite;
     Cancellation activeRead;
     FileDetailsCache *receiver = nullptr;
-    quint64 generation = 0;
+    // Read cancellation must not invalidate a write's readback. Only selecting
+    // a new URL set advances selectionGeneration, including A -> B -> A.
+    quint64 generation = 0, selectionGeneration = 0;
     bool scheduled = false, stopping = false;
 };
 class DetailsModel final : public QAbstractListModel {
@@ -340,7 +343,7 @@ public:
                 QMetaObject::invokeMethod(receiver, [receiver, state, write = std::move(*write), error, details] {
                     auto *d = receiver->d.get();
                     bool current;
-                    { std::lock_guard lock(state->mutex); current = write.generation == state->generation; }
+                    { std::lock_guard lock(state->mutex); current = write.selectionGeneration == state->selectionGeneration; }
                     if (current && error.ok() && details.identity == write.expected && d->model->urls.contains(write.url))
                         d->model->entries.insert(write.url, details);
                     d->writing = false;
@@ -426,7 +429,7 @@ public:
         {
             std::lock_guard lock(state->mutex);
             cancelLocked();
-            request.generation = state->generation;
+            request.selectionGeneration = state->selectionGeneration;
             state->pendingWrite = std::move(request);
             scheduleLocked();
         }
@@ -456,6 +459,11 @@ void FileDetailsCache::setUrls(QList<QUrl> urls, Limits limits)
     d->requestedCount = urls.size();
     urls = urls.mid(0, maximumMetadataItems);
     d->limits = limits;
+    {
+        std::lock_guard lock(d->state->mutex);
+        ++d->state->selectionGeneration;
+        d->cancelLocked();
+    }
     QPointer<FileDetailsCache> guard(this);
     d->model->resetUrls(std::move(urls));
     if (guard) refresh();
@@ -537,6 +545,8 @@ public:
     QUrl url;
     QString suffix;
     bool showAll = false, dirty = false;
+    quint64 urlRevision = 0, writeRevision = 0;
+    QString operationMessage;
     Error lastWriteError;
     QLabel *heading = nullptr, *status = nullptr, *preference = nullptr;
     QLineEdit *name = nullptr;
@@ -556,7 +566,7 @@ public:
         save->setEnabled(editable && dirty);
         properties->setEnabled(url.isValid() && !url.isRelative() && !url.isEmpty());
         if (!available) {
-            status->setText(cache->isLoading() ? FileDetailsDialog::tr("Reading file metadata…")
+            status->setText(!operationMessage.isEmpty() ? operationMessage : cache->isLoading() ? FileDetailsDialog::tr("Reading file metadata…")
                 : details ? errorText(*details) : FileDetailsDialog::tr("Metadata was not inspected. Refresh to retry."));
             return;
         }
@@ -572,7 +582,7 @@ public:
             : details->extensionOverride == ExtensionOverride::Inherit ? FileDetailsDialog::tr("Using the default filename extension preference.")
             : FileDetailsDialog::tr("This file has an explicit filename extension preference."));
         const auto errors = errorText(*details);
-        status->setText(busy ? FileDetailsDialog::tr("Saving file metadata…") : !lastWriteError.ok() ? lastWriteError.message : !errors.isEmpty() ? errors
+        status->setText(!operationMessage.isEmpty() ? operationMessage : busy ? FileDetailsDialog::tr("Saving file metadata…") : !lastWriteError.ok() ? lastWriteError.message : !errors.isEmpty() ? errors
             : FileDetailsDialog::tr("Metadata is stored on this Linux inode. Native properties manage permissions and Open With."));
     }
 };
@@ -634,7 +644,7 @@ FileDetailsDialog::FileDetailsDialog(QWidget *parent) : QDialog(parent), d(std::
     auto *refreshButton = buttons->addButton(tr("Refresh"), QDialogButtonBox::ActionRole);
     refreshButton->setObjectName(QStringLiteral("fileDetailsRefresh"));
     layout->addWidget(buttons);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::rejected, this, &FileDetailsDialog::reject);
     connect(refreshButton, &QPushButton::clicked, this, &FileDetailsDialog::refresh);
     connect(d->properties, &QPushButton::clicked, this, [this] { emit propertiesRequested(d->url); });
     connect(d->name, &QLineEdit::textChanged, this, [this] { d->update(); });
@@ -656,12 +666,13 @@ FileDetailsDialog::FileDetailsDialog(QWidget *parent) : QDialog(parent), d(std::
     connect(d->save, &QPushButton::clicked, this, [this] { d->cache->setComment(d->url, d->comment->toPlainText()); });
     connect(d->cache, &FileDetailsCache::loadingChanged, this, [this] { d->update(); });
     connect(d->cache, &FileDetailsCache::writingChanged, this, [this](bool writing) {
-        if (writing) d->lastWriteError = {};
+        d->operationMessage.clear();
+        if (writing) { d->lastWriteError = {}; d->writeRevision = d->urlRevision; }
         d->update();
     });
     connect(d->cache, &FileDetailsCache::detailsChanged, this, [this] { d->update(); });
-    connect(d->cache, &FileDetailsCache::writeFinished, this, [this](quint64, const QUrl &url, const Error &error) {
-        if (url != d->url) return;
+    connect(d->cache, &FileDetailsCache::writeFinished, this, [this](quint64 id, const QUrl &url, const Error &error) {
+        if (url != d->url || (id && d->writeRevision != d->urlRevision)) return;
         d->lastWriteError = error;
         if (!error.ok()) { d->update(); return; }
         // Only clear the draft after a comment write, not when toggling Hide
@@ -676,9 +687,11 @@ FileDetailsDialog::FileDetailsDialog(QWidget *parent) : QDialog(parent), d(std::
 FileDetailsDialog::~FileDetailsDialog() = default;
 void FileDetailsDialog::setUrl(const QUrl &url)
 {
+    ++d->urlRevision;
     d->url = url;
     d->dirty = false;
     d->lastWriteError = {};
+    d->operationMessage.clear();
     const auto name = url.adjusted(QUrl::StripTrailingSlash).fileName();
     d->heading->setText(name.isEmpty() ? tr("Get Info") : name);
     {
@@ -700,7 +713,31 @@ void FileDetailsDialog::setExtensionPresentation(QString knownSuffix, bool showA
     d->showAll = showAllExtensions;
     d->update();
 }
-void FileDetailsDialog::refresh() { d->lastWriteError = {}; d->cache->refresh(); d->update(); }
+void FileDetailsDialog::showOperationMessage(const QString &message) { d->operationMessage = message; d->update(); }
+void FileDetailsDialog::refresh() { d->lastWriteError = {}; d->operationMessage.clear(); d->cache->refresh(); d->update(); }
+void FileDetailsDialog::reject()
+{
+    if (!isWindow()) { emit closeRequested(); return; }
+    if (d->cache->isWriting()) {
+        showOperationMessage(tr("A metadata save is in progress. Wait for it to finish before closing."));
+        return;
+    }
+    QDialog::reject();
+}
+void FileDetailsDialog::closeEvent(QCloseEvent *event)
+{
+    if (!isWindow()) {
+        event->ignore();
+        emit closeRequested();
+        return;
+    }
+    if (d->cache->isWriting()) {
+        event->ignore();
+        showOperationMessage(tr("A metadata save is in progress. Wait for it to finish before closing."));
+        return;
+    }
+    QDialog::closeEvent(event);
+}
 void FileDetailsDialog::hideEvent(QHideEvent *event) { d->cache->cancel(); QDialog::hideEvent(event); }
 void FileDetailsDialog::showEvent(QShowEvent *event)
 {
