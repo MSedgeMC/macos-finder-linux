@@ -3705,7 +3705,7 @@ public slots:
     auto *window = m->active();
     return QString::fromUtf8(QJsonDocument(window ? window->testRenameBurst(count, cancel) : QJsonObject()).toJson(QJsonDocument::Compact));
   }
-  QString infoState(const QString &pageName = {}) {
+  QString infoState(const QString &pageName) {
     for (auto *widget : QApplication::topLevelWidgets()) if (auto *host = qobject_cast<FinderInfoDialog *>(widget); host && host->isVisible()) {
       const bool selectedPage = pageName.isEmpty() || host->selectPage(pageName);
       QJsonArray nativeNames;

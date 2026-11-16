@@ -78,6 +78,7 @@ int main(int argc, char **argv) {
         release(); waitFor([&] { return host && !host->busy(); });
         const auto saved = details->metadataCache()->cached(url); require(saved && saved->comment == "queued comment", "accepted save delivered");
         QPointer<FinderInfoDialog> fresh = new FinderInfoDialog(host->item()); fresh->show();
+        showDetails(fresh);
         require(fresh->selectPage("General"), "native page selected");
         require(fresh->currentPage() && QString(fresh->currentPage()->name()).remove('&') == "General", "fresh native properties has General page");
         fresh->reject();

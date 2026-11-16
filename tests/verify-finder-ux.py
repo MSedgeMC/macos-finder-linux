@@ -184,7 +184,11 @@ try:
         info_name=root/"Renamed Info.txt"
         until(info_name.exists,"Get Info native rename")
         until(lambda: unquote(json.loads(str(api.infoState(""))).get("url","")) == unquote(info_name.as_uri()) and not json.loads(str(api.infoState(""))).get("busy",True), "reloaded native Get Info editor")
-        api.infoState("General"); QTest.qWait(150)
+        general_selected=json.loads(str(api.infoState("General")))
+        (out / "general-selection.json").write_text(json.dumps(general_selected,indent=2)+"\n")
+        screenshot("get-info-general-selection", next(w["title"] for w in top() if w["class"]=="FinderInfoDialog"))
+        assert general_selected.get("selectedPage") and general_selected.get("page")=="General",general_selected
+        QTest.qWait(150)
         coherent=json.loads(str(api.infoState("")))
         assert coherent["page"]=="General" and coherent["name"]==info_name.name and info_name.name in coherent["nativeEditorNames"],coherent
         assert coherent["width"]>=500 and coherent["height"]>=600,coherent
