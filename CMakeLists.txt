@@ -33,6 +33,7 @@ add_executable(finder
     src/taboverview.cpp src/taboverview.h
     src/batchrename.cpp src/batchrename.h
     src/filedetails.cpp src/filedetails.h
+    src/infohost.cpp src/infohost.h
     src/browser.cpp src/browser.h
     src/preview.cpp src/preview.h
     src/places.cpp src/places.h

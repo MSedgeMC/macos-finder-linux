@@ -132,6 +132,13 @@ target_link_options(finder-filedetails-test PRIVATE -Wl,--wrap=open -Wl,--wrap=o
 add_test(NAME finder-filedetails-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-filedetails-test>")
 set_tests_properties(finder-filedetails-test PROPERTIES TIMEOUT 60 LABELS "unit;headless")
 
+add_executable(finder-infohost-test infohost.cpp ../src/infohost.cpp ../src/infohost.h ../src/filedetails.cpp ../src/filedetails.h)
+target_include_directories(finder-infohost-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-infohost-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOWidgets KF6::WidgetsAddons)
+target_link_options(finder-infohost-test PRIVATE -Wl,--wrap=fgetxattr)
+add_test(NAME finder-infohost-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-infohost-test>")
+set_tests_properties(finder-infohost-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
 add_executable(finder-browser-performance browser-performance.cpp ../src/browser.cpp ../src/browser.h ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp ../src/appearance.cpp ../src/appearance.h ../src/batchrename.cpp ../src/batchrename.h ../src/filedetails.cpp ../src/filedetails.h)
 target_include_directories(finder-browser-performance PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(finder-browser-performance PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
