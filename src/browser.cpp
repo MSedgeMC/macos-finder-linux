@@ -80,6 +80,7 @@
 #include <KIO/Job>
 #include <KIO/JobUiDelegateFactory>
 #include <KIO/MkdirJob>
+#include <KIO/SimpleJob>
 #include <KIO/PasteJob>
 #include <KIO/PreviewJob>
 #include <KIO/UDSEntry>
@@ -109,6 +110,64 @@ QString itemType(const KFileItem &item) {
     // Unlike mimeComment(), this does not open .desktop/.directory files.
     return supplied.isEmpty() ? item.currentMimeType().comment() : supplied;
 }
+
+// A mouse-transparent presentation layer: native views keep their selection,
+// background context menu, drag/drop, keyboard and scrolling surfaces.
+class DirectoryState final : public QWidget {
+public:
+    QString title, detail, symbol;
+    explicit DirectoryState(QWidget *parent) : QWidget(parent) {
+        setObjectName(QStringLiteral("finderDirectoryState"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+        hide();
+    }
+    void showState(QString heading, QString message, QString icon) {
+        title = std::move(heading); detail = std::move(message); symbol = std::move(icon);
+        setAccessibleName(title); setAccessibleDescription(detail);
+        setProperty("state", symbol); setProperty("title", title); setProperty("detail", detail);
+        setVisible(!title.isEmpty()); update();
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        if (title.isEmpty() || width() < 120 || height() < 55) return;
+        QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
+        const int textWidth = qMin(340, width() - 32);
+        QFont heading = font(); heading.setPixelSize(15); heading.setWeight(QFont::DemiBold);
+        QFont body = font(); body.setPixelSize(13);
+        const QFontMetrics hm(heading), bm(body);
+        const QRect bounds(0,0,textWidth,1000);
+        const auto h = hm.boundingRect(bounds,Qt::AlignHCenter | Qt::TextWordWrap,title);
+        const auto b = bm.boundingRect(bounds,Qt::AlignHCenter | Qt::TextWordWrap,detail);
+        const bool iconVisible = height() >= h.height() + b.height() + 108;
+        const int total = h.height() + b.height() + 8 + (iconVisible ? 70 : 0);
+        const int top = qMax(12,(height()-total)/2);
+        const QColor secondary = FinderAppearance::color(FinderAppearance::SecondaryText);
+        if (iconVisible) {
+            p.save(); p.translate(width()/2.0-24,top);
+            p.setPen(QPen(secondary,1.8,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin)); p.setBrush(Qt::NoBrush);
+            if (symbol == "error") {
+                QPainterPath triangle; triangle.moveTo(24,3);triangle.lineTo(47,43);triangle.lineTo(1,43);triangle.closeSubpath();
+                p.drawPath(triangle); p.drawLine(QPointF(24,16),QPointF(24,29));p.drawPoint(QPointF(24,36));
+            } else if (symbol == "loading" || symbol == "recents") {
+                p.drawEllipse(QRectF(3,3,42,42)); p.drawLine(QPointF(24,11),QPointF(24,24));p.drawLine(QPointF(24,24),QPointF(33,29));
+            } else if (symbol == "filter") {
+                p.drawEllipse(QRectF(3,3,30,30));p.drawLine(QPointF(29,29),QPointF(45,45));
+            } else {
+                QPainterPath folder; folder.moveTo(2,14);folder.lineTo(2,9);folder.quadTo(2,6,5,6);
+                folder.lineTo(18,6);folder.lineTo(24,12);folder.lineTo(43,12);folder.quadTo(46,12,46,15);
+                folder.lineTo(46,39);folder.quadTo(46,42,43,42);folder.lineTo(5,42);folder.quadTo(2,42,2,39);folder.closeSubpath();
+                p.drawPath(folder);p.drawLine(QPointF(3,18),QPointF(45,18));
+            }
+            p.restore();
+        }
+        const int y = top + (iconVisible ? 70 : 0);
+        p.setPen(FinderAppearance::palette().color(QPalette::Text));p.setFont(heading);
+        p.drawText(QRect((width()-textWidth)/2,y,textWidth,h.height()),Qt::AlignHCenter | Qt::TextWordWrap,title);
+        p.setPen(secondary);p.setFont(body);
+        p.drawText(QRect((width()-textWidth)/2,y+h.height()+8,textWidth,b.height()),Qt::AlignHCenter | Qt::TextWordWrap,detail);
+    }
+};
 
 // Keep the KDirModel tree and its native column identities. Additional indexes
 // share the native row pointer; all native KIO/selection/thumbnail paths continue
@@ -1284,6 +1343,51 @@ public:
     QItemSelectionModel *selection;
     QItemSelectionModel *columnSelection;
     QStackedWidget *stack;
+    QHash<QWidget *, DirectoryState *> directoryStates;
+    QSet<QUrl> loadedDirectories;
+    QSet<QUrl> loadingDirectories;
+    QHash<QUrl, QString> listingErrors;
+    void updateDirectoryStates() {
+        if (!stack) return;
+        for (auto it = directoryStates.begin(); it != directoryStates.end(); ++it) {
+            auto *surface = it.key(); auto *state = it.value();
+            auto *view = qobject_cast<QAbstractItemView *>(surface->parentWidget());
+            QModelIndex root;
+            QUrl location = rootUrl;
+            if (surface == columnHost) {
+                const auto current = item(columnSelection->currentIndex());
+                if (!current.isDir()) { state->showState({}, {}, {}); continue; }
+                location = current.url(); root = proxy->mapFromSource(model->indexForUrl(location));
+            } else if (view) {
+                root = view->rootIndex();
+                const auto entry = item(root);
+                if (!entry.isNull() && entry.isDir()) location = entry.url();
+            }
+            state->setGeometry(surface->rect()); state->raise();
+            if (proxy->rowCount(root) > 0 || location.isEmpty()) { state->showState({}, {}, {}); continue; }
+            if (listingErrors.contains(location)) {
+                state->showState(QStringLiteral("This location can’t be opened"), listingErrors.value(location).left(400), "error");
+            } else if (loadingDirectories.contains(location) || !loadedDirectories.contains(location)) {
+                state->showState(QStringLiteral("Loading…"), QStringLiteral("Getting the items in this location."), "loading");
+            } else if (!proxy->filterRegularExpression().pattern().isEmpty()) {
+                state->showState(QStringLiteral("No matching items"), QStringLiteral("Try a different filter or clear it to see all items."), "filter");
+            } else if (!model->dirLister()->itemsForDir(location, KDirLister::AllItems).isEmpty()) {
+                state->showState(QStringLiteral("No visible items"), QStringLiteral("This location contains hidden items. Use Show Hidden Files in the View menu to see them."), "folder");
+            } else if (location.scheme() == "recentlyused") {
+                state->showState(QStringLiteral("No recent items"), QStringLiteral("Files and folders you use will appear here when the recent-items provider records them."), "recents");
+            } else if (location.scheme() == "trash") {
+                state->showState(QStringLiteral("Trash is empty"), QStringLiteral("Items you move to Trash will appear here."), "folder");
+            } else {
+                state->showState(QStringLiteral("This folder is empty"), QStringLiteral("There are no items in this location."), "folder");
+            }
+        }
+    }
+    void installDirectoryState(QWidget *surface) {
+        if (directoryStates.contains(surface)) return;
+        directoryStates.insert(surface, new DirectoryState(surface));
+        surface->installEventFilter(q);
+        QObject::connect(surface, &QObject::destroyed, q, [this, surface] { directoryStates.remove(surface); });
+    }
     FinderIconView *icons;
     FinderListView *list;
     ColumnsView *columns;
@@ -1314,7 +1418,12 @@ public:
         proxy->directorySizes.clear();
         proxy->sizesChanged(urls);
     }
-    ~Private() { if (sizeWorker) sizeWorker->requestInterruption(); }
+    ~Private() {
+        if (sizeWorker) sizeWorker->requestInterruption();
+        // QWidget deletes its children after Browser::d has been destroyed.
+        // Detach callbacks that refer to this private state first.
+        for (auto *surface : directoryStates.keys()) QObject::disconnect(surface, nullptr, q, nullptr);
+    }
     QUrl rootUrl;
     QUrl currentUrl;
     QHash<QUrl, QHash<QUrl, QPoint>> arrangements;
@@ -1725,10 +1834,11 @@ public:
         return names;
     }
 
-    void count() { emit q->countChanged(q->itemCount()); }
+    void count() { updateDirectoryStates(); emit q->countChanged(q->itemCount()); }
 
     void selected() {
         if (changing) return;
+        QTimer::singleShot(0, q, [this] { updateDirectoryStates(); });
         auto items = q->selectedItems();
         if (currentMode == Columns) {
             const auto current = item(columnSelection->currentIndex());
@@ -1934,6 +2044,7 @@ public:
         view->setItemDelegate(delegate);
         view->installEventFilter(q);
         view->viewport()->installEventFilter(q);
+        installDirectoryState(view->viewport());
         QObject::connect(view->verticalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
         QObject::connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, q, [this] { scheduleThumbnails(); });
         // QColumnView already forwards its child columns' activation signals.
@@ -1994,11 +2105,13 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->columns->setColumnWidths({220, 220, 220, 220, 220}); d->columns->setResizeGripsVisible(true);
     d->columnHost = new QWidget; d->columnHost->setObjectName("finderColumnPreview");
     d->columnHost->setMinimumWidth(250); d->columns->setPreviewWidget(d->columnHost);
+    d->installDirectoryState(d->columnHost);
     d->columns->prepare = [this](auto *view) { d->prepare(view, true); };
     d->gallery = new QWidget(d->stack); d->gallery->setObjectName("finderGalleryView");
     auto *galleryLayout = new QVBoxLayout(d->gallery); galleryLayout->setContentsMargins(0, 0, 0, 0); galleryLayout->setSpacing(0);
     d->galleryHost = new QWidget(d->gallery); d->galleryHost->setObjectName("finderGalleryPreview");
     galleryLayout->addWidget(d->galleryHost, 1);
+    d->installDirectoryState(d->galleryHost);
     d->strip = new DropView<QListView>(d->gallery); d->strip->setObjectName("finderGalleryStrip");
     d->strip->setViewMode(QListView::IconMode); d->strip->setFlow(QListView::LeftToRight); d->strip->setWrapping(false);
     d->strip->setMovement(QListView::Static); d->strip->setIconSize({64, 64});
@@ -2071,7 +2184,16 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     });
     connect(d->model->dirLister(), &KDirLister::started, this, [this](const QUrl &url) { d->syncDirectoryWatches(url); });
     connect(d->model->dirLister(), qOverload<>(&KDirLister::completed), this, [this] { d->syncDirectoryWatches(); });
-    connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) { emit errorOccurred(job->errorString()); });
+    connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) {
+        const auto *listing = qobject_cast<KIO::SimpleJob *>(job);
+        const auto failed = listing ? listing->url() : d->currentUrl;
+        d->listingErrors.insert(failed, job->errorString());
+        d->loadingDirectories.remove(failed); d->updateDirectoryStates();
+        emit errorOccurred(job->errorString());
+    });
+    connect(d->model->dirLister(), &KDirLister::listingDirCompleted, this, [this](const QUrl &url) {
+        d->loadingDirectories.remove(url); d->loadedDirectories.insert(url); d->updateDirectoryStates();
+    });
     connect(d->model->dirLister(), &KDirLister::itemsDeleted, this, [this] { d->invalidateSizes(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->invalidateSizes(); });
     connect(d->model->dirLister(), &KDirLister::newItems, this, [this](const KFileItemList &items) {
@@ -2097,9 +2219,8 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         const auto index = d->proxy->mapFromSource(source);
         if (index.isValid()) { d->columns->scrollTo(index); d->applySelection(); }
     });
-    connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) {
+    connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *) {
         if (d->springActive) {
-            emit errorOccurred(job->errorString());
             QTimer::singleShot(0, this, &Browser::cancelSpringLoading);
         }
     });
@@ -2111,6 +2232,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model, &QAbstractItemModel::rowsRemoved, this, [this] { d->count(); });
     connect(d->model, &QAbstractItemModel::modelReset, this, [this] { d->count(); });
     connect(d->model->dirLister(), &KDirLister::completed, this, [this] {
+        d->loadingDirectories.clear(); d->loadedDirectories.insert(d->rootUrl);
         d->count(); d->applySelection();
         d->scheduleArrangement();
         if (d->pendingScrollRestore) {
@@ -2119,7 +2241,15 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         }
         emit statusMessage({});
     });
-    connect(d->model->dirLister(), &KDirLister::started, this, [this](const auto &) { emit statusMessage("Loading…"); });
+    connect(d->model->dirLister(), &KDirLister::started, this, [this](const QUrl &url) {
+        d->listingErrors.remove(url); d->loadedDirectories.remove(url); d->loadingDirectories.insert(url);
+        d->updateDirectoryStates(); emit statusMessage("Loading…");
+    });
+    connect(d->model->dirLister(), qOverload<>(&KDirLister::canceled), this, [this] {
+        for (const auto &url : std::as_const(d->loadingDirectories))
+            if (!d->listingErrors.contains(url)) d->listingErrors.insert(url, QStringLiteral("Loading was cancelled. Open this location again to retry."));
+        d->loadingDirectories.clear(); d->updateDirectoryStates();
+    });
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
         d->proxy->cutUrls.clear();
         const auto *mime = QApplication::clipboard()->mimeData();
@@ -2437,6 +2567,7 @@ void Browser::navigateValidated(const QUrl &requested) {
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear(); d->pendingRename = QUrl();
     ++d->folderCreationGeneration; d->creatingFolder = false;
     d->rootUrl = target; d->currentUrl = target;
+    d->loadingDirectories.insert(target); d->listingErrors.remove(target); d->loadedDirectories.remove(target);
     d->resetThumbnailRequests();
     refreshMetadata();
     d->model->openUrl(target);
@@ -2458,6 +2589,7 @@ void Browser::setMode(Mode mode) {
     const bool previousChanging = d->changing;
     d->changing = true;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
+    d->updateDirectoryStates();
     setFocusProxy(activeView());
     d->restoreModeOptions();
     d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
@@ -2846,6 +2978,8 @@ void Browser::drop(QDropEvent *event, QUrl destination) {
     event->setDropAction(action); event->accept();
 }
 bool Browser::eventFilter(QObject *object, QEvent *event) {
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        d->directoryStates.contains(qobject_cast<QWidget *>(object))) d->updateDirectoryStates();
     auto *dragView = qobject_cast<QAbstractItemView *>(object->parent());
     if (dragView && object == dragView->viewport()) {
         if (event->type() == QEvent::DragEnter) {
