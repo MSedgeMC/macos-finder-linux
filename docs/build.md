@@ -89,3 +89,19 @@ Optional media trim needs installed `ffmpeg`, `ffprobe` and compatible encoders.
 Indexed content search needs `baloosearch6` and an existing readable Baloo 6 index.
 These providers are detected at runtime; the app starts neither an indexer nor
 a background whole-disk scan.
+
+## GitHub-hosted builds
+
+The **Build and test Finder** GitHub Actions workflow compiles the application
+and all component tests on a GitHub-hosted runner, inside Ubuntu 26.04. Pushes
+to `main`, pull requests and manual dispatches run it. It installs matching
+Qt/KDE packages, caches compiler outputs, and executes the isolated CTest suite.
+No self-hosted runner or working desktop is used.
+
+A successful run uploads `finder-ubuntu26-x86_64-<commit>` containing a tarball
+with the installed binary, component test executables, source commit, package
+versions, linkage, SHA256 and test logs. These binaries require compatible
+Ubuntu 26.04 Qt/KDE runtime packages; they are not a universal static bundle.
+Download the artifact from the run's Actions page. Local compilation is then
+unnecessary; local isolated compositor checks still verify this desktop's
+rendering and native input before the scoped installer is used.

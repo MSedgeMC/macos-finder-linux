@@ -1,0 +1,87 @@
+name: Build and test Finder
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finder-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    timeout-minutes: 40
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+    steps:
+      - name: Install matching Ubuntu Qt and KDE dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential cmake ninja-build ccache gettext \
+            python3 dbus-x11 desktop-file-utils shared-mime-info \
+            qt6-base-dev qt6-base-dev-tools qt6-pdf-dev qt6-multimedia-dev \
+            qt6-declarative-dev qt6-image-formats-plugins qt6-wayland \
+            libkf6kio-dev libkf6coreaddons-dev libkf6itemviews-dev \
+            libkf6bookmarks-dev libkf6widgetsaddons-dev libkf6jobwidgets-dev \
+            libkf6config-dev libkf6windowsystem-dev libkf6i18n-dev \
+            libkf6service-dev libkf6solid-dev libkf6filemetadata-dev libkf6archive-dev \
+            kio-extras kimageformat6-plugins ffmpeg
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .cache/ccache
+          key: finder-ubuntu26-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            finder-ubuntu26-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}-
+            finder-ubuntu26-${{ runner.arch }}-
+      - name: Configure
+        run: |
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_INSTALL_PREFIX=/usr
+      - name: Build application and test executables
+        run: cmake --build build-ci --parallel 2
+      - name: Run isolated component tests
+        run: ctest --test-dir build-ci --output-on-failure --parallel 1 --output-junit test-results.xml
+      - name: Stage verified binary and test executables
+        run: |
+          cmake --install build-ci --prefix "$PWD/package/usr"
+          mkdir -p package/tests package/evidence
+          cp build-ci/tests/finder-*-test package/tests/
+          cp build-ci/test-results.xml package/evidence/
+          cp build-ci/Testing/Temporary/LastTest.log package/evidence/
+          git rev-parse HEAD > package/evidence/source-head.txt
+          dpkg-query -W > package/evidence/packages.tsv
+          ldd package/usr/bin/finder > package/evidence/linkage.txt
+          sha256sum package/usr/bin/finder > package/evidence/sha256.txt
+          ccache --show-stats > package/evidence/ccache.txt
+          tar -C package -czf finder-ubuntu26-x86_64.tar.gz .
+      - name: Upload verified build
+        uses: actions/upload-artifact@v4
+        with:
+          name: finder-ubuntu26-x86_64-${{ github.sha }}
+          path: finder-ubuntu26-x86_64.tar.gz
+          retention-days: 14
+          if-no-files-found: error
+      - name: Upload diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finder-test-diagnostics-${{ github.sha }}
+          path: |
+            build-ci/test-results.xml
+            build-ci/Testing/Temporary/LastTest.log
+            build-ci/CMakeCache.txt
+          retention-days: 7
