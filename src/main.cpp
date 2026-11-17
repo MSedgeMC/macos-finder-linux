@@ -21,6 +21,7 @@
 #include "filedetails.h"
 #include "infohost.h"
 #include "alerts.h"
+#include "windowcontrols.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -295,50 +296,6 @@ protected:
     QPainter painter(this);
     painter.fillRect(rect(), palette().color(QPalette::Base));
   }
-};
-class WindowControl : public QToolButton {
-public:
-  WindowControl(QString kind, QWidget *parent) : QToolButton(parent), kind(std::move(kind)) {
-    setFixedSize(20, 28);
-    setObjectName("window-" + this->kind);
-    setAccessibleName(this->kind == "close" ? "Close" : this->kind == "minimize" ? "Minimize" : "Zoom");
-    setToolTip(accessibleName());
-    setFocusPolicy(Qt::StrongFocus);
-  }
-protected:
-  void paintEvent(QPaintEvent *) override {
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    QColor color(kind == "close" ? "#ff5f57" : kind == "minimize" ? "#febc2e" : "#28c840");
-    if (!window()->isActiveWindow()) color = QColor("#646466");
-    p.setPen(QPen(color.darker(115), .5));
-    p.setBrush(color);
-    p.drawEllipse(QRectF(1, 7, 14, 14));
-    if (underMouse() || hasFocus()) {
-      p.setPen(QPen(QColor(25, 25, 25, 175), 1.2));
-      if (kind == "close") { p.drawLine(5, 11, 11, 17); p.drawLine(11, 11, 5, 17); }
-      else if (kind == "minimize") p.drawLine(5, 14, 11, 14);
-      else { p.drawLine(5, 14, 11, 14); p.drawLine(8, 11, 8, 17); }
-    }
-  }
-  void enterEvent(QEnterEvent *event) override { QToolButton::enterEvent(event); update(); }
-  void leaveEvent(QEvent *event) override { QToolButton::leaveEvent(event); update(); }
-  void contextMenuEvent(QContextMenuEvent *event) override {
-    if (menu()) { menu()->exec(event->globalPos()); event->accept(); }
-    else QToolButton::contextMenuEvent(event);
-  }
-  void mousePressEvent(QMouseEvent *event) override {
-    if (kind == "maximize" && menu() && event->button() == Qt::LeftButton) {
-      for (auto *action : menu()->actions()) {
-        if (action->objectName() == (event->modifiers().testFlag(Qt::AltModifier) ? "zoom" : "fullscreen")) {
-          action->trigger(); event->accept(); return;
-        }
-      }
-    }
-    QToolButton::mousePressEvent(event);
-  }
-private:
-  QString kind;
 };
 class SidebarHandle : public QSplitterHandle {
 public:
@@ -3047,7 +3004,7 @@ private:
         #finderArrange,#finderSearchButton{background:rgba(255,255,255,8);border:1px solid rgba(255,255,255,22);border-radius:18px;}
         QToolButton{border:0;border-radius:16px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,20);} QToolButton:checked{background:rgba(255,255,255,35);} QToolButton:disabled{opacity:.4;}
         QToolButton::menu-indicator{image:none;width:0;height:0;}
-        #window-close:hover{background:#bb4949;} #finderPlaces{background:transparent;border:0;}
+        #finderPlaces{background:transparent;border:0;}
         #finderPlaces::item{min-height:30px;border:0;border-radius:8px;} #finderPlaces::item:selected{background:rgba(255,255,255,28);color:white;} #finderPlaces::item:hover{background:rgba(255,255,255,15);}
         QLineEdit{background:#343438;border:1px solid #55555b;border-radius:8px;padding:6px 8px;selection-background-color:#277cef;}
         QTabWidget::pane{border:0;background:#1e1e1e;} QTabBar::tab{background:#27272b;border:0;padding:6px 20px;} QTabBar::tab:selected{background:#3b3b3f;}

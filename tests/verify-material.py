@@ -2,6 +2,9 @@
 """Measure real KWin backdrop blur, never the working screen."""
 import os
 from pathlib import Path
+import runpy
+_control_tools=runpy.run_path(str(Path(__file__).with_name("control-location.py")))
+control_origin=_control_tools["control_origin"]
 import json
 import subprocess
 import time
@@ -95,17 +98,10 @@ try:
     blurred=capture('blurred')
     assert api.setMaterialBlur(False)
     sharp=capture('unblurred')
-    # Locate the real compositor position using the lossless close-control fill.
+    # Locate the compositor position using opaque gradient control pixels.
     # Wayland clients cannot choose an absolute screen position via QWidget.move.
     alpha = Image.open(out/'window-alpha.png').convert('RGBA')
-    def red_bounds(image):
-        pixels=image.load()
-        points=[(x,y) for y in range(image.height) for x in range(image.width)
-                if pixels[x,y][:3] == (255,95,87)]
-        assert points, 'close control not visible'
-        return min(x for x,y in points), min(y for x,y in points)
-    clientRed=red_bounds(alpha); screenRed=red_bounds(blurred)
-    origin=(screenRed[0]-clientRed[0],screenRed[1]-clientRed[1])
+    origin=control_origin(alpha,blurred)
     assert origin[0]>=0 and origin[1]>=0, origin
     state=json.loads(str(api.diagnostics()))
     scale=alpha.width/state['width']

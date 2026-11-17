@@ -5,6 +5,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import runpy
+_control_tools=runpy.run_path(str(Path(__file__).with_name("control-location.py")))
+control_origin=_control_tools["control_origin"]
+red_anchor=_control_tools["red_anchor"]
 import subprocess
 import tempfile
 import time
@@ -92,9 +96,9 @@ def origin():
     result = subprocess.run(["spectacle", "-b", "-n", "-f", "-o", str(target)], capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     image = Image.open(target).convert("RGB")
-    points = [(x,y) for y in range(image.height) for x in range(image.width) if image.getpixel((x,y)) == (255,95,87)]
-    assert points
-    return min(x for x,y in points) - 20, min(y for x,y in points) - 21
+    client=out/'control-client.png';assert api.capture(str(client))
+    return control_origin(Image.open(client),image)
+
 def drag(x, y, dx, dy):
     native.move(x,y); QTest.qWait(80); native.button(1); QTest.qWait(80)
     for step in range(1,9): native.move(x+dx*step/8,y+dy*step/8); QTest.qWait(35)

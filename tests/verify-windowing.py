@@ -5,6 +5,10 @@ Never connect to a working display or session bus.
 """
 import argparse, importlib.util, json, os, subprocess, time
 from pathlib import Path
+import runpy
+_control_tools=runpy.run_path(str(Path(__file__).with_name("control-location.py")))
+control_origin=_control_tools["control_origin"]
+red_anchor=_control_tools["red_anchor"]
 import dbus
 from PIL import Image
 from PyQt6.QtCore import Qt
@@ -44,9 +48,8 @@ def capture():
     wait(lambda:p.poll() is not None,'screenshot');assert p.returncode==0
     return Image.open(path).convert('RGB')
 def origin():
-    image=capture();points=[(x,y) for y in range(image.height) for x in range(image.width) if image.getpixel((x,y))==(255,95,87)]
-    assert points
-    return min(x for x,y in points)-20,min(y for x,y in points)-21
+    image=capture();client=out/'control-client.png';assert api.capture(str(client))
+    return control_origin(Image.open(client),image)
 
 def drag(x,y,dx,dy):
     native.move(x,y);QTest.qWait(100);native.button(1);QTest.qWait(100)

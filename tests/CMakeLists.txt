@@ -155,3 +155,9 @@ target_include_directories(finder-directory-state-test PRIVATE "${PROJECT_SOURCE
 target_link_libraries(finder-directory-state-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
 add_test(NAME finder-directory-state-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-directory-state-test>")
 set_tests_properties(finder-directory-state-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
+add_executable(finder-alerts-controls-test alerts-controls.cpp ../src/appearance.cpp ../src/appearance.h)
+target_include_directories(finder-alerts-controls-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-alerts-controls-test PRIVATE Qt6::Widgets KF6::KIOCore KF6::KIOWidgets)
+add_test(NAME finder-alerts-controls-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-alerts-controls-test>")
+set_tests_properties(finder-alerts-controls-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")

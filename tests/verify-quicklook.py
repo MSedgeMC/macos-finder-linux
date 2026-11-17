@@ -2,6 +2,9 @@
 """Measure real KWin backdrop blur, never the working screen."""
 import os
 from pathlib import Path
+import runpy
+_control_tools=runpy.run_path(str(Path(__file__).with_name("control-location.py")))
+control_origin=_control_tools["control_origin"]
 import json
 import subprocess
 import time
@@ -106,10 +109,6 @@ try:
     assert opaque==(alpha.width-52)*(alpha.height-52),'transparent preview content'
     first=capture('quicklook-composited')
     pattern.setColor(QColor('#2183dd'));second=capture('quicklook-backdrop-changed')
-    def red_bounds(image):
-        pts=[(x,y) for y in range(image.height) for x in range(image.width) if image.getpixel((x,y))[:3]==(255,95,87)]
-        assert pts
-        return min(x for x,y in pts),min(y for x,y in pts)
     def image_bounds(im):
         # The same file also has a thumbnail in the Finder underneath. Locate
         # the broad decoded image, rather than the first matching pixel.
