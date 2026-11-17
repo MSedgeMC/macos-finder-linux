@@ -89,9 +89,9 @@ const QMap<QString, QPainterPath> &placeGlyphs() {
         p = {}; p.moveTo(2.5, 6); p.lineTo(2.5, 3.5); p.lineTo(8, 3.5); p.lineTo(10, 6); p.lineTo(17.5, 6); p.lineTo(17.5, 16.5); p.lineTo(2.5, 16.5); p.closeSubpath(); all["folder"] = p;
         p = {}; p.moveTo(4, 17); p.lineTo(11, 3); p.moveTo(9, 3); p.lineTo(16, 17);
         p.moveTo(2.5, 13); p.lineTo(17.5, 13); all["applications"] = p;
-        p = {}; p.moveTo(2, 7); p.lineTo(2, 3.5); p.lineTo(8, 3.5); p.lineTo(10, 6); p.lineTo(18, 6);
-        p.moveTo(2, 7); p.lineTo(2, 17); p.lineTo(10, 17); p.moveTo(2, 9); p.lineTo(12, 9);
-        p.addEllipse(QRectF(13, 9, 4, 4)); p.moveTo(11, 18); p.cubicTo(11, 13, 19, 13, 19, 18); all["shared"] = p;
+        p = {}; p.addEllipse(QRectF(3, 3, 5, 5)); p.addEllipse(QRectF(12, 4, 4, 4));
+        p.moveTo(1, 17); p.cubicTo(1, 9, 10, 9, 10, 17); p.closeSubpath();
+        p.moveTo(11, 11); p.cubicTo(15, 9, 19, 11, 19, 17); p.lineTo(13, 17); all["shared"] = p;
         return all;
     }();
     return paths;

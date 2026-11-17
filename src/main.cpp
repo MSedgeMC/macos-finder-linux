@@ -2387,6 +2387,11 @@ private:
     modePopup->setIcon(symbol(QStringList{"icons", "list", "columns", "gallery"}[mode]));
   }
   QString title(QUrl u) const {
+    if (u.scheme() == "recentlyused" && u.path() == "/files") return tr("Recents");
+    if (u.scheme() == "recentlyused" && u.path() == "/locations") return tr("Recent Locations");
+    if (u.scheme() == "trash") return tr("Trash");
+    if ((u.scheme() == "smb" || u.scheme() == "remote") && u.path() == "/")
+      return u.scheme() == "smb" ? tr("Shared") : tr("Network");
     auto t = u.fileName();
     if (t.isEmpty())
       return u.isLocalFile() ? "Computer" : u.scheme();
