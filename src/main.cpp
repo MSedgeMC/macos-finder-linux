@@ -46,6 +46,7 @@
 #include <KIO/OpenUrlJob>
 #include <KOpenWithDialog>
 #include <KPropertiesDialog>
+#include <KUrlMimeData>
 #include <KService>
 #include <KWindowEffects>
 #include <QAbstractItemView>
@@ -3701,7 +3702,7 @@ public slots:
       for (int row = 0; row < qMin(10000, view->model()->rowCount(view->rootIndex())); ++row) {
         const auto index = view->model()->index(row, 0, view->rootIndex());
         files << QJsonObject{{"url", index.data(KDirModel::FileItemRole).value<KFileItem>().url().toString()},
-                            {"name", index.data(Qt::DisplayRole).toString()}};
+                            {"name", index.data(Qt::DisplayRole).toString()}, {"target", index.data(KDirModel::FileItemRole).value<KFileItem>().targetUrl().toString()}};
       }
     }
     return QString::fromUtf8(QJsonDocument(files).toJson(QJsonDocument::Compact));
@@ -3746,6 +3747,11 @@ public slots:
       for (auto *action : menu->actions()) if (action->text() == text) { action->trigger(); menu->close(); return true; }
     return false;
   }
+  QString clipboardUrls() {
+    QJsonArray result;
+    if (const auto *mime = QApplication::clipboard()->mimeData()) for (const auto &url : KUrlMimeData::urlsFromMimeData(mime, KUrlMimeData::PreferLocalUrls)) result << url.toString();
+    return QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact));
+  }
   QString clipboardText() { return QApplication::clipboard()->text(); }
   QString sidebarPlaces() {
     QJsonArray rows;
@@ -3754,6 +3760,19 @@ public slots:
         const auto index = model->index(row, 0); rows << QJsonObject{{"name", index.data().toString()}, {"url", model->url(index).toString()}};
       }
     return QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact));
+  }
+  QString directoryState() {
+    QJsonArray result;
+    if (auto *window = m->active())
+      for (auto *state : window->browser()->findChildren<QWidget *>("finderDirectoryState"))
+        if (state->isVisible()) result << QJsonObject{{"title", state->property("title").toString()},
+            {"detail", state->property("detail").toString()}, {"state", state->property("state").toString()}};
+    return QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact));
+  }
+  QString quickLookTarget() {
+    for (auto *widget : QApplication::topLevelWidgets()) if (widget->isVisible() && widget->objectName() == "finderQuickLookWindow")
+      if (auto *pane = widget->findChild<PreviewPane *>()) return pane->currentUrl().toString();
+    return {};
   }
   QString previewState() {
     for (auto *widget : QApplication::topLevelWidgets()) if (widget->isVisible() && widget->objectName() == "finderQuickLookWindow")
