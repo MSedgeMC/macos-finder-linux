@@ -7,7 +7,7 @@ literal pixel parity with any macOS release.
 
 ## Window and views
 
-The client uses a unified 52 logical pixel toolbar and an initially 256 pixel,
+The client uses a unified 52 logical pixel toolbar and an initially 166 pixel,
 resizable sidebar. Back/forward, the folder title, four view controls, sorting,
 tags, actions and search share that toolbar. At narrow widths the view controls
 collapse into a popup. The file pane stays opaque; glass is reserved for the
@@ -19,7 +19,12 @@ desktop between them. The content stack has an opaque base across both folder
 and search pages. Navigation and four-view capsules measure 73×36 and 142×36
 logical pixels respectively, matching the audited generic window-kit targets.
 
-Icons, List, Columns and Gallery are separate native views. List exposes real
+Icons, List, Columns and Gallery are separate native views. At the default
+64px icon size, Icons uses a 111px horizontal pitch and middle-elides the
+second filename line. List defaults to 16px icons, 20px rows and Name / Date
+Modified / Size / Kind columns. Its rounded alternating stripes extend into
+the blank viewport without creating file indexes; larger icons/text expand
+the real rows. Saved folder choices remain authoritative. List exposes real
 sortable metadata columns and expandable directories. Columns retains a real
 folder hierarchy with keyboard navigation. Gallery combines a large preview,
 a right information panel and a horizontal filmstrip. Icon and Gallery cells
@@ -54,12 +59,17 @@ The header and sidebar request region-limited KWin blur of the actual compositor
 backdrop. They retain a readable tinted fallback when blur is unavailable.
 Wallpaper is not substituted for windows behind the application. The coating approximates a glass appearance; genuine backdrop
 refraction and Apple's proprietary material renderer are not implemented.
-Foreground text, icons and file content remain crisp.
+Foreground text, icons and file content remain crisp. Shared toolbar capsules
+use an original directional coating, contour highlights and native button
+hover, pressed, checked and keyboard-focus states. The capsule regions receive
+KWin backdrop blur; they do not capture wallpaper or add continuous sampling.
+High contrast and reduced transparency use readable opaque fills. These
+controls do not implement refraction or Apple's material interaction physics.
 
 KDirModel, KIO, KFilePlacesModel and KFilePlacesView retain native filesystem
 watching, bookmarks, storage locations, context menus, keyboard navigation,
 thumbnails, transfers, conflict handling, Trash and Undo. A separate QTreeView
-presents true 32px sidebar rows and 18px nonselectable headers, while
+presents true 32px sidebar rows and 32px nonselectable heading areas, while
 KFilePlacesModel and the original view retain bookmark/device menus, native
 mount/eject and deferred file drops. Recents and Shared precede Favorites;
 Locations and seven tag colors follow. Tag selection searches actual local
@@ -131,11 +141,13 @@ directory support depends on installed KIO workers, and blur depends on KWin.
 No lossless comparison with identical files, geometry, scale, typography and
 backdrop has established pixel parity.
 
-A component comparison on 2026-11-15 confirmed the 52-pixel toolbar,
+A component comparison on 2026-11-15 confirmed the then-current 52-pixel toolbar,
 256-pixel initial sidebar, content origin at (256, 52), the capsule dimensions
 above, 32-pixel medium sidebar rows, and `#1e1e1e` opaque dark content. These
 matches concern generic kit primitives. The sidebar presentation now uses
-actual 18px header hit geometry and 32px rows. Material, typography fallback
+32px rows. The later user-supplied Finder screenshots guided the narrower
+166px sidebar, 111px icon pitch, compact List rows and heading spacing.
+Material, typography fallback
 and platform differences remain. This comparison does not establish whole-window 1:1 Finder equality.
 
 This repository does not bundle Apple fonts, Apple kit images or proprietary

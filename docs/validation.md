@@ -372,3 +372,40 @@ Source/build checks are warning-clean for the changed application and new
 components. Platform/provider startup diagnostics are retained in test logs;
 physical-device feel and literal Apple material/gesture parity remain untested.
 Installation status is tracked separately from these passing tests.
+
+## Hosted build and compact layout, 2026-11-17
+
+The [GitHub-hosted run](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44107329914)
+built source `76f7f1af7310d5b65d271127fcb0f70e092d1480` in Ubuntu 26.04
+and passed all 23 CTest suites. The artifact includes the executable, test
+executables, source hash, package/linkage inventory, JUnit results and test log.
+The downloaded binary SHA256 is
+`77a3f0d502b303be1f499efc433a85979a4b9d224edbe3bf1c9747bc30b8632f`.
+Its hash matches the artifact evidence and its dependencies resolve on the
+originating Ubuntu 26.04 desktop. No local compilation was used for this update.
+
+The downloaded compact-layout test passed locally through the private
+offscreen wrapper. It exercises the 111px icon pitch, 20px native List rows,
+column order, rounded real and empty stripes, nested directory selection,
+all-mode selection, grouping, larger text, appearance and native glass-button
+Space activation. Final 914×433 private Wayland Icons/List captures were
+inspected directly. The synthetic files differ from the user's reference,
+and the captures do not establish pixel parity.
+
+The same downloaded binary passed all 16 native UX checks and 17 windowing
+checks in isolated Wayland sessions. Existing tests cover native file rename
+and Undo, metadata, search, tabs, Quick Look, resize/move, fullscreen restoration,
+text editing and host-dispatched pinch. These are exercised Linux behaviors;
+physical trackpad feel and Apple's platform services remain unverified.
+
+Native compositor material checks passed at 1× and 1.5× application scale.
+All 168 / 428 fully transparent corner samples had zero blur-induced changes
+outside the contour; all 45 / 68 partially covered corner samples received the
+material. Backdrop-detail ratios were 0.056 / 0.146, and toolbar-capsule blur
+deltas were 31.76 / 31.64. Changing the live patterned backdrop changed the
+glass while leaving the opaque file pane unchanged. A fractional-scale
+locator correction samples around visible control symbols. Test processes,
+input and captures stayed on private screens; expected private portal/software
+fallback diagnostics remain in the logs. Genuine refraction and Apple's
+renderer are not implemented. Installation is recorded separately after the
+scoped installer verifies the production copy.
