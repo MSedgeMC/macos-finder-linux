@@ -72,7 +72,7 @@ jobs:
           cp build-ci/tests/finder-*-test package/tests/
           cp build-ci/test-results.xml package/evidence/
           cp build-ci/Testing/Temporary/LastTest.log package/evidence/
-          git rev-parse HEAD > package/evidence/source-head.txt
+          git -c safe.directory="$PWD" rev-parse HEAD > package/evidence/source-head.txt
           dpkg-query -W > package/evidence/packages.tsv
           ldd package/usr/bin/finder > package/evidence/linkage.txt
           sha256sum package/usr/bin/finder > package/evidence/sha256.txt
