@@ -138,9 +138,19 @@ try:
     blurred.crop((origin[0]-8,origin[1]-8,origin[0]+80,origin[1]+80)).save(out/'corner-composited.png')
     def box(x1,y1,x2,y2):return (origin[0]+round(x1*scale),origin[1]+round(y1*scale),origin[0]+round(x2*scale),origin[1]+round(y2*scale))
     inside=box(28,state['height']-130,state['sidebarWidth']-20,state['height']-70)
+    # Low-transmission sidebar samples must exclude crisp text/icons; those
+    # remain sharp by design and otherwise dominate the fractional-scale metric.
+    shift=round(4*scale)
+    backgroundSamples=[]
+    for y in range(inside[1],inside[3]):
+        for x in range(inside[0],inside[2]-shift):
+            local=(x-origin[0],y-origin[1])
+            if alpha.getpixel(local)[3]==coating and alpha.getpixel((local[0]+shift,local[1]))[3]==coating:
+                backgroundSamples.append((x,y))
+    assert len(backgroundSamples)>100,'blank material samples missing'
     def detail(image):
-        crop=image.crop(inside)
-        return sum(ImageStat.Stat(ImageChops.difference(crop,ImageChops.offset(crop,round(4*scale),0))).mean)/3
+        return sum(sum(abs(a-b) for a,b in zip(image.getpixel((x,y)),image.getpixel((x+shift,y))))/3
+                   for x,y in backgroundSamples)/len(backgroundSamples)
     blurred_detail,sharp_detail=detail(blurred),detail(sharp)
     assert sharp_detail>3,(blurred_detail,sharp_detail)
     assert blurred_detail<sharp_detail*.45,('backdrop not blurred',blurred_detail,sharp_detail)
@@ -154,12 +164,12 @@ try:
     assert api.setMaterialBlur(True)
     pattern.setColor(QColor('#2183dd'))
     changed=capture('backdrop-changed')
-    delta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(inside),changed.crop(inside))).mean)/3
+    delta=sum(sum(abs(a-b) for a,b in zip(blurred.getpixel((x,y)),changed.getpixel((x,y))))/3 for x,y in backgroundSamples)/len(backgroundSamples)
     assert delta>1,delta
     toolbarColorDelta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(toolbar),changed.crop(toolbar))).mean)/3
     assert toolbarColorDelta<.2,('wallpaper colors changed toolbar controls',toolbarColorDelta)
     result={'toolbarBlurDelta':toolbarDelta,'toolbarBackdropColorDelta':toolbarColorDelta,'passed':True,'cornerTransparentSamples':samples,'cornerChangedOutside':changedOutside,'cornerMaximumDelta':maxOutsideDelta,'partialCornerSamples':partial,'partialCornerMaterialSamples':partialChanged,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,
-            'sharpDetail':sharp_detail,'detailRatio':blurred_detail/sharp_detail,
+            'backgroundSamples':len(backgroundSamples),'sharpDetail':sharp_detail,'detailRatio':blurred_detail/sharp_detail,
             'backdropColorDelta':delta,'opaqueFilePaneUnchanged':True,
             'privateWayland':True,'noWorkingDesktopInput':True}
     (out/'result.json').write_text(json.dumps(result,indent=2)+'\n')
