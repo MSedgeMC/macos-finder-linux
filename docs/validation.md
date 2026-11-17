@@ -337,3 +337,38 @@ windows. Installed/staged hashes and the running executable match; native
 directory defaults and FileManager1 methods pass verification, and the private
 test interface remains absent. Only the executable changed. Existing app wheel
 speed preferences are retained; missing values use the new 50% default.
+
+
+## Recents routing and presentation update (2026-11-17)
+
+The real `recentlyused` worker was exercised with a private WAL-mode activity
+history and a private native image handler. All nine checks passed: empty
+states in four modes; virtual listing identity and explicit target; all-mode
+preview/clipboard/history routing; real image decoding; native Get Info;
+clipboard targets; native Open launching the actual file; a rounded missing
+original alert; and dismissal/navigation recovery. The installer-ready staged
+binary was tested separately because CMake rewrites its build RPATH.
+Reproduce `tests/verify-recents-presentation.py` inside the private Wayland
+screen with `--binary` and `--output`.
+
+All three new component suites pass (`finder-browser-targets-test`,
+`finder-directory-state-test`, `finder-alerts-controls-test`). They cover native
+URL MIME, provider filenames/locality, source identity, empty/filter/hidden
+states, failed-listing recovery, empty child Columns, teardown, alert details,
+Escape/default action, native ask-user interfaces, bounded diagnostics and
+control painting. Existing Browser metadata/arrangement, Preview, Archive and
+Quick Actions suites pass, including real native conflict and Undo checks.
+These checks establish exercised Linux behavior, not literal macOS parity.
+
+All 16 native UX checks and 17 windowing checks pass. The compositor material
+check passes: 168 transparent-corner samples have zero changed pixels outside
+the contour; all 45 partially covered corner samples receive material blur;
+straight boundaries and the header seam retain their existing geometry. The
+screenshot locator now matches opaque gradient control pixels because a color
+threshold alone shifts on backdrop-dependent antialiased rims. Native input,
+test windows, captures and fixtures stayed in isolated sessions.
+
+Source/build checks are warning-clean for the changed application and new
+components. Platform/provider startup diagnostics are retained in test logs;
+physical-device feel and literal Apple material/gesture parity remain untested.
+Installation status is tracked separately from these passing tests.

@@ -267,3 +267,39 @@ window contour clips both header and content. Initial size is bounded by the
 available screen. Zoom, contact sheet, slideshow, fullscreen and optional
 information remain available in Actions instead of a second bottom toolbar.
 PDF navigation/search and media playback controls remain inline.
+
+
+## Recents identity and feedback
+
+Virtual KIO listings retain their source URLs for model indexing, sorting and
+selection. Operations, Quick Look and Get Info use the provider's explicit
+`KFileItem::targetUrl()`. Adapted items are reconstructed from the provider's
+UDSEntry so their native locality flags and filename agree with the target.
+Both native URL MIME flavors contain operation targets. Columns selections
+in a virtual listing do not replace its navigation history with a synthetic
+file address; activating a virtual folder opens its real target.
+
+Directory overlays distinguish loading, an empty folder, hidden-only content,
+no filter matches, empty Recents/Trash and a failed listing. They are original
+vector/text QWidget layers with accessible names and descriptions. Mouse
+input passes through to native views; empty child Columns are handled in the
+preview surface that Qt uses for leaf directories. State updates use listing,
+selection and viewport events. Child teardown disconnects callbacks before
+Browser private state is destroyed.
+
+`FinderJobUiDelegate` subclasses the public KIO widgets delegate and changes
+error presentation while retaining native authentication/conflict interfaces.
+Missing-item Open errors identify the actual filename and retain native details.
+Controllers that already report errors to the host disable automatic error
+presentation to avoid duplicate alerts. Cancelled jobs do not create alerts.
+Long diagnostics move into scrollable details with a bounded summary. The
+rounded alert is an opaque fallback inspired by the audited generic Apple
+alert hierarchy, adapted to 320 logical pixels for real error text. It does
+not implement Apple's renderer or exact macOS error codes/layouts.
+
+Traffic lights use original vector gradients, rim/glint painting and persistent
+symbols, with disabled/inactive, pressed, focus and high-contrast variants.
+Their existing 20×28 hitboxes and native window actions are preserved. Gloss
+requires neither backdrop capture nor an animation timer. Main Finder and
+hosted Quick Look share the same controls. Native conflict, authentication and
+properties layouts remain KDE dialogs.

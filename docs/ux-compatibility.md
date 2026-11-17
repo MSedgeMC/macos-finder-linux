@@ -37,3 +37,14 @@ appearance, gesture and Get Info component suites passed. See
 [scrolling](../tests/verify-scrolling.py), [native UX](../tests/verify-finder-ux.py),
 [windowing](../tests/verify-windowing.py) and [feature](../tests/verify-features.py)
 harnesses. All input automation and screenshots stayed off the working desktop.
+
+
+The Recents update corrects a provider-routing bug: thumbnails could resolve a
+real target while Open received a synthetic `recentlyused:` address that the
+worker cannot stat. Opening, previews, properties and native clipboard/drag
+now use the explicit target and preserve the listing's model identity. Empty,
+filtered, hidden-only, loading and failed locations receive distinct accessible
+text/vector feedback. Rounded errors and glossy traffic lights are original
+Linux adaptations; native KDE conflicts/authentication and the existing window
+session behavior remain authoritative. Real-worker and staged-binary tests
+are documented in [validation](validation.md).
