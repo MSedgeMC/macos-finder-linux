@@ -238,10 +238,10 @@ static QIcon symbol(const QString &name) {
     for (int x : {4, 9, 14})
       p.drawRect(QRectF(x, 15, 2, 2));
   } else if (name == "sort") {
-    for (int y : {5, 10, 15}) {
-      p.drawRect(QRectF(3, y, 3, 2));
-      p.drawLine(9, y + 1, 16, y + 1);
-    }
+    p.drawRoundedRect(QRectF(1, 2, 12, 3), .6, .6);
+    for (int x : {2, 7, 12}) p.drawRoundedRect(QRectF(x, 8, 2, 3), .4, .4);
+    p.drawPolyline(QPolygonF{{16, 9}, {18, 11}, {20, 9}});
+    p.drawPolyline(QPolygonF{{16, 5}, {18, 3}, {20, 5}});
   } else if (name == "search") {
     p.drawEllipse(QRectF(3, 3, 10, 10));
     p.drawLine(12, 12, 17, 17);
@@ -282,17 +282,9 @@ protected:
     QColor tint = FinderAppearance::materialTint(); if (!blur) tint.setAlpha(255);
     p.fillRect(rect(), tint);
     if (objectName() == "finderHeader") {
-      // Keep the content toolbar solid between controls, with actual desktop
-      // backdrop visible through the grouped glass capsules. Native KWin blur
-      // uses these same contours; there is no wallpaper stand-in or capture.
-      QPainterPath solid; solid.addRect(QRectF(sidebarWidth, 0, width() - sidebarWidth, height()));
-      if (blur) for (auto *child : findChildren<QWidget *>()) {
-        if (!child->isVisible() || !child->property("finderGlassSurface").toBool()) continue;
-        const QRectF bounds(QPointF(child->mapTo(this, QPoint())), QSizeF(child->size()));
-        solid = solid.subtracted(FinderGlass::contour(bounds.adjusted(.6, .6, -.6, -.6)));
-      }
-      p.setRenderHint(QPainter::Antialiasing);
-      p.fillPath(solid, palette().color(QPalette::Base));
+      // Toolbar controls sit over the application's dark content surface.
+      // Never cut wallpaper-shaped holes beneath individual buttons.
+      p.fillRect(QRect(sidebarWidth, 0, width() - sidebarWidth, height()), palette().color(QPalette::Base));
     }
   }
 };
@@ -460,7 +452,7 @@ public:
     hl->setSpacing(8);
     headerSidebar = new QWidget(header);
     auto *hs = new QHBoxLayout(headerSidebar);
-    hs->setContentsMargins(5, 0, 6, 0);
+    hs->setContentsMargins(6, 0, 6, 0);
     hs->setSpacing(3);
     for (auto name : {"close", "minimize", "maximize"}) {
       auto *control = new WindowControl(QString(name), headerSidebar);
@@ -549,7 +541,7 @@ public:
     toolbarWidgets["sort"] = arrange;
     arrange->setObjectName("finderArrange");
     arrange->setProperty("finderGlassSurface", true);
-    arrange->setFixedWidth(44);
+    arrange->setFixedWidth(48);
     auto *sortMenu = new QMenu(arrange);
     sortGroup = new QActionGroup(this);
     for (auto entry :
@@ -754,7 +746,7 @@ public:
     sidebar = new Material;
     sidebar->setObjectName("finderSidebar");
     auto *sl = new QVBoxLayout(sidebar);
-    sl->setContentsMargins(8, 6, 8, 6);
+    sl->setContentsMargins(8, 0, 8, 6);
     sl->setSpacing(0);
     places = new FinderPlacesView;
     places->setObjectName("finderPlaces");
@@ -1028,7 +1020,8 @@ public:
     installScrolling(this);
     QSettings settings;
     restoreGeometry(settings.value("Window/geometry").toByteArray());
-    auto sizes = settings.value("Window/sidebar", 166).toInt();
+    const auto sizes = qBound(120, settings.value("Window/sidebar", 166).toInt(), qMax(120, width() - 200));
+    pendingSidebarWidth = sizes;
     body->setSizes({sizes, width() - sizes});
     uiReady = true;
     QTimer::singleShot(0, this, [this] { layoutHeader(); });
@@ -1967,7 +1960,17 @@ protected:
   }
   void showEvent(QShowEvent *e) override {
     QMainWindow::showEvent(e);
-    QTimer::singleShot(0, this, [this] { updateMaterial(); });
+    QTimer::singleShot(0, this, [this] {
+      // QSplitter initially lays out before the top-level Wayland configure.
+      // Reapply the saved width once the body has its real available width.
+      if (pendingSidebarWidth > 0) {
+        const int available = body->width();
+        const int saved = qBound(120, pendingSidebarWidth, qMax(120, available - 200));
+        body->setSizes({saved, qMax(200, available - saved)});
+        pendingSidebarWidth = -1;
+      }
+      layoutHeader(); updateMaterial();
+    });
   }
   bool eventFilter(QObject *o, QEvent *e) override {
     if (tabs && o == tabs->tabBar() && e->type() == QEvent::MouseButtonPress) {
@@ -2043,6 +2046,7 @@ private:
   Header *header;
   Material *sidebar;
   QSplitter *body;
+  int pendingSidebarWidth = -1;
   QTabWidget *tabs = nullptr;
   QStackedWidget *contentStack;
   QWidget *searchPage;
@@ -2972,11 +2976,6 @@ private:
     if (sidebar->isVisible())
       region += QRegion(
           sidebar->rect().translated(sidebar->mapTo(this, QPoint(0, 0))));
-    if (header->isVisible()) for (auto *child : header->findChildren<QWidget *>()) {
-      if (!child->isVisible() || !child->property("finderGlassSurface").toBool()) continue;
-      const QRectF bounds(QPointF(child->mapTo(this, QPoint())), QSizeF(child->size()));
-      region += QRegion(FinderGlass::contour(bounds.adjusted(.6, .6, -.6, -.6)).toFillPolygon().toPolygon());
-    }
     // The KDE Wayland API takes wl_surface units. QT_SCALE_FACTOR adds
     // application zoom above the native output scale; convert that once.
     qreal surfaceScale = 1;
@@ -3014,7 +3013,8 @@ private:
     }
     region &= materialContour;
     KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
-    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.04, 1.10, 1.0, region);
+    // Saturation reduction applies only to the genuinely translucent sidebar.
+    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.0, 1.0, .35, region);
   }
   void applyStyle() {
     QString sheet = R"(
@@ -4168,12 +4168,12 @@ int main(int argc, char **argv) {
   app.setQuitOnLastWindowClosed(false);
   app.setStyle("Fusion");
   QIcon::setThemeName("MacTahoe-dark");
-  // Use an already installed native reference font when available. The repo
-  // does not ship or install Apple fonts; Inter is the portable fallback.
-  QFont font("SF Pro Display", 10);
-  font.setFamilies({"SF Pro Display", "Inter", "sans-serif"});
+  // Preserve the user's selected Ubuntu Medium interface typography.
+  // This application does not install fonts or override desktop preferences.
+  QFont font("Ubuntu", 10);
+  font.setFamilies({"Ubuntu", "sans-serif"});
   font.setPixelSize(13);
-  font.setWeight(QFont::Normal);
+  font.setWeight(QFont::Medium);
   app.setFont(font);
   FinderAppearance::apply(&app);
   Manager manager;

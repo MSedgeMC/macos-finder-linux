@@ -128,8 +128,10 @@ bool FinderAppearance::reduceTransparency() { return appearance && appearance->m
 
 QColor FinderAppearance::materialTint()
 {
-    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#222225" : "#f2f2f5"));
-    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 120 : 220));
+    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#171614" : "#f2f2f5"));
+    // Finder's sidebar is a dark navigation surface with a restrained live
+    // backdrop contribution. The toolbar has its own content-backed coating.
+    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 232 : 240));
     return tint;
 }
 
@@ -159,6 +161,9 @@ QColor FinderAppearance::color(Role role)
     case Error: return p.color(QPalette::BrightText);
     case MaterialEdge: return highContrast() ? p.color(QPalette::Mid) : QColor(dark() ? 255 : 0, dark() ? 255 : 0, dark() ? 255 : 0, 26);
     case MaterialShadow: return highContrast() ? p.color(QPalette::Mid) : QColor(0, 0, 0, dark() ? 60 : 25);
+    case ToolbarSurface: return highContrast() ? p.color(QPalette::Button) : QColor(dark() ? "#191919" : "#eeeeef");
+    case ToolbarActive: return highContrast() ? p.color(QPalette::Highlight) : QColor(dark() ? "#292929" : "#dcdcdf");
+    case ToolbarEdge: return highContrast() ? p.color(QPalette::Mid) : QColor(dark() ? "#393939" : "#c5c5c8");
     }
     return p.color(QPalette::Text);
 }

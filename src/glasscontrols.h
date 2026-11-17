@@ -8,9 +8,9 @@
 #include <QToolButton>
 #include <QStyleOptionToolButton>
 
-// Original Qt painting for a shared glass capsule. The host supplies the
-// genuine compositor blur underneath; this coating does not invent a backdrop
-// or claim refractive displacement. No captures, animations or idle timers.
+// Original content-backed Qt coating for shared toolbar controls. Finder's
+// opaque header is the backdrop here; sidebar material separately uses KWin.
+// No wallpaper holes, captures, refractive claims or idle timers.
 namespace FinderGlass {
 inline QPainterPath contour(QRectF bounds) {
     QPainterPath path;
@@ -28,19 +28,20 @@ inline void paint(QPainter &p, QRectF bounds, bool active = false, bool pressed 
         p.setPen(QPen(FinderAppearance::color(FinderAppearance::Border), 1));
         p.drawPath(path); p.restore(); return;
     }
-    const int lift = pressed ? 25 : active ? 38 : 0;
+    const QColor fill = FinderAppearance::color(active ? FinderAppearance::ToolbarActive : FinderAppearance::ToolbarSurface);
     QLinearGradient body(bounds.topLeft(), bounds.bottomLeft());
-    body.setColorAt(0, QColor(dark ? 255 : 255, 255, 255, (dark ? 16 : 82) + lift));
-    body.setColorAt(.48, QColor(255, 255, 255, (dark ? 6 : 36) + lift));
-    body.setColorAt(1, QColor(255, 255, 255, (dark ? 10 : 58) + lift));
+    body.setColorAt(0, pressed ? fill.darker(110) : fill.lighter(dark ? 124 : 104));
+    body.setColorAt(.48, pressed ? fill.darker(115) : fill);
+    body.setColorAt(1, pressed ? fill.darker(110) : fill.lighter(dark ? 104 : 101));
     p.fillPath(path, body);
-    // A directional rim, not a uniform black outline. Keep the light at the
-    // upper edge and a restrained lower glint, including over dark backdrops.
+    // A subtle meniscus follows the shared capsule. The selected segment
+    // uses the same neutral family rather than a bright nested glass lens.
+    const QColor edge = FinderAppearance::color(FinderAppearance::ToolbarEdge);
     QLinearGradient rim(bounds.topLeft(), bounds.bottomRight());
-    rim.setColorAt(0, QColor(255, 255, 255, dark ? 76 : 180));
-    rim.setColorAt(.35, QColor(255, 255, 255, dark ? 26 : 95));
-    rim.setColorAt(.65, QColor(dark ? 255 : 45, dark ? 255 : 45, dark ? 255 : 50, dark ? 12 : 28));
-    rim.setColorAt(1, QColor(255, 255, 255, dark ? 40 : 130));
+    rim.setColorAt(0, edge.lighter(dark ? 115 : 105));
+    rim.setColorAt(.35, edge);
+    rim.setColorAt(.65, fill);
+    rim.setColorAt(1, edge);
     p.setPen(QPen(QBrush(rim), .85)); p.drawPath(path);
     p.restore();
 }
@@ -58,7 +59,7 @@ protected:
         // Quiet separators share one material surface, never stacked blur.
         const auto children = findChildren<QToolButton *>(QString(), Qt::FindDirectChildrenOnly);
         if (children.size() != 2 && children.size() != 4) return;
-        painter.setPen(QPen(FinderAppearance::color(FinderAppearance::MaterialEdge), 1));
+        painter.setPen(QPen(FinderAppearance::color(FinderAppearance::ToolbarEdge), .7));
         for (int i = 1; i < children.size(); ++i) {
             if (!children[i]->isVisible() || !children[i-1]->isVisible()) continue;
             const int x = children[i]->geometry().left();

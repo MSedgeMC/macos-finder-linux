@@ -20,7 +20,7 @@ public:
         Header, HeaderText, SecondaryText, Border, Focus, Accent,
         Selection, SelectedText, IconSelection, IconLabelSelection,
         SidebarSelection, SidebarHover, ScrollHandle, Error,
-        MaterialEdge, MaterialShadow
+        MaterialEdge, MaterialShadow, ToolbarSurface, ToolbarActive, ToolbarEdge
     };
     Q_ENUM(Role)
 
