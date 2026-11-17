@@ -1843,7 +1843,7 @@ public:
         if (currentMode == Columns) {
             const auto current = item(columnSelection->currentIndex());
             QUrl active = rootUrl;
-            if (!current.isNull()) active = current.isDir() ? current.url() : parentUrl(current.url());
+            if (!current.isNull() && FileTarget::url(current) == current.url()) active = current.isDir() ? current.url() : parentUrl(current.url());
             if (active != currentUrl) {
                 currentUrl = active;
                 if (springActive || springNavigating || !springRestoreColumns.isEmpty()) emit q->springUrlChanged(currentUrl);
@@ -1864,7 +1864,10 @@ public:
                 emit q->folderOpenRequested(entry.url(), modifiers);
                 return;
             }
-            if (currentMode == Columns) {
+            if (currentMode == Columns && item(index).url() != entry.url()) {
+                if (q->property("finderHostFolderPolicy").toBool()) emit q->folderOpenRequested(entry.url(), modifiers);
+                else q->navigate(entry.url());
+            } else if (currentMode == Columns) {
                 columnSelection->setCurrentIndex(index.siblingAtColumn(0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
                 if (proxy->canFetchMore(index)) proxy->fetchMore(index);
                 columns->scrollTo(index);
