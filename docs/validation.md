@@ -418,3 +418,40 @@ integration files. The prior layout settings were backed up before applying
 the 166px sidebar and replacing the previous default spacing/List size;
 custom icon sizes, saved columns and file/session state were retained. No
 working-screen input or compositor restart was performed.
+
+## Reference-driven material correction, 2026-11-17
+
+The user's live capture exposed a backdrop-ownership error missed by the prior
+blur-only assertions: transparent holes under the toolbar capsules sampled
+the desktop behind the opaque file pane. The correction gives the toolbar a
+continuous dark content surface and neutral grouped controls. Only the sidebar
+and its header segment receive native blur. Sidebar tint is RGB 21/20/18 at
+232/255 alpha in normal dark mode, with reduced backdrop saturation. Saved
+sidebar width is reapplied after the initial native window layout.
+
+The settled layout uses a 166px sidebar, 52px header, 111px default icon pitch,
+73×36 navigation and 158×36 four-view capsules. Wider filename space permits
+middle elision on the second line. Single-tab windows hide the New Tab corner
+control; visible multi-tab bars retain it. The user's selected Ubuntu Medium
+font and persistent window-control symbols are deliberate platform choices.
+The Recents title describes its location instead of exposing the worker path.
+
+Functional source `4608a7303c29a65edda9155756669b7f24e98af2` passed all 23
+component suites in GitHub Actions and then 16 native UX, 17 windowing and 22
+sidebar captures using the downloaded binary in private Wayland. Material
+checks at 1× / 1.5× measured zero toolbar changes under blur or backdrop-color
+toggles. All 168 / 426 transparent corner samples stayed unchanged outside the
+contour, and all 47 / 71 partial corner samples received material. Blank
+sidebar blur detail ratios were 0.023 / 0.025; foreground text/icons were
+excluded because they remain sharp. The later two-level sidebar tint correction
+and shared-users/location-title change require their own final artifact check.
+
+Static reference-region comparison established exact RGB 30/30/30 equality
+in sampled toolbar and file-pane backgrounds. This limited comparison does
+not establish whole-window pixel parity: files, thumbnails, font, icons,
+compositor and backdrop differ. The added user-selected Tahoe KDE source was
+reviewed at `162022f8df33cdfb37bc8f11ff331be9abc6725d`; its Acrylic Glass
+KWin implementation supplies genuine compositor-source edge optics, not a
+Qt Widgets drop-in. No project code, assets, installer or compositor change
+was imported. Genuine refraction and Apple's renderer remain unavailable in
+this application. Final artifact and installation status follow separately.
