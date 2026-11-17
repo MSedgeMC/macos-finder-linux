@@ -22,8 +22,16 @@ def red_anchor(image):
             cx=(min(xs)+max(xs))//2;cy=(min(ys)+max(ys))//2
             for spacing in range(max(12,width),min(65,width*3+5)):
                 if cx+spacing*2>=image.width:break
-                yr,yg,yb=pixels[cx+spacing,cy];gr,gg,gb=pixels[cx+spacing*2,cy]
-                if yr>140 and yg>95 and yb<155 and gg>110 and gg>gr*1.4 and gg>gb*1.15:
+                # Visible control symbols cross the center. Sample a matching
+                # interior band too, including fractional-scale glossy rims.
+                offsets=range(-max(1,height//4),max(1,height//4)+1)
+                neighbors=False
+                for offset in offsets:
+                    if not 0<=cy+offset<image.height:continue
+                    yr,yg,yb=pixels[cx+spacing,cy+offset];gr,gg,gb=pixels[cx+spacing*2,cy+offset]
+                    if yr>140 and yg>95 and yb<155 and gg>110 and gg>gr*1.4 and gg>gb*1.15:
+                        neighbors=True;break
+                if neighbors:
                     candidates.append((min(xs),min(ys)));break
     assert candidates,'traffic-light cluster not visible'
     return min(candidates,key=lambda p:(p[1],p[0]))
