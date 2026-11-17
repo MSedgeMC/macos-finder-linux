@@ -48,6 +48,17 @@ int main(int argc,char **argv){
  for(const char *mode:{"light","dark"}){QSettings().setValue("Appearance/mode",mode);FinderAppearance::apply(&app);QApplication::processEvents();b.grab();}
  QWidget host;auto *layout=new QHBoxLayout(&host);auto *capsule=new GlassCapsule(&host);auto *buttons=new QHBoxLayout(capsule);auto *button=new GlassToolButton(capsule);button->setFixedSize(34,36);button->setIcon(QIcon::fromTheme("folder"));button->setAccessibleName("Native action");buttons->addWidget(button);layout->addWidget(capsule);host.show();QApplication::processEvents();int activated=0;QObject::connect(button,&QToolButton::clicked,&host,[&]{++activated;});button->setFocus();QKeyEvent key(QEvent::KeyPress,Qt::Key_Space,{});QApplication::sendEvent(button,&key);QKeyEvent release(QEvent::KeyRelease,Qt::Key_Space,{});QApplication::sendEvent(button,&release);check(activated==1&&button->accessibleName()=="Native action","glass preserves keyboard and accessibility");
  button->setCheckable(true);button->setChecked(true);QSettings().setValue("Appearance/reduceTransparency",true);FinderAppearance::apply(&app);host.grab();QSettings().setValue("Appearance/increaseContrast",true);FinderAppearance::apply(&app);host.grab();
+ QSettings().setValue("Appearance/reduceTransparency",false);QSettings().setValue("Appearance/increaseContrast",false);FinderAppearance::apply(&app);
+ // Saturated backgrounds must not turn content-backed toolbar controls into
+ // wallpaper lenses. Sample real painting rather than mirroring its formula.
+ QImage coating[2];int background=0;
+ for(const QColor color:{QColor("#ff4080"),QColor("#168aff")}){
+  coating[background]=QImage(142,36,QImage::Format_ARGB32_Premultiplied);coating[background].fill(color);
+  QPainter painter(&coating[background]);FinderGlass::paint(painter,QRectF(0,0,142,36));painter.end();++background;
+ }
+ const auto center=coating[0].pixelColor(70,18);
+ check(center==coating[1].pixelColor(70,18)&&center.red()<45&&qAbs(center.red()-center.blue())<=2,"toolbar stays neutral over saturated backdrops");
+ check(coating[0].pixelColor(70,2)!=center,"restrained directional toolbar coating");
  if(argc>1)check(host.grab().save(QString::fromLocal8Bit(argv[1])+".glass.png"),"glass artifact");
  std::cout<<"PASS compact rows, rounded real/empty stripes, native tree/selection, grid geometry, grouped/large text, appearance and glass keyboard\n";
 }

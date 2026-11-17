@@ -1111,6 +1111,7 @@ public:
     restoreGeometry(QByteArray::fromBase64(session.value("geometry").toString().toLatin1()));
     const int savedSidebar = qBound(120, session.value("sidebarWidth").toInt(166), qMax(120, width() - 200));
     body->setSizes({savedSidebar, qMax(200, width() - savedSidebar)});
+    if (pendingSidebarWidth > 0) pendingSidebarWidth = savedSidebar;
     sidebar->setVisible(session.value("sidebar").toBool(true));
     namedActions["toolbar"]->setChecked(session.value("toolbar").toBool(true)); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); namedActions["tabBar"]->setChecked(session.value("tabBar").toBool());
     tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
