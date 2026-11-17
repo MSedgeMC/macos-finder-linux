@@ -409,3 +409,12 @@ input and captures stayed on private screens; expected private portal/software
 fallback diagnostics remain in the logs. Genuine refraction and Apple's
 renderer are not implemented. Installation is recorded separately after the
 scoped installer verifies the production copy.
+
+The scoped installer applied and independently verified that exact remote
+binary on 2026-11-17. Installed bytes match the artifact, Finder is the folder
+default and active FileManager1 owner, zero windows were open, and the private
+test interface was absent. Only the executable changed among the nine
+integration files. The prior layout settings were backed up before applying
+the 166px sidebar and replacing the previous default spacing/List size;
+custom icon sizes, saved columns and file/session state were retained. No
+working-screen input or compositor restart was performed.
