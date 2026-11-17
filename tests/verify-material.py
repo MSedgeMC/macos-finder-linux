@@ -137,7 +137,7 @@ try:
     assert alpha.getpixel((round(80*scale),round(50*scale))) == alpha.getpixel((round(80*scale),round(51*scale))) == alpha.getpixel((round(80*scale),round(52*scale))), 'painted header shadow'
     blurred.crop((origin[0]-8,origin[1]-8,origin[0]+80,origin[1]+80)).save(out/'corner-composited.png')
     def box(x1,y1,x2,y2):return (origin[0]+round(x1*scale),origin[1]+round(y1*scale),origin[0]+round(x2*scale),origin[1]+round(y2*scale))
-    inside=box(28,state['height']-130,230,state['height']-70)
+    inside=box(28,state['height']-130,state['sidebarWidth']-20,state['height']-70)
     def detail(image):
         crop=image.crop(inside)
         return sum(ImageStat.Stat(ImageChops.difference(crop,ImageChops.offset(crop,round(4*scale),0))).mean)/3

@@ -73,7 +73,7 @@ try:
     trigger('fullscreen');wait(lambda:state()['maximized'] and not state()['fullscreen'],'restore maximized');passed('fullscreen-restores-maximize')
     trigger('zoom');wait(lambda:not state()['maximized'],'restore normal')
     # Green primary click enters fullscreen without first opening a menu.
-    ox,oy=origin();native.move(ox+78,oy+29);QTest.qWait(70);native.button(1);native.button(0)
+    ox,oy=origin();native.move(ox+70,oy+26);QTest.qWait(70);native.button(1);native.button(0)
     wait(lambda:state()['fullscreen'],'green primary full screen');passed('green-primary-fullscreen')
     trigger('fullscreen');wait(lambda:not state()['fullscreen'],'green restore')
     assert not state()['maximized'];passed('fullscreen-restores-normal')
