@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 // Public Qt/KIO views and jobs; no private Dolphin ABI or shell file mutations.
+#include "alerts.h"
 #include "browser.h"
 #include "filetarget.h"
 #include "appearance.h"
@@ -1342,7 +1343,7 @@ public:
     FinderProxy *proxy;
     QItemSelectionModel *selection;
     QItemSelectionModel *columnSelection;
-    QStackedWidget *stack;
+    QStackedWidget *stack = nullptr;
     QHash<QWidget *, DirectoryState *> directoryStates;
     QSet<QUrl> loadedDirectories;
     QSet<QUrl> loadingDirectories;
@@ -1394,7 +1395,7 @@ public:
     DropView<QListView> *strip;
     QWidget *gallery;
     QWidget *galleryHost;
-    QWidget *columnHost;
+    QWidget *columnHost = nullptr;
     QWidget *sidePreviewHost;
     QSplitter *previewSplitter;
     int sidePreviewWidth = 280;
@@ -1922,7 +1923,7 @@ public:
     }
 
     void job(KIO::Job *job, const QString &message) {
-        job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, q->window()));
+        job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, q->window()));
         KJobWidgets::setWindow(job, q->window());
         emit q->statusMessage(message);
         QObject::connect(job, &KJob::result, q, [this](KJob *finished) {
@@ -2061,7 +2062,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->model = new MetadataDirModel(this);
     d->model->setDropsAllowed(KDirModel::DropOnDirectory);
     d->model->dirLister()->setMainWindow(window());
-    d->model->dirLister()->setAutoErrorHandlingEnabled(true);
+    d->model->dirLister()->setAutoErrorHandlingEnabled(false);
     d->model->dirLister()->setDelayedMimeTypes(true);
     d->proxy = new FinderProxy(this);
     d->proxy->setSourceModel(d->model);
@@ -2190,8 +2191,10 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model->dirLister(), &KDirLister::jobError, this, [this](KIO::Job *job) {
         const auto *listing = qobject_cast<KIO::SimpleJob *>(job);
         const auto failed = listing ? listing->url() : d->currentUrl;
-        d->listingErrors.insert(failed, job->errorString());
+        d->listingErrors.insert(failed, FinderAlert::plain(job->errorString()));
         d->loadingDirectories.remove(failed); d->updateDirectoryStates();
+        if (job->error() != KIO::ERR_USER_CANCELED && job->error() != KJob::KilledJobError)
+            FinderAlert::showError(window(), tr("This location can’t be opened"), job->errorString());
         emit errorOccurred(job->errorString());
     });
     connect(d->model->dirLister(), &KDirLister::listingDirCompleted, this, [this](const QUrl &url) {

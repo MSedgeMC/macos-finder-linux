@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
+#include "alerts.h"
 #include "quickactions.h"
 
 #include <KIO/CopyJob>
@@ -577,7 +578,7 @@ void QuickActions::publishNext()
     // No Overwrite flag. KIO handles collisions, rename, skip and cancellation.
     auto *job = KIO::copyAs(QUrl::fromLocalFile(m_state->staged[index]), m_state->destinations[index]);
     m_state->job = job;
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, m_parent));
+    job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingDisabled, m_parent));
     KIO::FileUndoManager::self()->recordCopyJob(job);
     auto actual = std::make_shared<QUrl>();
     connect(job, &KIO::CopyJob::copyingDone, this,

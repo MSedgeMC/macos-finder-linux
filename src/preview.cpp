@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
+#include "alerts.h"
 #include "preview.h"
 #include "appearance.h"
 #include "tags.h"
@@ -763,7 +764,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
         for (const auto &url : urls) if (!url.isLocalFile() || !QFileInfo(url.toLocalFile()).isFile()) return;
         auto *job = new KEMailClientLauncherJob;
         job->setAttachments(urls);
-        job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+        job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
         connect(job, &KJob::result, this, [this, url = currentUrl()](KJob *result) {
             if (result->error()) emit actionError(url, result->errorText());
         });
@@ -1057,7 +1058,7 @@ void PreviewPane::openCurrent()
         return;
     }
     auto *job = new KIO::OpenUrlJob(url, m_mime);
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+    job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
     connect(job, &KJob::result, this, [this, url](KJob *result) {
         if (result->error()) emit actionError(url, result->errorText());
     });
@@ -1070,7 +1071,7 @@ void PreviewPane::openWithCurrent()
     if (urls.isEmpty()) return;
     auto *job = new KIO::ApplicationLauncherJob;
     job->setUrls(urls);
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+    job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
     connect(job, &KJob::result, this, [this, url = currentUrl()](KJob *result) {
         if (result->error()) emit actionError(url, result->errorText());
     });
@@ -2697,7 +2698,7 @@ void PreviewPane::probeTrimSource()
                 if (state->progress) { state->progress->setLabelText(tr("Saving copy…")); state->progress->setValue(95); }
                 auto *job = KIO::copyAs(QUrl::fromLocalFile(state->staged), state->destination, KIO::HideProgressInfo);
                 state->job = job;
-                job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
+                job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window()));
                 KIO::FileUndoManager::self()->recordCopyJob(job);
                 connect(job, &KIO::CopyJob::copyingDone, this, [state](KIO::Job *, const QUrl &, const QUrl &to, const QDateTime &, bool, bool) { state->actual = to; });
                 connect(job, &KJob::result, job, [temporary = state->temporary] { Q_UNUSED(temporary); });

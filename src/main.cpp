@@ -20,6 +20,7 @@
 #include "batchrename.h"
 #include "filedetails.h"
 #include "infohost.h"
+#include "alerts.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -809,7 +810,7 @@ public:
       refresh();
     });
     connect(places, &FinderPlacesView::errorMessage, this, [this](const QString &error) {
-      status->setText(error);
+      status->setText(error); FinderAlert::showError(this, tr("This location isn’t available."), error);
     });
     connect(places, &KFilePlacesView::placeActivated, this,
             [this](const QUrl &u) { navigate(u); });
@@ -1411,7 +1412,7 @@ public:
   void restoreSelection() {
     if (!trashSelection()) return;
     auto *job = KIO::restoreFromTrash(selectedUrls());
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+    job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
     connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Items put back"); });
   }
   void deleteImmediately() {
@@ -1425,7 +1426,7 @@ public:
     connect(warning, &QMessageBox::finished, this, [this, urls](int result) {
       if (result != QMessageBox::Yes) return;
       auto *job = KIO::del(urls);
-      job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+      job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
       connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Items deleted"); if (showingSearch()) beginSearch(); });
     });
     warning->open();
@@ -1492,7 +1493,7 @@ public:
   }
   void runCopyJob(KIO::CopyJob *job) {
     KIO::FileUndoManager::self()->recordCopyJob(job);
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(
+    job->setUiDelegate(new FinderJobUiDelegate(
         KJobUiDelegate::AutoHandlingEnabled, this));
     connect(job, &KJob::result, this, [this](KJob *) {
       if (showingSearch())
@@ -1622,7 +1623,7 @@ public:
           int number = 2;
           while (QFileInfo::exists(destination)) destination = original.dir().filePath(stem + " " + QString::number(number++) + ".png");
           auto *job = KIO::copyAs(QUrl::fromLocalFile(staged), QUrl::fromLocalFile(destination));
-          job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, owner));
+          job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, owner));
           KIO::FileUndoManager::self()->recordCopyJob(job);
           connect(job, &KJob::result, job, [owner, temporary](KJob *finished) {
             if (owner) owner->status->setText(finished->error() ? finished->errorText() : "Rotated copy created");
@@ -1921,7 +1922,8 @@ public:
       return;
     }
     auto *job = new KIO::OpenUrlJob(url);
-    job->setUiDelegate(KIO::createDefaultJobUiDelegate(
+    job->setProperty("finderOpenUrl", url);
+    job->setUiDelegate(new FinderJobUiDelegate(
         KJobUiDelegate::AutoHandlingEnabled, this));
     job->start();
   }
@@ -1935,7 +1937,7 @@ public:
             new KService(dialog->text(), dialog->text(), QString()));
       auto *job = new KIO::ApplicationLauncherJob(service);
       job->setUrls({url});
-      job->setUiDelegate(KIO::createDefaultJobUiDelegate(
+      job->setUiDelegate(new FinderJobUiDelegate(
           KJobUiDelegate::AutoHandlingEnabled, this));
       job->start();
     });
@@ -3093,8 +3095,7 @@ private:
     connect(archives, &Archives::statusChanged, this, [this](const QString &message) { status->setText(message); if (archiveProgress) archiveProgress->setLabelText(message); });
     connect(archives, &Archives::errorOccurred, this, [this](const QString &message) {
       status->setText(message);
-      auto *dialog = new QMessageBox(QMessageBox::Warning, "Archive Operation", message, QMessageBox::Close, this);
-      dialog->setTextFormat(Qt::PlainText); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
+      FinderAlert::showError(this, tr("The archive operation couldn’t be completed."), message);
     });
     connect(archives, &Archives::busyChanged, this, [this](bool busy) {
       if (busy) {
@@ -3118,7 +3119,7 @@ private:
       else if (!urls.isEmpty() && urls.first().adjusted(QUrl::RemoveFilename).adjusted(QUrl::StripTrailingSlash) == browser()->url().adjusted(QUrl::StripTrailingSlash)) browser()->selectUrls(urls);
     });
     connect(quickActions, &QuickActions::statusChanged, this, [this](const QString &message) { status->setText(message); });
-    connect(quickActions, &QuickActions::errorOccurred, this, [this](const QString &message) { status->setText(message); });
+    connect(quickActions, &QuickActions::errorOccurred, this, [this](const QString &message) { status->setText(message); FinderAlert::showError(this, tr("The action couldn’t be completed."), message); });
     connect(quickActions, &QuickActions::outputsCreated, this, [this](const QList<QUrl> &urls) {
       if (showingSearch()) beginSearch();
       else if (!urls.isEmpty() && urls.first().adjusted(QUrl::RemoveFilename).adjusted(QUrl::StripTrailingSlash) == browser()->url().adjusted(QUrl::StripTrailingSlash)) browser()->selectUrls(urls);
@@ -3149,7 +3150,7 @@ private:
     addAction(finder, "emptyTrash", "Empty Trash…", {"Meta+Shift+Backspace"}, [this] {
       auto empty = [this] {
         auto *job = KIO::emptyTrash();
-        job->setUiDelegate(KIO::createDefaultJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
+        job->setUiDelegate(new FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, this));
         connect(job, &KJob::result, this, [this](KJob *done) { status->setText(done->error() ? done->errorText() : "Trash emptied"); });
       };
       if (!QSettings().value("Advanced/warnEmptyTrash", true).toBool()) { empty(); return; }

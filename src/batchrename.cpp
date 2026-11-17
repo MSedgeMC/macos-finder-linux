@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 kubuntu-customization contributors
 #include "batchrename.h"
+#include "alerts.h"
 
 #include <KIO/CopyJob>
 #include <KIO/FileUndoManager>
@@ -128,10 +129,10 @@ private:
     bool m_allowSkip;
     std::function<bool(const QUrl &)> m_allowed;
 };
-class RenameDelegate final : public KIO::JobUiDelegate {
+class RenameDelegate final : public FinderJobUiDelegate {
 public:
     RenameDelegate(QWidget *window, RenameHandler *handler)
-        : KIO::JobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window, {handler}) {}
+        : FinderJobUiDelegate(KJobUiDelegate::AutoHandlingEnabled, window, {handler}) {}
 };
 }
 
