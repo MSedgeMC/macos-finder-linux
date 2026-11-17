@@ -123,7 +123,7 @@ int main(int argc, char **argv)
     check(app.palette().color(QPalette::Base) == QColor("#1e1e1e")
         && FinderAppearance::color(FinderAppearance::IconSelection) == QColor("#363638")
         && FinderAppearance::color(FinderAppearance::IconLabelSelection) == QColor("#296ec6"), "default dark surfaces and selections");
-    check(FinderAppearance::materialTint() == QColor(23, 22, 20, 232), "restrained default sidebar material");
+    check(FinderAppearance::materialTint() == QColor(21, 20, 18, 232), "restrained default sidebar material");
     int changes = 0;
     QObject::connect(policy, &FinderAppearance::changed, &app, [&] { ++changes; });
     FinderAppearance::apply(&app);

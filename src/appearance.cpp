@@ -128,7 +128,7 @@ bool FinderAppearance::reduceTransparency() { return appearance && appearance->m
 
 QColor FinderAppearance::materialTint()
 {
-    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#171614" : "#f2f2f5"));
+    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#151412" : "#f2f2f5"));
     // Finder's sidebar is a dark navigation surface with a restrained live
     // backdrop contribution. The toolbar has its own content-backed coating.
     tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 232 : 240));
