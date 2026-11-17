@@ -443,8 +443,8 @@ checks at 1× / 1.5× measured zero toolbar changes under blur or backdrop-color
 toggles. All 168 / 426 transparent corner samples stayed unchanged outside the
 contour, and all 47 / 71 partial corner samples received material. Blank
 sidebar blur detail ratios were 0.023 / 0.025; foreground text/icons were
-excluded because they remain sharp. The later two-level sidebar tint correction
-and shared-users/location-title change require their own final artifact check.
+excluded because they remain sharp. The final artifact verification below also
+covers the later sidebar tint and shared-users/location-title changes.
 
 Static reference-region comparison established exact RGB 30/30/30 equality
 in sampled toolbar and file-pane backgrounds. This limited comparison does
@@ -454,4 +454,49 @@ reviewed at `162022f8df33cdfb37bc8f11ff331be9abc6725d`; its Acrylic Glass
 KWin implementation supplies genuine compositor-source edge optics, not a
 Qt Widgets drop-in. No project code, assets, installer or compositor change
 was imported. Genuine refraction and Apple's renderer remain unavailable in
-this application. Final artifact and installation status follow separately.
+this application. The final artifact and installation were verified as follows.
+
+
+## Final hosted correction and deployment, 2026-11-17
+
+[GitHub Actions run 44117017974](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44117017974)
+built functional source `601b9b78ad28eff846796962b7dfef1b561b3b44` and passed
+all 23 component suites. The downloaded and installed binary SHA256 is
+`fd9ec51a349016d0e499fb86acc796465265f36bd93b75b1cc520f145921d008`.
+Artifact source/hash evidence, JUnit results and local runtime linkage were
+verified before installation. All compilation remained on GitHub-hosted CPUs.
+
+That exact binary then passed 16 native UX checks, 17 windowing checks,
+9 Recents/empty-folder/error checks and 22 sidebar boundary/layout captures
+in separate private Wayland sessions. The Recents suite uses an isolated real
+KIO activity-history fixture and exercises real-file preview/Open/Get Info,
+clipboard routing and missing-original feedback. Input, screenshot capture and
+test windows stayed off the working desktop, and their processes were removed.
+
+Native material checks passed at 1× and 1.5× scale: toolbar blur and backdrop
+color deltas were both zero, the opaque file pane stayed unchanged, and all
+168 / 426 fully transparent corner samples had zero changes outside the
+contour. All 47 / 71 partially covered corner samples received material.
+Blank sidebar detail ratios were 0.0226 / 0.0253. Foreground text and icons are
+excluded from those samples and remain crisp. Logs retain expected private
+portal/software-backend diagnostics; physical device feel is not measured.
+
+914×433 Icons/List client captures were inspected directly. The 166px sidebar,
+52px header, 158×36 view capsule and 111px icon pitch match the measured
+reference geometry. Three uniform reference regions have mean absolute RGB
+error zero: file pane and header RGB 30/30/30, empty sidebar RGB 21/20/18.
+These are limited static client-surface measurements, not whole-window pixel
+equality, live composited-material equality or proof of Apple's renderer.
+File images, names, selected Ubuntu Medium font, platform icons and backdrop
+differ. Real refraction is not implemented by these Qt Widgets controls.
+
+The scoped installer applied and independently verified the artifact on
+2026-11-17 with zero Finder/Quick Look windows open. Installed bytes match the
+staged release; Finder remains the directory default and FileManager1 owner;
+the daemon is active and the private test interface is absent. Only the binary
+changed among nine integration files. Layout preferences were separately
+backed up before replacing the erroneous 228px sidebar width with 166px,
+including the last-closed session width, and hiding Home/Recent Locations to
+match the supplied sidebar hierarchy. Other view, session and metadata values
+were preserved. Only the file-manager daemon restarted; the working compositor
+and desktop shell were not restarted.
