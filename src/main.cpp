@@ -2799,6 +2799,8 @@ private:
   void refresh() {
     if (!browser())
       return;
+    if (auto *newTab = tabs->cornerWidget(Qt::TopRightCorner))
+      newTab->setVisible(tabs->count() > 1 || !tabs->tabBar()->autoHide());
     const auto u = browser()->url();
     if (u != capacityUrl) {
       capacityUrl = u;
@@ -3267,6 +3269,8 @@ private:
     addAction(view, "customizeToolbar", "Customize Toolbar…", {}, [this] { customizeToolbar(); });
     auto *tabsAction = addAction(view, "tabBar", "Show Tab Bar", {"Meta+Shift+T"}, [this] {
       tabs->tabBar()->setAutoHide(!namedActions["tabBar"]->isChecked());
+      if (auto *newTab = tabs->cornerWidget(Qt::TopRightCorner))
+        newTab->setVisible(tabs->count() > 1 || !tabs->tabBar()->autoHide());
       tabs->tabBar()->setVisible(namedActions["tabBar"]->isChecked() || tabs->count() > 1);
     }); tabsAction->setCheckable(true);
     addAction(view, "allTabs", "Show All Tabs", {"Meta+Shift+\\"}, [this] { tabOverview(); });
