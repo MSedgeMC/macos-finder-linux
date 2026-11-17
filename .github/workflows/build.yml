@@ -29,7 +29,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates git build-essential cmake ninja-build ccache gettext \
-            python3 dbus-x11 desktop-file-utils shared-mime-info \
+            python3 dbus-x11 unzip desktop-file-utils shared-mime-info \
             qt6-base-dev qt6-base-dev-tools qt6-pdf-dev qt6-multimedia-dev \
             qt6-declarative-dev qt6-image-formats-plugins qt6-wayland \
             libkf6kio-dev libkf6coreaddons-dev libkf6itemviews-dev \
@@ -45,6 +45,10 @@ jobs:
           restore-keys: |
             finder-ubuntu26-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}-
             finder-ubuntu26-${{ runner.arch }}-
+      - name: Start a private container system bus
+        run: |
+          mkdir -p /run/dbus
+          dbus-daemon --system --fork
       - name: Configure
         run: |
           cmake -S . -B build-ci -G Ninja \
