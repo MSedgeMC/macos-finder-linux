@@ -170,7 +170,7 @@ public:
         const int trailing = hasAction ? 32 : 10;
         QRect textRect = row.adjusted(reverse ? trailing : 34, 0, reverse ? -34 : -trailing, 0);
         QFont font(option.font);
-        font.setWeight(option.state & QStyle::State_Selected ? QFont::Bold : QFont::Normal);
+        font.setWeight(option.state & QStyle::State_Selected ? QFont::Bold : QFont::Medium);
         p->setFont(font);
         const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
         p->setPen(option.palette.color(option.state & QStyle::State_Enabled ? QPalette::Active : QPalette::Disabled,

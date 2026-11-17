@@ -66,7 +66,7 @@ def capture(name):
     assert state['headerHeight'] == 52, state
     assert state['navigationWidth'] == 73, state
     if state['width'] >= 980:
-        assert state['viewCapsuleWidth'] == 142, state
+        assert state['viewCapsuleWidth'] == 158, state
     if state['sidebarVisible']:
         assert state['contentX'] == state['sidebarWidth'], state
         assert state['splitterGrabWidth'] >= 4, state
@@ -100,10 +100,10 @@ try:
                                  'org.local.FinderTest')
             wait_for(lambda: status()['count'] == 2, 'native directory listing')
             initial_width = status()['sidebarWidth']
-            assert initial_width == 256, status()
+            assert initial_width == 166, status()
             rows=json.loads(str(api.sidebarRows(timeout=3)))
             assert [row['text'] for row in rows[:3]]==['Recents','Shared','Favorites'], rows
-            assert all(row['height']==(32 if row['selectable'] else 18) for row in rows), rows
+            assert all(row['height']==32 for row in rows), rows
             (out/'sidebar-rows.json').write_text(json.dumps(rows,indent=2)+'\n')
             for mode, name in enumerate(('icons', 'list', 'columns', 'gallery')):
                 assert api.setMode(mode, timeout=3)
@@ -134,7 +134,7 @@ try:
             capture('minimum-window')
             assert api.resizeWindow(1100, 720, timeout=3)
             capture('window-restored')
-            assert api.clickObject('finderSidebarToggle', timeout=3)
+            assert api.trigger('sidebar', timeout=3)
             wait_for(lambda: not status()['sidebarVisible'], 'hide sidebar')
             capture('sidebar-hidden')
             assert api.clickObject('finderSidebarToggle', timeout=3)

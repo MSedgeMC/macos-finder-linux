@@ -524,6 +524,7 @@ public:
       a->setData(i);
       modeActions->addAction(a);
       auto *b = button(names[i], a->text(), modeBox);
+      b->setFixedWidth(38);
       b->setDefaultAction(a);
       ml->addWidget(b);
       connect(a, &QAction::triggered, this, [this, i] { setMode(i); });
@@ -3019,7 +3020,7 @@ private:
   }
   void applyStyle() {
     QString sheet = R"(
-        QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;border:0;}
+        QWidget{color:#ededf2;font-weight:500;} QMainWindow{background:transparent;border:0;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
         #navigationCapsule,#modeCapsule,#actionsCapsule,#finderArrange,#finderSearchButton{background:transparent;border:0;}
         QToolButton{border:0;border-radius:16px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,20);} QToolButton:checked{background:rgba(255,255,255,35);} QToolButton:disabled{opacity:.4;}

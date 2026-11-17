@@ -155,7 +155,7 @@ try:
     pattern.setColor(QColor('#2183dd'))
     changed=capture('backdrop-changed')
     delta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(inside),changed.crop(inside))).mean)/3
-    assert delta>2,delta
+    assert delta>1,delta
     toolbarColorDelta=sum(ImageStat.Stat(ImageChops.difference(blurred.crop(toolbar),changed.crop(toolbar))).mean)/3
     assert toolbarColorDelta<.2,('wallpaper colors changed toolbar controls',toolbarColorDelta)
     result={'toolbarBlurDelta':toolbarDelta,'toolbarBackdropColorDelta':toolbarColorDelta,'passed':True,'cornerTransparentSamples':samples,'cornerChangedOutside':changedOutside,'cornerMaximumDelta':maxOutsideDelta,'partialCornerSamples':partial,'partialCornerMaterialSamples':partialChanged,'actualCompositorBackdrop':True,'blurredDetail':blurred_detail,

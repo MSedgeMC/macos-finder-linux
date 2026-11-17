@@ -1036,8 +1036,8 @@ public:
         const QFontMetrics metrics(font);
         const QStringList tags = index.data(TagsRole).toStringList();
         const int dotsWidth = tags.isEmpty() ? 0 : qMin(3, int(tags.size())) * 9 + 4;
-        const int labelLeft = rightLabel ? iconRect.right() + 12 : option.rect.left() + 6;
-        const int labelWidth = option.rect.right() - labelLeft - 5;
+        const int labelLeft = rightLabel ? iconRect.right() + 12 : option.rect.left();
+        const int labelWidth = option.rect.right() - labelLeft;
         const int width = qMax(16, labelWidth - dotsWidth);
         const QString name = index.data(Qt::DisplayRole).toString();
         QTextLayout wrapped(name, font);
