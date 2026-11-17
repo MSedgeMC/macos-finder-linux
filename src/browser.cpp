@@ -215,6 +215,9 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override {
         if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
             switch (section) {
+            case Browser::NameColumn: return QStringLiteral("Name");
+            case Browser::DateModifiedColumn: return QStringLiteral("Date Modified");
+            case Browser::KindColumn: return QStringLiteral("Kind");
             case Browser::DateCreatedColumn: return QStringLiteral("Date Created");
             case Browser::DateAddedColumn: return QStringLiteral("Date Added");
             case Browser::LastOpenedColumn: return QStringLiteral("Last Opened");
@@ -932,7 +935,7 @@ public:
     bool sectionRows = false;
     QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         QSize size = KFileItemDelegate::sizeHint(option, index);
-        size.setHeight(qMax(24, qMax(option.decorationSize.height() + 6, option.fontMetrics.height() + 6)) +
+        size.setHeight(qMax(sectionRows ? 20 : 24, qMax(option.decorationSize.height() + (sectionRows ? 4 : 6), option.fontMetrics.height() + (sectionRows ? 2 : 6))) +
                        (sectionRows && index.data(SectionStartRole).toBool() ? SectionHeight : 0));
         return size;
     }
@@ -940,6 +943,16 @@ public:
         const QStringList tags = index.column() == KDirModel::Name || index.column() == Browser::TagsColumn ? index.data(TagsRole).toStringList() : QStringList();
         QStyleOptionViewItem content(option);
         if (sectionRows && index.data(SectionStartRole).toBool()) content.rect.setTop(content.rect.top() + SectionHeight);
+        // The tree paints one continuous rounded stripe/selection per row.
+        // Keep native text, icons, focus and editing, without square cell fills.
+        if (sectionRows) {
+            content.features &= ~QStyleOptionViewItem::Alternate;
+            content.backgroundBrush = Qt::NoBrush;
+            content.palette.setColor(QPalette::AlternateBase, Qt::transparent);
+            const bool selected = content.state & QStyle::State_Selected;
+            content.state &= ~QStyle::State_Selected;
+            if (selected) content.palette.setColor(QPalette::Text, FinderAppearance::color(FinderAppearance::SelectedText));
+        }
         const int dotsWidth = tags.isEmpty() ? 0 : qMin(3, int(tags.size())) * 9 + 6;
         content.rect.adjust(0, 0, -dotsWidth, 0);
         painter->save();
@@ -963,7 +976,7 @@ public:
 };
 
 struct IconOptions {
-    int spacing = 16;
+    int spacing = 7;
     int textSize = 13;
     Browser::LabelPosition label = Browser::LabelBelow;
 };
@@ -1037,7 +1050,7 @@ public:
             line.setLineWidth(width);
             const QString text = lineNumber == 1 ? name.mid(line.textStart()) :
                                  name.mid(line.textStart(), line.textLength());
-            lines.append(metrics.elidedText(text.trimmed(), Qt::ElideRight, width));
+            lines.append(metrics.elidedText(text.trimmed(), lineNumber == 1 ? Qt::ElideMiddle : Qt::ElideRight, width));
         }
         wrapped.endLayout();
         painter->setFont(font);
@@ -1218,7 +1231,9 @@ private:
 
 class FinderIconView : public DropView<KCategorizedView> {
 public:
-    using DropView::DropView;
+    explicit FinderIconView(QWidget *parent = nullptr) : DropView(parent) {
+        setViewportMargins(10, 5, 10, 0);
+    }
     std::function<void()> arrangedLayout;
     void place(const QModelIndex &index, const QPoint &point) { setPositionForIndex(point, index); }
     QPoint position(const QModelIndex &index) const { return rectForIndex(index).topLeft(); }
@@ -1244,6 +1259,40 @@ public:
         return index;
     }
 protected:
+    void paintEvent(QPaintEvent *event) override {
+        DropView::paintEvent(event);
+        // Decorative stripes have no indexes: blank space remains native
+        // empty space for selection, context menus, drops and accessibility.
+        // Walk only visible rows, including expanded children, so partial
+        // repaint and pixel scrolling keep the trailing pattern aligned.
+        QModelIndex index = QTreeView::indexAt(QPoint(0, 0));
+        if (!index.isValid()) index = model() ? model()->index(0, 0, rootIndex()) : QModelIndex();
+        int bottom = 0;
+        while (index.isValid()) {
+            const QRect row = QTreeView::visualRect(index);
+            if (row.bottom() >= viewport()->height() - 1) return;
+            bottom = qMax(bottom, row.bottom() + 1);
+            const auto next = indexBelow(index);
+            if (!next.isValid()) break;
+            index = next;
+        }
+        const int rowHeight = qMax(20, qMax(iconSize().height() + 4, fontMetrics().height() + 2));
+        // For a scrolled tree use the cached native parity of a visible row,
+        // then count only the remaining viewport rows. Do not walk ancestors
+        // or all rows before the viewport on every repaint.
+        bool alternate = false;
+        if (index.isValid()) {
+            auto last = index;
+            int steps = 0;
+            while (last.isValid() && last != parityIndex && QTreeView::visualRect(last).bottom() >= 0) {
+                ++steps; last = indexAbove(last);
+            }
+            alternate = last.isValid() ? (parityAlternate ^ (steps % 2) ^ 1) : ((index.row() + 1) % 2);
+        }
+        QPainter painter(viewport()); painter.setClipRegion(event->region());
+        for (int y = bottom; y < viewport()->height(); y += rowHeight, alternate = !alternate)
+            if (alternate) paintStripe(&painter, QRect(0, y, viewport()->width(), rowHeight), palette().color(QPalette::AlternateBase));
+    }
     void mousePressEvent(QMouseEvent *event) override {
         if (onHeading(event->position().toPoint())) { event->accept(); return; }
         DropView::mousePressEvent(event);
@@ -1278,7 +1327,26 @@ protected:
         QTreeView::setSelection(content, flags);
     }
     void drawRow(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
-        QTreeView::drawRow(painter, option, index);
+        QStyleOptionViewItem content(option);
+        const bool selected = option.state & QStyle::State_Selected;
+        parityIndex = index;
+        parityAlternate = option.features & QStyleOptionViewItem::Alternate;
+        QRect stripe(0, option.rect.top(), viewport()->width(), option.rect.height());
+        if (index.data(SectionStartRole).toBool()) stripe.setTop(stripe.top() + SectionHeight);
+        if (selected || (option.features & QStyleOptionViewItem::Alternate))
+            paintStripe(painter, stripe, selected ? FinderAppearance::color(FinderAppearance::Selection) : option.palette.color(QPalette::AlternateBase));
+        content.features &= ~QStyleOptionViewItem::Alternate;
+        content.state &= ~QStyle::State_Selected;
+        content.backgroundBrush = Qt::NoBrush;
+        content.palette.setColor(QPalette::AlternateBase, Qt::transparent);
+        if (selected) content.palette.setColor(QPalette::Text, FinderAppearance::color(FinderAppearance::SelectedText));
+        painter->save();
+        if (selected || (option.features & QStyleOptionViewItem::Alternate)) {
+            QPainterPath clip; clip.addRoundedRect(QRectF(stripe).adjusted(10, 0, -10, 0), 8, 8);
+            painter->setClipPath(clip, Qt::IntersectClip);
+        }
+        QTreeView::drawRow(painter, content, index);
+        painter->restore();
         if (index.data(SectionStartRole).toBool()) {
             paintHeading(painter, QRect(0, option.rect.top(), viewport()->width(), SectionHeight),
                          option.palette, option.font, index.data(KCategorizedSortFilterProxyModel::CategoryDisplayRole).toString());
@@ -1290,6 +1358,13 @@ protected:
         QTreeView::drawBranches(painter, content, index);
     }
 private:
+    static void paintStripe(QPainter *painter, const QRect &rect, QColor color) {
+        painter->save(); painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen); painter->setBrush(color);
+        painter->drawRoundedRect(QRectF(rect).adjusted(10, 0, -10, 0), 8, 8); painter->restore();
+    }
+    mutable QPersistentModelIndex parityIndex;
+    mutable bool parityAlternate = false;
     bool onHeading(const QPoint &point) const {
         const QModelIndex index = QTreeView::indexAt(point);
         return index.data(SectionStartRole).toBool() && point.y() < visualRect(index).top();
@@ -1774,8 +1849,8 @@ public:
             if (!view->isVisible() || viewport.isEmpty()) continue;
             const bool tiles = currentMode == Icons || currentMode == Gallery;
             const QSize grid = tiles ? static_cast<QListView *>(view)->gridSize() : QSize();
-            const int dx = tiles ? qMax(16, grid.width() / 2) : viewport.width();
-            const int dy = tiles ? qMax(16, grid.height() / 2) :
+            const int dx = tiles ? qMax(16, grid.width() / 3) : viewport.width();
+            const int dy = tiles ? qMax(16, grid.height() / 3) :
                 qMax(8, qMax(view->fontMetrics().height() + 6, view->iconSize().height() + 6) / 2);
             for (int y = 1; y < viewport.height() && visible.size() < 16; y += dy) {
                 for (int x = 1; x < viewport.width() && visible.size() < 16; x += dx) {
@@ -2102,10 +2177,10 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->icons->arrangedLayout = [this] { d->applyArrangement(); };
     d->list = new FinderListView(d->stack); d->list->setObjectName("finderListView");
     d->list->setRootIsDecorated(true); d->list->setAlternatingRowColors(true); d->list->setUniformRowHeights(true);
-    d->list->setIconSize({18, 18}); d->list->setSortingEnabled(true);
+    d->list->setIconSize({16, 16}); d->list->setSortingEnabled(true);
     d->columns = new ColumnsView(d->stack); d->columns->setObjectName("finderColumnView");
     d->columns->setIconSize({18, 18});
-    d->viewOptions[List].size = 18; d->viewOptions[Columns].size = 18;
+    d->viewOptions[List].size = 16; d->viewOptions[Columns].size = 18;
     d->columns->setColumnWidths({220, 220, 220, 220, 220}); d->columns->setResizeGripsVisible(true);
     d->columnHost = new QWidget; d->columnHost->setObjectName("finderColumnPreview");
     d->columnHost->setMinimumWidth(250); d->columns->setPreviewWidget(d->columnHost);
@@ -2137,14 +2212,17 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         initialSelection->deleteLater();
         d->prepare(view);
     }
-    d->list->setColumnWidth(KDirModel::Name, 300); d->list->setColumnWidth(KDirModel::Size, 100);
-    d->list->setColumnWidth(KDirModel::ModifiedTime, 185); d->list->setColumnWidth(KDirModel::Type, 160);
+    d->list->setColumnWidth(KDirModel::Name, 340); d->list->setColumnWidth(KDirModel::Size, 96);
+    d->list->setColumnWidth(KDirModel::ModifiedTime, 180); d->list->setColumnWidth(KDirModel::Type, 122);
     for (int column : {KDirModel::Permissions, KDirModel::Owner, KDirModel::Group}) d->list->hideColumn(column);
     for (int column = DateCreatedColumn; column < ListColumnCount; ++column) {
         d->list->setColumnWidth(column, column == TagsColumn ? 180 : 185);
         d->list->hideColumn(column);
     }
     d->list->header()->moveSection(d->list->header()->visualIndex(KDirModel::Type), 3);
+    d->list->header()->moveSection(d->list->header()->visualIndex(KDirModel::ModifiedTime), 1);
+    d->list->header()->setFixedHeight(28);
+    d->list->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     d->list->header()->setStretchLastSection(false);
     d->list->header()->setSectionsMovable(true);
     d->list->header()->setSectionResizeMode(QHeaderView::Interactive);
@@ -2270,14 +2348,13 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         setStyleSheet(QStringLiteral(
             "#finderBrowser QAbstractItemView{background:palette(base);color:palette(text);border:0;}"
             "#finderBrowser QTreeView{alternate-background-color:palette(alternate-base);}"
-            "#finderBrowser QAbstractItemView::item:selected{background:%1;color:%2;}"
+            "#finderColumnView::item:selected{background:%1;color:%2;}"
             "#finderBrowser QColumnView::item{height:24px;}"
             "#finderGalleryPreview,#finderColumnPreview,#finderSidePreview{background:palette(base);}"
-            "#finderBrowser QHeaderView::section{background:%3;color:%4;border:0;padding:4px 8px;}")
+            "#finderBrowser QHeaderView::section{background:palette(base);color:palette(placeholder-text);border:0;border-bottom:1px solid palette(alternate-base);padding:3px 8px;text-align:left;}"
+            "#finderBrowser QHeaderView::section:first{color:palette(text);}")
             .arg(FinderAppearance::color(FinderAppearance::Selection).name(),
-                 FinderAppearance::color(FinderAppearance::SelectedText).name(),
-                 FinderAppearance::color(FinderAppearance::Header).name(),
-                 FinderAppearance::color(FinderAppearance::HeaderText).name()));
+                 FinderAppearance::color(FinderAppearance::SelectedText).name()));
         for (auto *view : QList<QAbstractItemView *>{d->icons, d->list, d->columns, d->strip}) view->viewport()->update();
     };
     if (auto *appearance = FinderAppearance::instance())

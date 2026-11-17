@@ -161,3 +161,10 @@ target_include_directories(finder-alerts-controls-test PRIVATE "${PROJECT_SOURCE
 target_link_libraries(finder-alerts-controls-test PRIVATE Qt6::Widgets KF6::KIOCore KF6::KIOWidgets)
 add_test(NAME finder-alerts-controls-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-alerts-controls-test>")
 set_tests_properties(finder-alerts-controls-test PROPERTIES TIMEOUT 30 LABELS "unit;headless")
+
+add_executable(finder-browser-layout-test browser-layout.cpp ../src/browser.cpp ../src/browser.h ../src/tags.cpp ../src/preferences.cpp ../src/scroll.cpp ../src/appearance.cpp ../src/appearance.h ../src/batchrename.cpp ../src/batchrename.h ../src/filedetails.cpp ../src/filedetails.h)
+target_include_directories(finder-browser-layout-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(finder-browser-layout-test PRIVATE Qt6::Widgets Threads::Threads KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::KIOFileWidgets KF6::JobWidgets KF6::FileMetaData KF6::Service)
+target_compile_options(finder-browser-layout-test PRIVATE -Wall -Wextra)
+add_test(NAME finder-browser-layout-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-layout-test>")
+set_tests_properties(finder-browser-layout-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")

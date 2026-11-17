@@ -48,7 +48,7 @@ enum Role {
     HiddenRole,
 };
 constexpr int RowHeight = 32;
-constexpr int HeadingHeight = 18;
+constexpr int HeadingHeight = 32;
 constexpr int IconSize = 20;
 
 QRect actionRect(const QRect &row, Qt::LayoutDirection direction) {
@@ -133,10 +133,10 @@ public:
         p->setRenderHint(QPainter::Antialiasing);
         const bool reverse = option.direction == Qt::RightToLeft;
         if (index.data(HeadingRole).toBool()) {
-            QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Bold);
+            QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Medium);
             p->setFont(font);
             p->setPen(option.palette.color(QPalette::PlaceholderText));
-            const QRect label = option.rect.adjusted(10, 0, -10, 0);
+            const QRect label = option.rect.adjusted(10, 10, -10, 0);
             p->drawText(label, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
                         QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, label.width()));
             p->restore();
@@ -201,7 +201,7 @@ public:
 };
 
 // This view never inherits or invokes KFilePlacesView's private event watcher.
-// Headers are real nonselectable model rows, so 18px geometry is safe for
+// Headers are real nonselectable model rows, so their geometry is safe for
 // mouse, keyboard, context menus, eject targets, and drops alike.
 class SidebarTree final : public QTreeView {
 public:
@@ -499,10 +499,10 @@ public:
         const QUrl applications = QUrl::fromLocalFile("/usr/share/applications");
         defaultPlace("applications", "Applications", applications, "applications");
         for (const auto &place : QList<QPair<QStandardPaths::StandardLocation, QString>>{
-                 {QStandardPaths::DesktopLocation, "Desktop"}, {QStandardPaths::DocumentsLocation, "Documents"},
-                 {QStandardPaths::DownloadLocation, "Downloads"}, {QStandardPaths::HomeLocation, "Home"},
-                 {QStandardPaths::MusicLocation, "Music"}, {QStandardPaths::PicturesLocation, "Pictures"},
-                 {QStandardPaths::MoviesLocation, "Movies"}}) {
+                 {QStandardPaths::DesktopLocation, "Desktop"}, {QStandardPaths::MoviesLocation, "Movies"},
+                 {QStandardPaths::PicturesLocation, "Pictures"}, {QStandardPaths::MusicLocation, "Music"},
+                 {QStandardPaths::DocumentsLocation, "Documents"}, {QStandardPaths::DownloadLocation, "Downloads"},
+                 {QStandardPaths::HomeLocation, "Home"}}) {
             const QUrl url = QUrl::fromLocalFile(QStandardPaths::writableLocation(place.first));
             defaultPlace(place.second == "Movies" ? "videos" : place.second.toLower(), place.second, url,
                          place.second == "Movies" ? "videos" : place.second.toLower());

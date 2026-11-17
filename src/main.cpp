@@ -22,6 +22,7 @@
 #include "infohost.h"
 #include "alerts.h"
 #include "windowcontrols.h"
+#include "glasscontrols.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -272,7 +273,7 @@ static QIcon symbol(const QString &name) {
 class Material : public QWidget {
 public:
   bool blur = false;
-  int sidebarWidth = 256;
+  int sidebarWidth = 166;
   using QWidget::QWidget;
 
 protected:
@@ -281,10 +282,17 @@ protected:
     QColor tint = FinderAppearance::materialTint(); if (!blur) tint.setAlpha(255);
     p.fillRect(rect(), tint);
     if (objectName() == "finderHeader") {
-      // The sidebar material continues through its titlebar; the content
-      // toolbar has a quiet solid base beneath its grouped glass controls.
-      p.fillRect(QRect(sidebarWidth, 0, width() - sidebarWidth, height()),
-                 palette().color(QPalette::Base));
+      // Keep the content toolbar solid between controls, with actual desktop
+      // backdrop visible through the grouped glass capsules. Native KWin blur
+      // uses these same contours; there is no wallpaper stand-in or capture.
+      QPainterPath solid; solid.addRect(QRectF(sidebarWidth, 0, width() - sidebarWidth, height()));
+      if (blur) for (auto *child : findChildren<QWidget *>()) {
+        if (!child->isVisible() || !child->property("finderGlassSurface").toBool()) continue;
+        const QRectF bounds(QPointF(child->mapTo(this, QPoint())), QSizeF(child->size()));
+        solid = solid.subtracted(FinderGlass::contour(bounds.adjusted(.6, .6, -.6, -.6)));
+      }
+      p.setRenderHint(QPainter::Antialiasing);
+      p.fillPath(solid, palette().color(QPalette::Base));
     }
   }
 };
@@ -453,7 +461,7 @@ public:
     headerSidebar = new QWidget(header);
     auto *hs = new QHBoxLayout(headerSidebar);
     hs->setContentsMargins(5, 0, 6, 0);
-    hs->setSpacing(7);
+    hs->setSpacing(3);
     for (auto name : {"close", "minimize", "maximize"}) {
       auto *control = new WindowControl(QString(name), headerSidebar);
       hs->addWidget(control);
@@ -468,10 +476,10 @@ public:
     auto *sidebarButton = button("sidebar", "Show Sidebar", headerSidebar);
     sidebarButton->setObjectName("finderSidebarToggle");
     hs->addWidget(sidebarButton);
-    headerSidebar->setFixedWidth(244);
+    headerSidebar->setFixedWidth(154);
     hl->addWidget(headerSidebar);
     connect(sidebarButton, &QToolButton::clicked, this, [this] { namedActions["sidebar"]->trigger(); });
-    auto *nav = new QWidget;
+    auto *nav = new GlassCapsule(header);
     toolbarWidgets["navigation"] = nav;
     nav->setObjectName("navigationCapsule");
     auto *nl = new QHBoxLayout(nav);
@@ -506,7 +514,7 @@ public:
     folderTitle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     folderTitle->setMinimumWidth(50);
     hl->addWidget(folderTitle, 1);
-    modeBox = new QWidget;
+    modeBox = new GlassCapsule(header);
     toolbarWidgets["views"] = modeBox;
     modeBox->setObjectName("modeCapsule");
     auto *ml = new QHBoxLayout(modeBox);
@@ -540,6 +548,7 @@ public:
     arrange = button("sort", "Sort By", header);
     toolbarWidgets["sort"] = arrange;
     arrange->setObjectName("finderArrange");
+    arrange->setProperty("finderGlassSurface", true);
     arrange->setFixedWidth(44);
     auto *sortMenu = new QMenu(arrange);
     sortGroup = new QActionGroup(this);
@@ -611,7 +620,7 @@ public:
     }
     arrange->setPopupMode(QToolButton::InstantPopup);
     hl->addWidget(arrange);
-    auto *actionsCapsule = new QWidget(header);
+    auto *actionsCapsule = new GlassCapsule(header);
     toolbarWidgets["actions"] = actionsCapsule;
     actionsCapsule->setObjectName("actionsCapsule");
     auto *actionsLayout = new QHBoxLayout(actionsCapsule);
@@ -700,6 +709,7 @@ public:
     auto *searchButton = button("search", "Search", header);
     toolbarWidgets["search"] = searchButton;
     searchButton->setObjectName("finderSearchButton");
+    searchButton->setProperty("finderGlassSurface", true);
     searchButton->setFixedWidth(36);
     connect(searchButton, &QToolButton::clicked, this,
             [this] { showSearch(); });
@@ -967,7 +977,7 @@ public:
       searchSummary->setToolTip(info.value("detail").toString());
       searchSummary->setAccessibleDescription(info.value("coverage").toString() + ": " + info.value("detail").toString());
     });
-    body->setSizes({256, 844});
+    body->setSizes({166, 934});
     body->setStretchFactor(1, 1);
     outer->addWidget(body, 1);
     connect(body, &QSplitter::splitterMoved, this, [this] {
@@ -1018,7 +1028,7 @@ public:
     installScrolling(this);
     QSettings settings;
     restoreGeometry(settings.value("Window/geometry").toByteArray());
-    auto sizes = settings.value("Window/sidebar", 256).toInt();
+    auto sizes = settings.value("Window/sidebar", 166).toInt();
     body->setSizes({sizes, width() - sizes});
     uiReady = true;
     QTimer::singleShot(0, this, [this] { layoutHeader(); });
@@ -1106,7 +1116,7 @@ public:
     if (tabs->count() > 1 && original) { if (auto *b = qobject_cast<Browser *>(original)) states.remove(b); tabs->removeTab(tabs->indexOf(original)); original->deleteLater(); }
     tabs->setCurrentIndex(qBound(0, session.value("current").toInt(), tabs->count() - 1));
     restoreGeometry(QByteArray::fromBase64(session.value("geometry").toString().toLatin1()));
-    const int savedSidebar = qBound(120, session.value("sidebarWidth").toInt(256), qMax(120, width() - 200));
+    const int savedSidebar = qBound(120, session.value("sidebarWidth").toInt(166), qMax(120, width() - 200));
     body->setSizes({savedSidebar, qMax(200, width() - savedSidebar)});
     sidebar->setVisible(session.value("sidebar").toBool(true));
     namedActions["toolbar"]->setChecked(session.value("toolbar").toBool(true)); namedActions["sidebar"]->setChecked(!sidebar->isHidden()); namedActions["tabBar"]->setChecked(session.value("tabBar").toBool());
@@ -2278,7 +2288,7 @@ private:
     const bool toolbar = !namedActions.contains("toolbar") || namedActions["toolbar"]->isChecked();
     header->show(); header->setFixedHeight(toolbar ? 52 : 40);
     if (auto *layout = header->layout()) layout->setContentsMargins(12, toolbar ? 8 : 4, 12, toolbar ? 8 : 4);
-    const bool narrow = width() < 850 || search->isVisible();
+    const bool narrow = width() - (sidebar->isVisible() ? sidebar->width() : 106) < 600 || search->isVisible();
     const auto hidden = QSettings().value("Window/toolbarHidden").toStringList();
     modeBox->setVisible(toolbar && !narrow && !hidden.contains("views"));
     modePopup->setVisible(toolbar && narrow && !hidden.contains("views"));
@@ -2286,6 +2296,10 @@ private:
     folderTitle->setVisible(!hidden.contains("title"));
     toolbarWidgets.value("actions")->setVisible(toolbar && !hidden.contains("actions"));
     toolbarWidgets.value("search")->setVisible(toolbar && !hidden.contains("search"));
+    // Sidebar remains available through View/shortcut and when hidden. Avoid
+    // an extra icon competing with the reference titlebar in ordinary use.
+    if (auto *toggle = headerSidebar->findChild<QToolButton *>("finderSidebarToggle"))
+      toggle->setVisible(!sidebar->isVisible() || !toolbar);
     headerSidebar->setFixedWidth(
         sidebar->isVisible() ? qMax(94, sidebar->width() - 12) : 94);
     arrange->setVisible(toolbar && width() >= 740 && !search->isVisible() && !hidden.contains("sort"));
@@ -2343,7 +2357,7 @@ private:
   }
   QToolButton *button(const QString &name, const QString &label,
                       QWidget *parent) {
-    auto *b = new QToolButton(parent);
+    auto *b = new GlassToolButton(parent);
     b->setProperty("finderSymbol", name);
     b->setIcon(symbol(name));
     b->setIconSize({20, 20});
@@ -2493,7 +2507,7 @@ private:
     browser()->setFoldersFirst(
         QSettings().value("View/foldersFirst", false).toBool());
     browser()->setGroup(Browser::Group(settings.value("group", 0).toInt()));
-    browser()->setGridSpacing(settings.value("gridSpacing", 16).toInt());
+    browser()->setGridSpacing(settings.value("gridSpacing", 7).toInt());
     browser()->setTextSize(settings.value("textSize", 13).toInt());
     browser()->setLabelPosition(Browser::LabelPosition(settings.value("labelPosition", 0).toInt()));
     browser()->setIconPreviewsShown(settings.value("iconPreviews", true).toBool());
@@ -2958,6 +2972,11 @@ private:
     if (sidebar->isVisible())
       region += QRegion(
           sidebar->rect().translated(sidebar->mapTo(this, QPoint(0, 0))));
+    if (header->isVisible()) for (auto *child : header->findChildren<QWidget *>()) {
+      if (!child->isVisible() || !child->property("finderGlassSurface").toBool()) continue;
+      const QRectF bounds(QPointF(child->mapTo(this, QPoint())), QSizeF(child->size()));
+      region += QRegion(FinderGlass::contour(bounds.adjusted(.6, .6, -.6, -.6)).toFillPolygon().toPolygon());
+    }
     // The KDE Wayland API takes wl_surface units. QT_SCALE_FACTOR adds
     // application zoom above the native output scale; convert that once.
     qreal surfaceScale = 1;
@@ -3001,8 +3020,7 @@ private:
     QString sheet = R"(
         QWidget{color:#ededf2;font-weight:400;} QMainWindow{background:transparent;border:0;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}
-        #navigationCapsule,#modeCapsule,#actionsCapsule{background:rgba(255,255,255,12);border:1px solid rgba(255,255,255,25);border-radius:18px;}
-        #finderArrange,#finderSearchButton{background:rgba(255,255,255,8);border:1px solid rgba(255,255,255,22);border-radius:18px;}
+        #navigationCapsule,#modeCapsule,#actionsCapsule,#finderArrange,#finderSearchButton{background:transparent;border:0;}
         QToolButton{border:0;border-radius:16px;background:transparent;} QToolButton:hover{background:rgba(255,255,255,20);} QToolButton:checked{background:rgba(255,255,255,35);} QToolButton:disabled{opacity:.4;}
         QToolButton::menu-indicator{image:none;width:0;height:0;}
         #finderPlaces{background:transparent;border:0;}
@@ -3030,7 +3048,7 @@ private:
     for (auto it = colors.cbegin(); it != colors.cend(); ++it) sheet.replace(it.key(), css(it.value()));
     if (!FinderAppearance::dark()) { sheet.replace("rgba(255,255,255,", "rgba(0,0,0,"); sheet.replace("color:white", "color:" + css(palette.color(QPalette::Text))); }
     sheet += QString("QToolButton:focus,QPushButton:focus,QLineEdit:focus,QComboBox:focus{border:1px solid %1;} QCheckBox:focus{outline:1px solid %1;} QToolButton:disabled{color:%2;}").arg(css(FinderAppearance::color(FinderAppearance::Focus)), css(palette.color(QPalette::Disabled, QPalette::Text)));
-    if (FinderAppearance::highContrast()) sheet += QString("#navigationCapsule,#modeCapsule,#actionsCapsule,QMenu,QHeaderView::section{border:1px solid %1;} QScrollBar::handle{background:%1;}").arg(css(FinderAppearance::color(FinderAppearance::Border)));
+    if (FinderAppearance::highContrast()) sheet += QString("QMenu,QHeaderView::section{border:1px solid %1;} QScrollBar::handle{background:%1;}").arg(css(FinderAppearance::color(FinderAppearance::Border)));
     setStyleSheet(sheet);
   }
   QAction *addAction(QMenu *m, const QString &name, const QString &text,
@@ -3702,7 +3720,9 @@ public slots:
       for (int row = 0; row < qMin(10000, view->model()->rowCount(view->rootIndex())); ++row) {
         const auto index = view->model()->index(row, 0, view->rootIndex());
         files << QJsonObject{{"url", index.data(KDirModel::FileItemRole).value<KFileItem>().url().toString()},
-                            {"name", index.data(Qt::DisplayRole).toString()}, {"target", index.data(KDirModel::FileItemRole).value<KFileItem>().targetUrl().toString()}};
+                            {"name", index.data(Qt::DisplayRole).toString()}, {"target", index.data(KDirModel::FileItemRole).value<KFileItem>().targetUrl().toString()},
+                            {"x", view->visualRect(index).x()}, {"y", view->visualRect(index).y()},
+                            {"width", view->visualRect(index).width()}, {"height", view->visualRect(index).height()}};
       }
     }
     return QString::fromUtf8(QJsonDocument(files).toJson(QJsonDocument::Compact));
