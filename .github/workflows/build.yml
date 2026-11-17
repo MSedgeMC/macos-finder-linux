@@ -20,8 +20,7 @@ jobs:
     timeout-minutes: 40
     env:
       DEBIAN_FRONTEND: noninteractive
-      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_DIR: /tmp/finder-ccache
       CCACHE_COMPILERCHECK: content
     steps:
       - name: Install matching Ubuntu Qt and KDE dependencies
@@ -29,7 +28,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates git build-essential cmake ninja-build ccache gettext \
-            python3 dbus-x11 unzip desktop-file-utils shared-mime-info \
+            python3 dbus dbus-x11 unzip udisks2 desktop-file-utils shared-mime-info \
             qt6-base-dev qt6-base-dev-tools qt6-pdf-dev qt6-multimedia-dev \
             qt6-declarative-dev qt6-image-formats-plugins qt6-wayland \
             libkf6kio-dev libkf6coreaddons-dev libkf6itemviews-dev \
@@ -38,9 +37,10 @@ jobs:
             libkf6service-dev libkf6solid-dev libkf6filemetadata-dev libkf6archive-dev \
             kio-extras kimageformat6-plugins ffmpeg
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: compiler-cache
         with:
-          path: .cache/ccache
+          path: /tmp/finder-ccache
           key: finder-ubuntu26-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}-${{ github.sha }}
           restore-keys: |
             finder-ubuntu26-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt') }}-
@@ -51,12 +51,18 @@ jobs:
           dbus-daemon --system --fork
       - name: Configure
         run: |
+          echo "CCACHE_BASEDIR=$PWD" >> "$GITHUB_ENV"
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_INSTALL_PREFIX=/usr
       - name: Build application and test executables
         run: cmake --build build-ci --parallel 2
+      - uses: actions/cache/save@v4
+        if: always() && steps.compiler-cache.outputs.cache-hit != 'true'
+        with:
+          path: /tmp/finder-ccache
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
       - name: Run isolated component tests
         run: ctest --test-dir build-ci --output-on-failure --parallel 1 --output-junit test-results.xml
       - name: Stage verified binary and test executables
