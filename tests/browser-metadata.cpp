@@ -93,8 +93,8 @@ int main(int argc, char **argv) {
     auto *tree = qobject_cast<QTreeView *>(browser.activeView());
     check(tree && browser.listColumnCount() == Browser::ListColumnCount && browser.directoryModel()->columnCount() == Browser::ListColumnCount,
           "extended model keeps native directory API");
-    check(browser.visibleListColumns() == QList<int>{Browser::NameColumn, Browser::SizeColumn, Browser::DateModifiedColumn, Browser::KindColumn},
-          "original default visible columns preserved");
+    check(browser.visibleListColumns() == QList<int>{Browser::NameColumn, Browser::DateModifiedColumn, Browser::SizeColumn, Browser::KindColumn},
+          "Finder reference columns and order");
     browser.setListColumnVisible(Browser::DateCreatedColumn, true);
     browser.setListColumnVisible(Browser::TagsColumn, true);
     browser.setListColumnVisible(Browser::NameColumn, false);

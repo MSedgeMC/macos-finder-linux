@@ -46,6 +46,7 @@
 #include <QPointer>
 #include <QPersistentModelIndex>
 #include <QProcess>
+#include <QProxyStyle>
 #include <QPushButton>
 #include <QQueue>
 #include <QScrollBar>
@@ -1244,9 +1245,35 @@ public:
     }
 };
 
+// Native Qt supplies the visible row parity and selection to its style.
+// Adapt only the row panel primitive; text, branches and focus stay native.
+class FinderListStyle final : public QProxyStyle {
+public:
+    FinderListStyle() : QProxyStyle(QStringLiteral("Fusion")) {}
+    bool paintingRow = false;
+    bool selected = false;
+    int heading = 0;
+    mutable bool alternate = false;
+    void drawPrimitive(PrimitiveElement element, const QStyleOption *option, QPainter *painter, const QWidget *widget = nullptr) const override {
+        if (element != PE_PanelItemViewRow) { QProxyStyle::drawPrimitive(element, option, painter, widget); return; }
+        const auto *item = qstyleoption_cast<const QStyleOptionViewItem *>(option);
+        const auto *tree = qobject_cast<const QTreeView *>(widget);
+        if (!paintingRow || !item || !tree) return;
+        alternate = item->features & QStyleOptionViewItem::Alternate;
+        if (!selected && !alternate) return;
+        painter->save(); painter->setClipRect(item->rect, Qt::IntersectClip);
+        painter->setRenderHint(QPainter::Antialiasing); painter->setPen(Qt::NoPen);
+        painter->setBrush(selected ? FinderAppearance::color(FinderAppearance::Selection) : FinderAppearance::palette().color(QPalette::AlternateBase));
+        painter->drawRoundedRect(QRectF(10, item->rect.top() + heading, tree->viewport()->width() - 20, item->rect.height() - heading), 8, 8);
+        painter->restore();
+    }
+};
+
 class FinderListView : public DropView<QTreeView> {
 public:
-    using DropView::DropView;
+    explicit FinderListView(QWidget *parent = nullptr) : DropView(parent), rowStyle(new FinderListStyle) {
+        rowStyle->setParent(this); setStyle(rowStyle);
+    }
     QRect visualRect(const QModelIndex &index) const override {
         QRect rect = QTreeView::visualRect(index);
         if (index.data(SectionStartRole).toBool()) rect.setTop(rect.top() + SectionHeight);
@@ -1328,25 +1355,19 @@ protected:
     }
     void drawRow(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         QStyleOptionViewItem content(option);
-        const bool selected = option.state & QStyle::State_Selected;
-        parityIndex = index;
-        parityAlternate = option.features & QStyleOptionViewItem::Alternate;
-        QRect stripe(0, option.rect.top(), viewport()->width(), option.rect.height());
-        if (index.data(SectionStartRole).toBool()) stripe.setTop(stripe.top() + SectionHeight);
-        if (selected || (option.features & QStyleOptionViewItem::Alternate))
-            paintStripe(painter, stripe, selected ? FinderAppearance::color(FinderAppearance::Selection) : option.palette.color(QPalette::AlternateBase));
+        const bool selected = selectionModel() && selectionModel()->isSelected(index);
+        rowStyle->paintingRow = true;
+        rowStyle->selected = selected;
+        rowStyle->heading = index.data(SectionStartRole).toBool() ? SectionHeight : 0;
         content.features &= ~QStyleOptionViewItem::Alternate;
         content.state &= ~QStyle::State_Selected;
         content.backgroundBrush = Qt::NoBrush;
         content.palette.setColor(QPalette::AlternateBase, Qt::transparent);
         if (selected) content.palette.setColor(QPalette::Text, FinderAppearance::color(FinderAppearance::SelectedText));
-        painter->save();
-        if (selected || (option.features & QStyleOptionViewItem::Alternate)) {
-            QPainterPath clip; clip.addRoundedRect(QRectF(stripe).adjusted(10, 0, -10, 0), 8, 8);
-            painter->setClipPath(clip, Qt::IntersectClip);
-        }
         QTreeView::drawRow(painter, content, index);
-        painter->restore();
+        rowStyle->paintingRow = false;
+        parityIndex = index;
+        parityAlternate = rowStyle->alternate;
         if (index.data(SectionStartRole).toBool()) {
             paintHeading(painter, QRect(0, option.rect.top(), viewport()->width(), SectionHeight),
                          option.palette, option.font, index.data(KCategorizedSortFilterProxyModel::CategoryDisplayRole).toString());
@@ -1363,6 +1384,7 @@ private:
         painter->setPen(Qt::NoPen); painter->setBrush(color);
         painter->drawRoundedRect(QRectF(rect).adjusted(10, 0, -10, 0), 8, 8); painter->restore();
     }
+    FinderListStyle *rowStyle;
     mutable QPersistentModelIndex parityIndex;
     mutable bool parityAlternate = false;
     bool onHeading(const QPoint &point) const {
@@ -2347,7 +2369,6 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     const auto updateAppearance = [this] {
         setStyleSheet(QStringLiteral(
             "#finderBrowser QAbstractItemView{background:palette(base);color:palette(text);border:0;}"
-            "#finderBrowser QTreeView{alternate-background-color:palette(alternate-base);}"
             "#finderColumnView::item:selected{background:%1;color:%2;}"
             "#finderBrowser QColumnView::item{height:24px;}"
             "#finderGalleryPreview,#finderColumnPreview,#finderSidePreview{background:palette(base);}"
