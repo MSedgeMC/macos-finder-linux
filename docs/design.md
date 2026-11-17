@@ -16,8 +16,9 @@ header and sidebar. A 16px continuous outer contour with a 60% smoothing transit
 The sidebar and content adjoin without a reserved splitter strip. The native
 resize handle overlaps the panes, retaining its grab area without exposing the
 desktop between them. The content stack has an opaque base across both folder
-and search pages. Navigation and four-view capsules measure 73×36 and 142×36
-logical pixels respectively, matching the audited generic window-kit targets.
+and search pages. Navigation and four-view capsules measure 73×36 and 158×36
+logical pixels respectively. The larger four-view width follows the later
+user-supplied Finder screenshot rather than the generic window-kit size.
 
 Icons, List, Columns and Gallery are separate native views. At the default
 64px icon size, Icons uses a 111px horizontal pitch and middle-elides the
@@ -47,22 +48,26 @@ state; the overview is a portable Qt interaction, not a macOS window service.
 These images are captures of this Linux implementation using disposable
 fixtures, not Apple reference images. They use disposable files and hide filesystem breadcrumbs and status paths.
 
-The app defaults to left traffic-light window controls and 13px SF Pro Display
-when that font is already installed, with Inter/sans-serif fallback. It installs
-no fonts and leaves global desktop font and cursor settings unchanged. Icons
+The app defaults to left traffic-light window controls with persistent symbols
+and the user's selected 13px Ubuntu Medium font, with sans-serif fallback. It
+installs no fonts and leaves global desktop font and cursor settings unchanged. Icons
 default to 64px; path and status bars start hidden and can be enabled in View.
 The chrome keeps native move, edge resize with cursor feedback, minimize, fill/restore and close behavior. Green click and keyboard activation enter/exit full screen; Option-click fills/restores, and right-click opens window layouts. Leaving full screen preserves prior maximization. Hidden toolbar mode retains a 40px title/control/menu row and independent sidebar. Activating a window preserves its layout.
 
 ## Material and native behavior
 
-The header and sidebar request region-limited KWin blur of the actual compositor
-backdrop. They retain a readable tinted fallback when blur is unavailable.
+The sidebar and the header's sidebar segment request region-limited KWin blur
+of the actual compositor backdrop. They use a restrained dark neutral tint,
+reduced backdrop saturation and a readable solid fallback when blur is unavailable.
+The content toolbar remains an opaque `#1e1e1e` surface in normal dark mode;
+individual controls never expose holes into the unrelated desktop behind it.
 Wallpaper is not substituted for windows behind the application. The coating approximates a glass appearance; genuine backdrop
 refraction and Apple's proprietary material renderer are not implemented.
 Foreground text, icons and file content remain crisp. Shared toolbar capsules
 use an original directional coating, contour highlights and native button
-hover, pressed, checked and keyboard-focus states. The capsule regions receive
-KWin backdrop blur; they do not capture wallpaper or add continuous sampling.
+hover, pressed, checked and keyboard-focus states. Capsules are neutral,
+content-backed controls with restrained meniscus shading; they do not capture
+wallpaper or add continuous sampling.
 High contrast and reduced transparency use readable opaque fills. These
 controls do not implement refraction or Apple's material interaction physics.
 
@@ -130,6 +135,11 @@ The macOS 27 design resources were reviewed during development in November
 Linux material design also consulted
 [Liquid Glass KDE Widgets](https://github.com/jaxparrow07/liquidglass-kde-widgets)
 and [liquid_glass_widgets](https://github.com/sdegenaar/liquid_glass_widgets).
+The additional user-selected
+[macos-tahoe-liquid-kde](https://github.com/lestercorderomurillo/macos-tahoe-liquid-kde)
+provided a concrete Acrylic Glass compositor-source reference for actual
+backdrop sampling, edge-gated refraction and separate component presets.
+No code, upstream installer or theme assets were imported from that project.
 Their platform shaders and rendering APIs are references, not compatible Qt
 assets or evidence of equality with current macOS.
 
