@@ -352,7 +352,9 @@ option. No untrusted rich HTML is executed.
 Finder’s desktop service. It reuses image/PDF/text viewing, PDF selection/search,
 printing, native image editing/export, PDF creation, native conflicts and Undo.
 The document sidebar loads visible native thumbnails in eight-item batches,
-retains up to 64 nearby decoded thumbnails and stops when idle. Menus support
+retains up to 64 nearby decoded thumbnails and stops when idle. Thumbnails sit
+above middle-elided filenames with full-path tooltips, and the borderless native
+sidebar handle is shared with Finder. Menus support
 Open/Recent, view controls, text Find and a separate Settings panel. Source files
 remain unchanged during edits and export. The existing continuous contour and
 traffic lights are shared with Finder. This is a Linux approximation inspired by

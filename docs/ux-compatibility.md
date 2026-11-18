@@ -48,3 +48,25 @@ text/vector feedback. Rounded errors and glossy traffic lights are original
 Linux adaptations; native KDE conflicts/authentication and the existing window
 session behavior remain authoritative. Real-worker and staged-binary tests
 are documented in [validation](validation.md).
+
+
+The 2026-11-18 completion pass adds mode-aware Sort and live View Options,
+Use as Defaults, Gallery filename visibility, compact four-section Settings,
+Preview Options, image Actual Size and wrapped plain text. Unavailable
+Date Added/Last Opened sorts stay disabled; filesystem access time is Accessed.
+
+A separate Preview application uses the same bounded image/PDF/text engine,
+with native document/page thumbnails, PDF search/selection, text Find, printing,
+Open Recent, source-preserving image editing/export and native Undo. Its sidebar
+uses a shared borderless resize handle and thumbnail-above-label layout.
+The scoped installer can associate seven image/PDF formats; office and text
+editing keep their existing handlers. It does not provide OCR, PDF forms or
+structural PDF markup, Apple signatures, Live Photos or verified HDR parity.
+
+Native session restoration exposed a teardown fault: KCoreDirLister cancellation
+could invoke Browser callbacks after private state had been released. Child
+callbacks now disconnect before that state is destroyed. The new component
+regression dispatches native cancellation during child teardown, alongside
+pending-listing destruction; the desktop feature harness checks full session
+restart and restoration. Final build/deployment evidence is recorded in
+[validation](validation.md).

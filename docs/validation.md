@@ -550,11 +550,19 @@ integration routes were backed up. The Finder preferences file retained its
 exact SHA256 through deployment. Only the file-manager daemon restarted; no
 working-screen input or compositor restart was performed.
 
-### Finder/Preview completion pass, 2026-11-18 (verification in progress)
+### Finder/Preview completion pass, 2026-11-18 (final verification pending)
 
-All compilation runs on GitHub Actions. The initial full application compiled;
-24 of 25 component suites passed, including the new standalone viewer and
-viewer installer. One appearance test produced an offscreen-plugin size-hint
-warning after its new Gallery layout check; the test fixture is being corrected.
-A later successful run and exact-artifact native presentation checks are required
-before installation. No production files have been changed by this pass yet.
+All compilation runs on GitHub Actions. The first verified functional artifact
+passed 25/25 component suites, six private-Wayland presentation groups and
+three standalone image/PDF/text launch captures without acquiring Finder or
+FileManager1 services. The thumbnail-sidebar correction also passed 25/25
+component suites.
+
+The broad private-Wayland suite passed 33 checks, then exposed a real Browser
+teardown crash during session restoration. A native debugger traced
+KCoreDirLister's destructor cancellation to a callback using destroyed private
+state. The fix disconnects child callbacks before that state is released. New
+component coverage explicitly dispatches cancellation during child teardown
+and destroys pending listings. The final artifact and full session-restoration
+check must pass before deployment. No production files have changed in this
+pass yet.
