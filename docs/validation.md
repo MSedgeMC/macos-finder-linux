@@ -549,3 +549,12 @@ executable changed among nine integration files. The previous executable and
 integration routes were backed up. The Finder preferences file retained its
 exact SHA256 through deployment. Only the file-manager daemon restarted; no
 working-screen input or compositor restart was performed.
+
+### Finder/Preview completion pass, 2026-11-18 (verification in progress)
+
+All compilation runs on GitHub Actions. The initial full application compiled;
+24 of 25 component suites passed, including the new standalone viewer and
+viewer installer. One appearance test produced an offscreen-plugin size-hint
+warning after its new Gallery layout check; the test fixture is being corrected.
+A later successful run and exact-artifact native presentation checks are required
+before installation. No production files have been changed by this pass yet.
