@@ -19,6 +19,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QSettings>
+#include <QDialog>
 #include <iostream>
 #include <functional>
 namespace {
@@ -51,7 +52,11 @@ int main(int argc, char **argv) {
     window.findChild<QAction *>("previewAppNext")->trigger();
     auto *text = pane->findChild<QTextEdit *>("previewText");
     check(waitFor([&] { return text->toPlainText().contains("Readable standalone document"); }) && sidebar->currentRow() == 2, "text opens asynchronously and advances exact URL");
-    check(!window.findChild<QAction *>("previewAppNext")->isEnabled() && !window.findChild<QAction *>("previewAppFind")->isEnabled(), "last item and text capabilities");
+    check(!window.findChild<QAction *>("previewAppNext")->isEnabled() && window.findChild<QAction *>("previewAppFind")->isEnabled(), "last item and text Find capabilities");
+    window.findChild<QAction *>("previewAppFind")->trigger();
+    auto *find = window.findChild<QDialog *>("previewAppTextFind"); check(find, "text Find opens native panel"); find->close();
+    window.findChild<QAction *>("previewAppSettings")->trigger();
+    auto *preferences = window.findChild<QDialog *>("previewAppPreferences"); check(preferences, "standalone Settings panel"); preferences->close();
     window.findChild<QAction *>("previewAppThumbnails")->trigger(); check(sidebar->isHidden(), "thumbnail sidebar toggles");
     sidebar->setCurrentRow(0); check(waitFor([&] { return pane->originalImageSize() == image.size(); }), "sidebar primary selection follows image");
     QMimeData mime; mime.setUrls({pdfUrl}); QDragEnterEvent enter(QPoint(50, 50), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);

@@ -2119,6 +2119,7 @@ void PreviewPane::showCurrent()
     m_page = 0;
     m_image = QImage();
     resetZoom();
+    if (property("standalonePreview").toBool()) m_actualSize = QSettings().value("Viewer/imageScale", "fit").toString() == "actual";
     static_cast<PreviewImageLabel *>(m_picture)->raster = {};
     m_picture->clear();
     m_text->clear();

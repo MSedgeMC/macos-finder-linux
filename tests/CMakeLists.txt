@@ -170,7 +170,7 @@ add_test(NAME finder-browser-layout-test COMMAND "${Python3_EXECUTABLE}" "${CMAK
 set_tests_properties(finder-browser-layout-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
 
 add_executable(finder-viewer-test viewer.cpp
-    ../src/viewer.cpp ../src/viewer.h ../src/windowframe.cpp ../src/gestures.cpp ../src/gestures.h ../src/preview.cpp ../src/preview.h
+    ../src/viewer.cpp ../src/viewer.h ../src/scroll.cpp ../src/windowframe.cpp ../src/gestures.cpp ../src/gestures.h ../src/preview.cpp ../src/preview.h
     ../src/quickactions.cpp ../src/quickactions.h ../src/appearance.cpp ../src/appearance.h
     ../src/tags.cpp ../src/preferences.cpp)
 target_include_directories(finder-viewer-test PRIVATE "${PROJECT_SOURCE_DIR}/src")

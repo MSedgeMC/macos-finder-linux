@@ -24,6 +24,8 @@ protected:
     void dropEvent(QDropEvent *event) override;
 private:
     void openFiles();
+    void settingsDialog();
+    void reloadSettings();
     void updateActions();
     void populateRecent();
     void loadThumbnails();

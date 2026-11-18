@@ -8,6 +8,15 @@
 #include "windowcontrols.h"
 #include "windowframe.h"
 #include "gestures.h"
+#include "scroll.h"
+#include <QAbstractScrollArea>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QPushButton>
+#include <QLabel>
+#include <QTextDocument>
 #include <QWindow>
 #include <QMouseEvent>
 #include "alerts.h"
@@ -79,6 +88,10 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(gestures, &FinderGestures::Controller::zoomRequested, this, [this](QWidget *, qreal factor, const QPointF &) { m_preview->setZoomFactor(m_preview->zoomFactor() * factor); });
     splitter->setStretchFactor(0, 0); splitter->setStretchFactor(1, 1); splitter->setSizes({166, 794});
     m_edits = new QuickActions(this);
+    auto *application = menus->addMenu(tr("Preview"));
+    auto *preferences = application->addAction(tr("Settings…"), this, [this] { settingsDialog(); });
+    preferences->setObjectName("previewAppSettings"); preferences->setShortcuts({QKeySequence("Ctrl+,"), QKeySequence("Meta+,")});
+    application->addAction(tr("Quit Preview"), this, &QWidget::close);
     auto *file = menus->addMenu(tr("File"));
     auto *open = file->addAction(tr("Open…"), this, [this] { openFiles(); }); open->setObjectName("previewAppOpen");
     open->setShortcuts({QKeySequence("Ctrl+O"), QKeySequence("Meta+O")});
@@ -109,6 +122,24 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *find = view->addAction(tr("Find…"), this, [this] {
         if (m_preview->pdfPageCount() > 0) {
             auto *search = m_preview->findChild<QLineEdit *>("previewPdfSearch"); search->setFocus(); search->selectAll();
+        } else if (auto *text = m_preview->findChild<QTextEdit *>("previewText"); text && text->isVisible()) {
+            if (auto *existing = findChild<QDialog *>("previewAppTextFind")) { existing->show(); existing->raise(); return; }
+            auto *dialog = new QDialog(this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setObjectName("previewAppTextFind"); dialog->setWindowTitle(tr("Find"));
+            auto *layout = new QVBoxLayout(dialog); auto *query = new QLineEdit(dialog); query->setObjectName("previewAppTextQuery"); query->setPlaceholderText(tr("Find in document")); layout->addWidget(query);
+            auto *message = new QLabel(dialog); layout->addWidget(message);
+            auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); auto *next = buttons->addButton(tr("Next"), QDialogButtonBox::ActionRole); layout->addWidget(buttons);
+            QPointer<QTextEdit> target(text); const auto source = m_preview->currentUrl();
+            auto search = [this, target, source, query, message] {
+                if (!target || m_preview->currentUrl() != source) return;
+                if (query->text().isEmpty()) return;
+                bool found = target->find(query->text());
+                if (!found) { auto cursor = target->textCursor(); cursor.movePosition(QTextCursor::Start); target->setTextCursor(cursor); found = target->find(query->text()); }
+                message->setText(found ? QString() : tr("No matches"));
+            };
+            connect(next, &QPushButton::clicked, dialog, search); connect(query, &QLineEdit::returnPressed, dialog, search);
+            connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+            connect(m_preview, &PreviewPane::currentUrlChanged, dialog, [dialog] { dialog->close(); });
+            dialog->show(); query->setFocus();
         }
     }); find->setObjectName("previewAppFind"); find->setShortcuts({QKeySequence("Ctrl+F"), QKeySequence("Meta+F")});
     view->addSeparator();
@@ -137,6 +168,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
         setWindowTitle(url.isEmpty() ? tr("Preview") : url.fileName() + tr(" — Preview")); updateActions();
     });
     connect(m_preview, &PreviewPane::printReadinessChanged, this, [this] { updateActions(); });
+    connect(m_preview->findChild<QTextEdit *>("previewText"), &QTextEdit::textChanged, this, [this] { QTimer::singleShot(0, this, [this] { updateActions(); }); });
     connect(m_preview, &PreviewPane::pdfPageChanged, this, [this] { updateActions(); });
     connect(m_preview, &PreviewPane::actionError, this, [this](const QUrl &, const QString &error) { FinderAlert::showError(this, tr("The document couldn’t be opened."), error); });
     connect(m_edits, &QuickActions::busyChanged, this, [this] { updateActions(); });
@@ -153,7 +185,28 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(&m_thumbnailTimer, &QTimer::timeout, this, [this] { loadThumbnails(); });
     connect(m_sidebar->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_thumbnailTimer.start(); });
     connect(m_preview, &PreviewPane::printReadinessChanged, this, [this] { m_thumbnailTimer.start(); });
-    setUrls(urls);
+    reloadSettings(); setUrls(urls);
+}
+void ViewerWindow::reloadSettings() {
+    QSettings settings;
+    m_preview->setTextWrapping(settings.value("Viewer/wrapText", true).toBool());
+    auto *sidebar = findChild<QAction *>("previewAppThumbnails"); sidebar->setChecked(settings.value("Viewer/showThumbnails", true).toBool());
+    m_sidebar->setVisible(sidebar->isChecked());
+    for (auto *area : findChildren<QAbstractScrollArea *>()) FinderScroll::install(area, FinderScroll::optionsFromPreferences());
+}
+void ViewerWindow::settingsDialog() {
+    if (auto *existing = findChild<QDialog *>("previewAppPreferences")) { existing->raise(); existing->activateWindow(); return; }
+    auto *dialog = new QDialog(this); dialog->setObjectName("previewAppPreferences"); dialog->setWindowTitle(tr("Preview Settings")); dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *form = new QFormLayout(dialog); form->setContentsMargins(24, 20, 24, 20); form->setSpacing(14);
+    auto *scale = new QComboBox(dialog); scale->setObjectName("previewAppDefaultScale"); scale->addItem(tr("Fit to Window"), "fit"); scale->addItem(tr("Actual Size"), "actual");
+    scale->setCurrentIndex(QSettings().value("Viewer/imageScale", "fit").toString() == "actual" ? 1 : 0); form->addRow(tr("When opening an image:"), scale);
+    connect(scale, &QComboBox::currentIndexChanged, dialog, [scale] { QSettings().setValue("Viewer/imageScale", scale->currentData()); });
+    for (const auto &entry : QList<QPair<QString, QString>>{{"showThumbnails", tr("Show document thumbnails")}, {"wrapText", tr("Wrap plain text documents")}}) {
+        auto *box = new QCheckBox(entry.second, dialog); box->setObjectName("previewAppSetting_" + entry.first); box->setChecked(QSettings().value("Viewer/" + entry.first, true).toBool()); form->addRow(box);
+        connect(box, &QCheckBox::toggled, dialog, [this, key = entry.first](bool enabled) { QSettings().setValue("Viewer/" + key, enabled); reloadSettings(); });
+    }
+    auto *note = new QLabel(tr("Image edits and exports create a new file. The original document is preserved."), dialog); note->setWordWrap(true); form->addRow(note);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); form->addRow(buttons); connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close); dialog->open();
 }
 ViewerWindow::~ViewerWindow() {
     ++m_thumbnailGeneration; m_thumbnailTimer.stop();
@@ -196,7 +249,8 @@ void ViewerWindow::updateActions() {
     findChild<QAction *>("previewAppPrevious")->setEnabled(row > 0);
     findChild<QAction *>("previewAppNext")->setEnabled(row >= 0 && row + 1 < list.size());
     findChild<QAction *>("previewAppPrint")->setEnabled(m_preview->canPrintCurrent());
-    findChild<QAction *>("previewAppFind")->setEnabled(m_preview->pdfPageCount() > 0);
+    auto *text = m_preview->findChild<QTextEdit *>("previewText");
+    findChild<QAction *>("previewAppFind")->setEnabled(m_preview->pdfPageCount() > 0 || (text && text->isVisible() && !text->toPlainText().isEmpty()));
     const auto capabilities = QuickActions::actionsForUrls({m_preview->currentUrl()});
     bool image = false; for (const auto &capability : capabilities) if (capability.action == FinderQuickActions::Action::ConvertImage) image = capability.enabled;
     findChild<QAction *>("previewAppExport")->setEnabled(image && !m_edits->busy());
