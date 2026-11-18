@@ -20,7 +20,8 @@ public:
         Header, HeaderText, SecondaryText, Border, Focus, Accent,
         Selection, SelectedText, IconSelection, IconLabelSelection,
         SidebarSelection, SidebarHover, ScrollHandle, Error,
-        MaterialEdge, MaterialShadow, ToolbarSurface, ToolbarActive, ToolbarEdge
+        MaterialEdge, MaterialShadow, ToolbarSurface, ToolbarActive, ToolbarEdge,
+        SidebarGlyph
     };
     Q_ENUM(Role)
 
@@ -35,6 +36,7 @@ public:
     static bool highContrast();
     static bool reduceTransparency();
     static QColor materialTint();
+    static qreal materialBackdropSaturation();
     static QColor color(Role role);
 
 signals:

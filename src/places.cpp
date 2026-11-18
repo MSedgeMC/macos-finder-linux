@@ -162,7 +162,7 @@ public:
             const bool gray = glyph == "trash" || glyph == "device";
             const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
             p->setPen(QPen(contrastSelection ? option.palette.color(QPalette::HighlightedText)
-                          : gray ? option.palette.color(QPalette::PlaceholderText) : FinderAppearance::color(FinderAppearance::Accent),
+                          : gray ? option.palette.color(QPalette::PlaceholderText) : FinderAppearance::color(FinderAppearance::SidebarGlyph),
                            1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p->setBrush(Qt::NoBrush); p->drawPath(placeGlyphs().value(glyph)); p->restore();
         }

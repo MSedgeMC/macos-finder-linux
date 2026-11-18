@@ -129,10 +129,16 @@ bool FinderAppearance::reduceTransparency() { return appearance && appearance->m
 QColor FinderAppearance::materialTint()
 {
     QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#151412" : "#f2f2f5"));
-    // Finder's sidebar is a dark navigation surface with a restrained live
-    // backdrop contribution. The toolbar has its own content-backed coating.
-    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 232 : 240));
+    // A modestly transmitting frost lets native blur reveal broad backdrop
+    // colors while retaining the reference's dark neutral navigation tint.
+    // The toolbar has its own content-backed coating.
+    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 212 : 232));
     return tint;
+}
+
+qreal FinderAppearance::materialBackdropSaturation()
+{
+    return reduceTransparency() || highContrast() ? 1.0 : (dark() ? .35 : .7);
 }
 
 QColor FinderAppearance::color(Role role)
@@ -140,7 +146,7 @@ QColor FinderAppearance::color(Role role)
     const QPalette p = palette();
     switch (role) {
     case Header: return highContrast() ? p.color(QPalette::Window) : QColor(dark() ? "#29292b" : "#eaeaf0");
-    case HeaderText: return highContrast() ? p.color(QPalette::Text) : QColor(dark() ? "#d7d7da" : "#3e3e45");
+    case HeaderText: return highContrast() ? p.color(QPalette::Text) : QColor(dark() ? "#e6e6e8" : "#3e3e45");
     case SecondaryText: return p.color(QPalette::PlaceholderText);
     case Border: return p.color(QPalette::Mid);
     case Focus: return highContrast() ? p.color(QPalette::Highlight) : QColor(dark() ? "#6ca4f8" : "#0866d9");
@@ -162,8 +168,9 @@ QColor FinderAppearance::color(Role role)
     case MaterialEdge: return highContrast() ? p.color(QPalette::Mid) : QColor(dark() ? 255 : 0, dark() ? 255 : 0, dark() ? 255 : 0, 26);
     case MaterialShadow: return highContrast() ? p.color(QPalette::Mid) : QColor(0, 0, 0, dark() ? 60 : 25);
     case ToolbarSurface: return highContrast() ? p.color(QPalette::Button) : QColor(dark() ? "#191919" : "#eeeeef");
-    case ToolbarActive: return highContrast() ? p.color(QPalette::Highlight) : QColor(dark() ? "#292929" : "#dcdcdf");
+    case ToolbarActive: return highContrast() ? p.color(QPalette::Highlight) : QColor(dark() ? "#2d2d2d" : "#dcdcdf");
     case ToolbarEdge: return highContrast() ? p.color(QPalette::Mid) : QColor(dark() ? "#393939" : "#c5c5c8");
+    case SidebarGlyph: return highContrast() ? p.color(QPalette::Link) : QColor(dark() ? "#0a8bff" : "#0866d9");
     }
     return p.color(QPalette::Text);
 }

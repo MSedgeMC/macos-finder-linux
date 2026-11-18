@@ -37,11 +37,11 @@ inline void paint(QPainter &p, QRectF bounds, bool active = false, bool pressed 
     // A subtle meniscus follows the shared capsule. The selected segment
     // uses the same neutral family rather than a bright nested glass lens.
     const QColor edge = FinderAppearance::color(FinderAppearance::ToolbarEdge);
-    QLinearGradient rim(bounds.topLeft(), bounds.bottomRight());
+    QLinearGradient rim(bounds.topLeft(), bounds.bottomLeft());
     rim.setColorAt(0, edge.lighter(dark ? 115 : 105));
-    rim.setColorAt(.35, edge);
+    rim.setColorAt(.35, fill.lighter(dark ? 108 : 102));
     rim.setColorAt(.65, fill);
-    rim.setColorAt(1, edge);
+    rim.setColorAt(1, edge.lighter(dark ? 108 : 102));
     p.setPen(QPen(QBrush(rim), .85)); p.drawPath(path);
     p.restore();
 }

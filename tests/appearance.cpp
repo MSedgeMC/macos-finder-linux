@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QImage>
 #include <QLabel>
+#include <QPainter>
 #include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
@@ -123,7 +124,17 @@ int main(int argc, char **argv)
     check(app.palette().color(QPalette::Base) == QColor("#1e1e1e")
         && FinderAppearance::color(FinderAppearance::IconSelection) == QColor("#363638")
         && FinderAppearance::color(FinderAppearance::IconLabelSelection) == QColor("#296ec6"), "default dark surfaces and selections");
-    check(FinderAppearance::materialTint() == QColor(21, 20, 18, 232), "restrained default sidebar material");
+    check(FinderAppearance::materialTint() == QColor(21, 20, 18, 212), "dark neutral sidebar frost");
+    // Any blurred desktop color is bounded by black/white after the native
+    // saturation pass. Verify navigation readability at both extremes.
+    const QColor frost = FinderAppearance::materialTint();
+    for (const QColor backdrop : {QColor(Qt::black), QColor(Qt::white)}) {
+        QImage surface(1, 1, QImage::Format_ARGB32_Premultiplied); surface.fill(backdrop);
+        QPainter painter(&surface); painter.fillRect(surface.rect(), frost); painter.end();
+        check(contrast(app.palette().color(QPalette::Text), surface.pixelColor(0, 0)) >= 4.5, "primary text over sidebar frost");
+        check(contrast(app.palette().color(QPalette::PlaceholderText), surface.pixelColor(0, 0)) >= 4.5, "secondary text over sidebar frost");
+        check(contrast(FinderAppearance::color(FinderAppearance::SidebarGlyph), surface.pixelColor(0, 0)) >= 3, "sidebar glyph over frost");
+    }
     int changes = 0;
     QObject::connect(policy, &FinderAppearance::changed, &app, [&] { ++changes; });
     FinderAppearance::apply(&app);

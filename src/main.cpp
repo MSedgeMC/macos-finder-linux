@@ -3023,7 +3023,8 @@ private:
     region &= materialContour;
     KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
     // Saturation reduction applies only to the genuinely translucent sidebar.
-    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.0, 1.0, .35, region);
+    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.0, 1.0,
+                                             FinderAppearance::materialBackdropSaturation(), region);
   }
   void applyStyle() {
     QString sheet = R"(
