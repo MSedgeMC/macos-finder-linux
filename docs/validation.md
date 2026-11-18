@@ -570,5 +570,24 @@ pass on the fixed artifact.
 
 Native captures also established a duplicated selected-thumbnail label.
 The final viewer-only correction paints each label once while retaining
-selection, keyboard focus and filename elision. Its final GitHub build, native
-capture and production installation are still pending separate verification.
+selection, keyboard focus and filename elision. Run
+[44360372769](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44360372769)
+built 2b24f23 and passed all 25 component suites. Its exact artifact passed
+three private-Wayland image/PDF/text launches; saved compositor captures were
+inspected directly. The thumbnail divider has no painted black strip, long
+filenames elide without horizontal scrolling, and selected labels paint once.
+
+The release was installed on 2026-11-18 using the existing zero-open-window
+Finder installer. Installed and running binary SHA256 are both
+`5c1a98bc6f5c5ba7759eae69b322b688e83fc0209ace695e7634594eb3e89afb`.
+Finder and FileManager1 share the expected active service owner; native methods
+are present and the test interface is absent. Finder preferences retained their
+exact pre-install hash. Only the executable changed among the nine Finder
+integration files.
+
+The separate Preview installer backed up and wrote its launcher, desktop entry
+and MIME defaults. PDF, PNG, JPEG, SVG, WebP, BMP and TIFF resolve to Preview;
+text remains with Kate and office documents remain with LibreOffice Writer.
+The installer verified staging hashes/defaults and retained MIME permissions.
+Scoped rollback records exist for both deployments. No working-screen input,
+preview display, compositor restart or local C++ compilation was performed.
