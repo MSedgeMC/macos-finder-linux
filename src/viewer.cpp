@@ -4,6 +4,12 @@
 #include "preview.h"
 #include "quickactions.h"
 #include "appearance.h"
+#include "windowcontour.h"
+#include "windowcontrols.h"
+#include "windowframe.h"
+#include "gestures.h"
+#include <QWindow>
+#include <QMouseEvent>
 #include "alerts.h"
 #include <QAction>
 #include <QApplication>
@@ -32,17 +38,48 @@
 #include <KFileItem>
 #include <KIO/FileUndoManager>
 
+namespace {
+class ViewerHeader final : public QWidget {
+public: using QWidget::QWidget;
+protected:
+    void paintEvent(QPaintEvent *) override { QPainter painter(this); painter.fillRect(rect(), FinderAppearance::color(FinderAppearance::Header)); }
+    void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && !window()->isFullScreen() && window()->windowHandle()) window()->windowHandle()->startSystemMove();
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && !window()->isFullScreen()) { if (window()->isMaximized()) window()->showNormal(); else window()->showMaximized(); }
+    }
+};
+}
 ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWindow(parent) {
     setObjectName("finderPreviewApp"); setWindowTitle(tr("Preview")); setWindowIcon(QIcon::fromTheme("image-x-generic"));
     resize(960, 700); setMinimumSize(480, 320); setAcceptDrops(true);
-    auto *splitter = new QSplitter(this); splitter->setObjectName("previewAppSplitter"); setCentralWidget(splitter);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint); setAttribute(Qt::WA_TranslucentBackground);
+    auto *base = new QWidget(this); base->setGraphicsEffect(new ContourEffect(base)); setCentralWidget(base);
+    auto *layout = new QVBoxLayout(base); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(0);
+    auto *header = new ViewerHeader(base); header->setFixedHeight(40); header->setObjectName("previewAppHeader");
+    auto *chrome = new QHBoxLayout(header); chrome->setContentsMargins(12, 4, 12, 4); chrome->setSpacing(7);
+    layout->addWidget(header);
+    auto *splitter = new QSplitter(base); splitter->setObjectName("previewAppSplitter"); layout->addWidget(splitter, 1);
     m_sidebar = new QListWidget(splitter); m_sidebar->setObjectName("previewAppSidebar");
     m_sidebar->setAccessibleName(tr("Open documents")); m_sidebar->setIconSize(QSize(64, 64));
     m_sidebar->setMinimumWidth(100); m_sidebar->setMaximumWidth(260); m_sidebar->setWordWrap(true);
     m_preview = new PreviewPane(splitter); m_preview->setHostWindowControls(true); m_preview->setHostedQuickLook(true);
+    for (const auto &kind : {"close", "minimize", "maximize"}) {
+        auto *control = new WindowControl(kind, header); chrome->addWidget(control);
+        connect(control, &QToolButton::clicked, this, [this, kind] {
+            if (QString(kind) == "close") close(); else if (QString(kind) == "minimize") showMinimized(); else m_preview->setFullScreen(!isFullScreen());
+        });
+    }
+    chrome->addWidget(m_preview->quickLookHeaderWidget(), 1);
+    // Keep the app menus available on Linux inside the same clipped surface.
+    auto *menus = new QMenuBar(base); menus->setNativeMenuBar(false); layout->insertWidget(1, menus);
+    FinderWindowFrame::install(this);
+    auto *gestures = FinderGestures::Controller::install(this); gestures->setZoomTarget(m_preview);
+    connect(gestures, &FinderGestures::Controller::zoomRequested, this, [this](QWidget *, qreal factor, const QPointF &) { m_preview->setZoomFactor(m_preview->zoomFactor() * factor); });
     splitter->setStretchFactor(0, 0); splitter->setStretchFactor(1, 1); splitter->setSizes({166, 794});
     m_edits = new QuickActions(this);
-    auto *file = menuBar()->addMenu(tr("File"));
+    auto *file = menus->addMenu(tr("File"));
     auto *open = file->addAction(tr("Open…"), this, [this] { openFiles(); }); open->setObjectName("previewAppOpen");
     open->setShortcuts({QKeySequence("Ctrl+O"), QKeySequence("Meta+O")});
     m_recent = file->addMenu(tr("Open Recent")); connect(m_recent, &QMenu::aboutToShow, this, [this] { populateRecent(); });
@@ -52,7 +89,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *print = file->addAction(tr("Print…"), this, [this] { m_preview->printCurrent(); }); print->setObjectName("previewAppPrint");
     print->setShortcuts({QKeySequence("Ctrl+P"), QKeySequence("Meta+P")}); file->addSeparator();
     auto *close = file->addAction(tr("Close"), this, &QWidget::close); close->setShortcuts({QKeySequence("Ctrl+W"), QKeySequence("Meta+W")});
-    auto *edit = menuBar()->addMenu(tr("Edit"));
+    auto *edit = menus->addMenu(tr("Edit"));
     auto *undo = edit->addAction(tr("Undo"), this, [this] { auto *manager = KIO::FileUndoManager::self(); manager->uiInterface()->setParentWidget(this); if (manager->isUndoAvailable()) manager->undo(); });
     undo->setObjectName("previewAppUndo"); undo->setShortcuts({QKeySequence("Ctrl+Z"), QKeySequence("Meta+Z")});
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable, undo, &QAction::setEnabled);
@@ -66,7 +103,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
         if (auto *text = qobject_cast<QTextEdit *>(QApplication::focusWidget())) text->selectAll();
         else if (auto *line = qobject_cast<QLineEdit *>(QApplication::focusWidget())) line->selectAll();
     }); all->setShortcuts({QKeySequence("Ctrl+A"), QKeySequence("Meta+A")});
-    auto *view = menuBar()->addMenu(tr("View"));
+    auto *view = menus->addMenu(tr("View"));
     for (const auto &name : {"previewZoomInAction", "previewZoomOutAction", "previewFitAction", "previewActualSizeAction", "previewWrapTextAction"})
         if (auto *action = m_preview->findChild<QAction *>(name)) view->addAction(action);
     auto *find = view->addAction(tr("Find…"), this, [this] {
@@ -82,13 +119,16 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *next = view->addAction(tr("Next Document"), this, [this] { m_preview->advance(1); }); next->setObjectName("previewAppNext");
     next->setShortcuts({QKeySequence("Ctrl+Down"), QKeySequence("Meta+Down")});
     view->addAction(m_preview->findChild<QAction *>("previewFullScreenAction"));
-    m_tools = menuBar()->addMenu(tr("Tools"));
+    m_tools = menus->addMenu(tr("Tools"));
     connect(m_tools, &QMenu::aboutToShow, this, [this] { m_tools->clear(); m_edits->populateMenu(m_tools, {m_preview->currentUrl()}); });
     connect(m_preview, &PreviewPane::quickActionsMenuRequested, this, [this](QMenu *menu, const QList<QUrl> &selection) { menu->clear(); m_edits->populateMenu(menu, selection); });
     connect(m_preview, &PreviewPane::closeRequested, this, &QWidget::close);
     // Space closes transient Quick Look. Standalone documents retain ordinary
     // keyboard scrolling; their only close shortcuts are the File actions.
     m_preview->setProperty("standalonePreview", true);
+    // Open remains an explicit native application choice, avoiding recursively
+    // relaunching Preview when it is the default image/PDF handler.
+    connect(m_preview, &PreviewPane::openRequested, m_preview, &PreviewPane::openWithCurrent);
     connect(m_sidebar, &QListWidget::currentRowChanged, this, [this](int row) {
         const auto list = m_preview->urls(); if (row >= 0 && row < list.size()) m_preview->updateQuickLook(list, list[row]);
     });
@@ -105,7 +145,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(m_edits, &QuickActions::outputCreated, this, [this](const QUrl &url) { statusBar()->showMessage(tr("Created %1").arg(url.fileName()), 10000); });
     auto restyle = [this] {
         setPalette(FinderAppearance::palette());
-        setStyleSheet(QStringLiteral("#previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
+        setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} QMenuBar{background:palette(window);color:palette(window-text);border:0;padding:2px;} QMenuBar::item{padding:4px 10px;} #previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
             "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);} QMenu{background:palette(window);color:palette(window-text);padding:6px;}"));
     };
     restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, restyle);
