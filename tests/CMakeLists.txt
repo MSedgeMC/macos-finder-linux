@@ -182,3 +182,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 add_test(NAME finder-viewer-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-viewer-test>")
 set_tests_properties(finder-viewer-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
+add_test(NAME finder-preview-install-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/install-preview.py")
+set_tests_properties(finder-preview-install-test PROPERTIES TIMEOUT 15 LABELS "unit;headless")
