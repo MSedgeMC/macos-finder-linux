@@ -64,6 +64,7 @@
 #include <QStyle>
 #include <QStyleOption>
 #include <QTextEdit>
+#include <QSettings>
 #include <QTextDocument>
 #include <QTimer>
 #include <QThreadPool>
@@ -641,6 +642,12 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(10);
 
+    QSettings previewSettings;
+    m_showPreviewInformation = previewSettings.value("Preview/showInformation", true).toBool();
+    m_showPreviewDates = previewSettings.value("Preview/showDates", true).toBool();
+    m_showPreviewDimensions = previewSettings.value("Preview/showDimensions", true).toBool();
+    m_showPreviewLocation = previewSettings.value("Preview/showLocation", true).toBool();
+    m_showPreviewActions = previewSettings.value("Preview/showQuickActions", true).toBool();
     m_content = new QStackedWidget(this);
     m_content->setObjectName(QStringLiteral("previewContent"));
     m_fallback = new QLabel(this);
@@ -1060,6 +1067,17 @@ void PreviewPane::setTextWrapping(bool enabled)
 
 bool PreviewPane::textWrapping() const { return m_text->lineWrapMode() != QTextEdit::NoWrap; }
 
+void PreviewPane::reloadPreviewPreferences()
+{
+    QSettings settings;
+    m_showPreviewInformation = settings.value("Preview/showInformation", true).toBool();
+    m_showPreviewDates = settings.value("Preview/showDates", true).toBool();
+    m_showPreviewDimensions = settings.value("Preview/showDimensions", true).toBool();
+    m_showPreviewLocation = settings.value("Preview/showLocation", true).toBool();
+    m_showPreviewActions = settings.value("Preview/showQuickActions", true).toBool();
+    updateGalleryMetadata(); updatePresentation();
+}
+
 void PreviewPane::setFullScreen(bool enabled)
 {
     // Embedded Gallery/column previews must not fullscreen their Finder host.
@@ -1398,7 +1416,11 @@ void PreviewPane::updatePresentation()
     m_nativeActions->show();
     m_viewControls->setVisible(!m_compact && !m_gallery && !hosted);
     m_close->setVisible(!m_compact && !m_hostWindowControls && !hosted);
-    m_metadata->setVisible(m_gallery || !hosted || m_informationAction->isChecked());
+    m_metadata->setVisible(m_gallery ? m_showPreviewInformation : !hosted || m_informationAction->isChecked());
+    if (m_gallerySidebar) {
+        m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewInformation"))->setVisible(m_showPreviewInformation);
+        m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewQuickActions"))->setVisible(m_showPreviewActions);
+    }
     if (m_headerWidget) m_headerWidget->setVisible(!m_gallery && !(m_hostedQuickLook && m_compact));
     if (!m_gallery) {
         m_layout->setContentsMargins(hosted ? 12 : m_compact ? 12 : 16, hosted ? 8 : 12,
@@ -1812,6 +1834,9 @@ void PreviewPane::updateGalleryMetadata()
     QString html = QStringLiteral("<table width=\"100%\" cellspacing=\"0\" cellpadding=\"3\">");
     auto append = [&](const auto &rows) {
         for (const auto &row : rows) {
+            if (!m_showPreviewDates && (row.first == tr("Created") || row.first == tr("Modified") || row.first == tr("Accessed"))) continue;
+            if (!m_showPreviewDimensions && (row.first == tr("Dimensions") || row.first == tr("Resolution") || row.first == tr("Page Size") || row.first == tr("Color Space"))) continue;
+            if (!m_showPreviewLocation && (row.first == tr("Where") || row.first == tr("Location"))) continue;
             QString value = row.second.toHtmlEscaped();
             value.replace(QLatin1Char('/'), QStringLiteral("/&#8203;"));
             html += QStringLiteral("<tr><td valign=\"top\" style=\"color:%1;white-space:nowrap;\">%2</td>"
@@ -2114,7 +2139,7 @@ void PreviewPane::showCurrent()
     };
     setInformation(tr("Created"), date(info.birthTime()));
     setInformation(tr("Modified"), date(info.lastModified()));
-    setInformation(tr("Last Opened"), date(info.lastRead()), true);
+    setInformation(tr("Accessed"), date(info.lastRead()), true);
     setInformation(tr("Where"), info.absolutePath(), true);
     setInformation(tr("Name & Extension"), info.fileName(), true);
     if (info.isDir()) {
@@ -2922,12 +2947,12 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
     } else if (!m_compact && !m_gallery && command && event->key() == Qt::Key_F) {
         setFullScreen(!isFullScreen());
         event->accept();
-    } else if (!m_compact && !m_gallery && event->key() == Qt::Key_Escape) {
+    } else if (!property("standalonePreview").toBool() && !m_compact && !m_gallery && event->key() == Qt::Key_Escape) {
         if (isFullScreen()) { setSlideshow(false); setFullScreen(false); }
         else if (m_contactSheet) setContactSheet(false);
         else requestClose();
         event->accept();
-    } else if (!m_compact && !m_gallery && event->key() == Qt::Key_Space && !controlFocus && event->modifiers() == Qt::NoModifier) {
+    } else if (!property("standalonePreview").toBool() && !m_compact && !m_gallery && event->key() == Qt::Key_Space && !controlFocus && event->modifiers() == Qt::NoModifier) {
         requestClose();
         event->accept();
     } else if (!controlFocus && !m_contactSheet && event->key() == Qt::Key_Left && event->modifiers() == Qt::NoModifier) {

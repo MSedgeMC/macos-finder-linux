@@ -1028,6 +1028,9 @@ public:
             painter->drawPixmap(target, preview, QRectF(preview.rect()));
         } else decoration.value<QIcon>().paint(painter, iconRect, Qt::AlignCenter, enabled ? QIcon::Normal : QIcon::Disabled);
         painter->restore();
+        if (m_gallery && m_view->property("finderShowFilenames").isValid() && !m_view->property("finderShowFilenames").toBool()) {
+            painter->restore(); return;
+        }
 
         QFont font(option.font);
         font.setPixelSize(m_options->textSize);
@@ -1831,7 +1834,7 @@ public:
         const int minimumWidth = gallerySize + 32;
         const int columns = qMax(1, available / minimumWidth);
         const int stripWidth = qBound(minimumWidth, available / columns, minimumWidth + 16);
-        const QSize stripGrid(stripWidth, gallerySize + 20 + 2 * galleryLineHeight);
+        const QSize stripGrid(stripWidth, gallerySize + 20 + (q->galleryFilenamesShown() ? 2 * galleryLineHeight : 0));
         if (strip->gridSize() != stripGrid) strip->setGridSize(stripGrid);
         strip->setFixedHeight(stripGrid.height() + 16);
         strip->viewport()->update();
@@ -2417,7 +2420,7 @@ QByteArray Browser::saveViewState() const {
         positions.insert(it.key().toString(QUrl::FullyEncoded), QJsonArray{it->x(), it->y()});
     return QJsonDocument(QJsonObject{{"version", 1}, {"mode", int(mode())}, {"modes", modes},
         {"snapToGrid", snapToGrid()}, {"positionsUrl", Private::normalized(d->rootUrl).toString(QUrl::FullyEncoded)}, {"iconPositions", positions},
-        {"previewWidth", previewWidth()}, {"listHeader", QString::fromLatin1(d->list->header()->saveState().toBase64())},
+        {"galleryFilenames", galleryFilenamesShown()}, {"previewWidth", previewWidth()}, {"listHeader", QString::fromLatin1(d->list->header()->saveState().toBase64())},
         {"columnWidths", columns}, {"listVisibleColumns", visible}}).toJson(QJsonDocument::Compact);
 }
 void Browser::restoreViewState(const QByteArray &state) {
@@ -2461,6 +2464,7 @@ void Browser::restoreViewState(const QByteArray &state) {
     d->restoreModeOptions();
     d->layoutIcons();
     d->proxy->decorationSize = activeView()->iconSize(); d->proxy->decorationScale = activeView()->devicePixelRatioF();
+    setGalleryFilenamesShown(object.value("galleryFilenames").toBool(true));
     setPreviewWidth(object.value("previewWidth").toInt(280));
     const auto header = QByteArray::fromBase64(object.value("listHeader").toString().toLatin1());
     if (!header.isEmpty()) d->list->header()->restoreState(header);
@@ -2861,6 +2865,13 @@ void Browser::setIconPreviewsShown(bool shown) {
     d->previews = shown;
     d->resetThumbnailRequests();
     if (!shown) d->model->clearAllPreviews();
+}
+bool Browser::galleryFilenamesShown() const {
+    return !d->strip->property("finderShowFilenames").isValid() || d->strip->property("finderShowFilenames").toBool();
+}
+void Browser::setGalleryFilenamesShown(bool shown) {
+    if (galleryFilenamesShown() == shown) return;
+    d->strip->setProperty("finderShowFilenames", shown); d->layoutIcons();
 }
 void Browser::setPreviewShown(bool shown) {
     d->sidePreview = shown;

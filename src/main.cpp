@@ -23,6 +23,7 @@
 #include "alerts.h"
 #include "windowcontrols.h"
 #include "glasscontrols.h"
+#include "viewer.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -2664,6 +2665,25 @@ private:
     dialog->open();
     installScrolling(dialog);
   }
+  void previewOptions() {
+    if (auto *existing = findChild<QDialog *>("finderPreviewOptions")) { existing->close(); return; }
+    auto *dialog = new QDialog(this); dialog->setObjectName("finderPreviewOptions"); dialog->setWindowTitle("Preview Options");
+    dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(340, 300);
+    auto *form = new QFormLayout(dialog); form->setContentsMargins(24, 20, 24, 20); form->setSpacing(14);
+    auto *help = new QLabel("Choose the details shown beside the file preview.", dialog); help->setWordWrap(true); form->addRow(help);
+    for (const auto &entry : QList<QPair<QString, QString>>{{"showInformation", "Show Information"}, {"showDates", "Dates"},
+        {"showDimensions", "Image dimensions and document page size"}, {"showLocation", "Location"}, {"showQuickActions", "Show Quick Actions"}}) {
+      auto *box = new QCheckBox(entry.second, dialog); box->setObjectName("previewOption_" + entry.first);
+      box->setChecked(QSettings().value("Preview/" + entry.first, true).toBool()); form->addRow(box);
+      connect(box, &QCheckBox::toggled, dialog, [key = entry.first](bool checked) {
+        QSettings().setValue("Preview/" + key, checked);
+        for (auto *window : QApplication::topLevelWidgets())
+          for (auto *pane : window->findChildren<PreviewPane *>()) pane->reloadPreviewPreferences();
+      });
+    }
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close); dialog->open(); installScrolling(dialog);
+  }
   void viewOptions() {
     if (showingSearch()) {
       if (auto *existing = findChild<QDialog *>("finderSearchViewOptions")) { existing->close(); return; }
@@ -2739,6 +2759,8 @@ private:
     auto *previews = new QCheckBox("Show icon preview");
     previews->setObjectName("viewOptionIconPreviews"); previews->setChecked(browser()->iconPreviewsShown());
     form->addRow(previews);
+    auto *filenames = new QCheckBox("Show filenames", dialog); filenames->setObjectName("viewOptionFilenames");
+    filenames->setChecked(browser()->galleryFilenamesShown()); form->addRow(filenames);
     auto *group = new QComboBox;
     group->setObjectName("viewOptionGroup"); group->addItems({"None", "Name", "Kind", "Date Modified", "Size", "Tags"});
     group->setCurrentIndex(int(browser()->group())); form->addRow("Group by", group);
@@ -2785,25 +2807,27 @@ private:
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     const QUrl targetUrl = browser()->url();
     QPointer<Browser> target(browser());
-    auto apply = [this, dialog, target, size, spacing, textSize, labels, previews, group, sort, reverse, columns, targetUrl] {
+    auto apply = [this, dialog, target, size, spacing, textSize, labels, previews, filenames, group, sort, reverse, columns, targetUrl] {
       if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return false; }
       if (browser()->mode() != Browser::Columns) browser()->setIconSize(size->value());
       if (browser()->mode() == Browser::Icons) browser()->setGridSpacing(spacing->value());
       browser()->setTextSize(textSize->value());
       if (browser()->mode() == Browser::Icons) browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex()));
       browser()->setIconPreviewsShown(previews->isChecked());
+      if (browser()->mode() == Browser::Gallery) browser()->setGalleryFilenamesShown(filenames->isChecked());
       browser()->setGroup(Browser::Group(group->currentIndex())); browser()->setSort(sort->currentData().toInt(), !reverse->isChecked());
       auto *tree = browser()->findChild<QTreeView *>("finderListView");
       for (auto [column, box] : columns) tree->setColumnHidden(column, !box->isChecked());
       saveView(); refresh();
       return true;
     };
-    auto updateControls = [form, mode, size, spacing, labels, defaults, columns, columnHeading, calculateSizes, reverse, sort] {
+    auto updateControls = [form, mode, size, spacing, labels, defaults, columns, columnHeading, calculateSizes, reverse, sort, filenames] {
       const auto selected = mode->currentIndex();
       const QSignalBlocker sizeBlock(size);
       size->setRange(selected == Browser::Columns ? 18 : selected == Browser::List ? 16 : 32, selected == Browser::Columns ? 18 : selected == Browser::List ? 32 : 256);
       form->setRowVisible(spacing, selected == Browser::Icons);
       form->setRowVisible(labels, selected == Browser::Icons);
+      form->setRowVisible(filenames, selected == Browser::Gallery);
       form->setRowVisible(size, selected != Browser::Columns);
       for (auto [column, box] : columns) { Q_UNUSED(column); form->setRowVisible(box, selected == Browser::List); }
       form->setRowVisible(columnHeading, selected == Browser::List);
@@ -2811,12 +2835,12 @@ private:
       reverse->setEnabled(sort->currentData().toInt() >= 0);
       defaults->setVisible(selected != Browser::Columns);
     };
-    auto reload = [this, dialog, target, targetUrl, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, updateControls, populateSort] {
+    auto reload = [this, dialog, target, targetUrl, mode, size, spacing, textSize, labels, previews, filenames, group, sort, reverse, columns, updateControls, populateSort] {
       if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return; }
-      const QSignalBlocker b0(mode), b1(size), b2(spacing), b3(textSize), b4(labels), b5(previews), b6(group), b7(sort), b8(reverse);
+      const QSignalBlocker b0(mode), b1(size), b2(spacing), b3(textSize), b4(labels), b5(previews), b6(group), b7(sort), b8(reverse), b9(filenames);
       mode->setCurrentIndex(int(target->mode())); populateSort(target->mode(), target->sortColumn()); updateControls();
       size->setValue(target->iconSize()); spacing->setValue(target->gridSpacing()); textSize->setValue(target->textSize());
-      labels->setCurrentIndex(int(target->labelPosition())); previews->setChecked(target->iconPreviewsShown());
+      labels->setCurrentIndex(int(target->labelPosition())); previews->setChecked(target->iconPreviewsShown()); filenames->setChecked(target->galleryFilenamesShown());
       group->setCurrentIndex(int(target->group())); sort->setCurrentIndex(sort->findData(target->sortColumn())); reverse->setChecked(!target->sortAscending());
       auto *tree = target->findChild<QTreeView *>("finderListView");
       for (auto [column, box] : columns) { const QSignalBlocker block(box); box->setChecked(!tree->isColumnHidden(column)); }
@@ -2832,7 +2856,7 @@ private:
     connect(textSize, &QSpinBox::valueChanged, dialog, apply);
     connect(sort, &QComboBox::currentIndexChanged, dialog, [sort, reverse] { reverse->setEnabled(sort->currentData().toInt() >= 0); });
     for (auto *control : {labels, group, sort}) connect(control, &QComboBox::currentIndexChanged, dialog, apply);
-    for (auto *control : {previews, reverse}) connect(control, &QCheckBox::toggled, dialog, apply);
+    for (auto *control : {previews, reverse, filenames}) connect(control, &QCheckBox::toggled, dialog, apply);
     for (auto [column, box] : columns) { Q_UNUSED(column); connect(box, &QCheckBox::toggled, dialog, apply); }
     updateControls();
     connect(defaults, &QPushButton::clicked, dialog, [this, apply, defaults] {
@@ -2849,6 +2873,7 @@ private:
         if (previousModes.size() == 4) {
           previousModes[int(browser()->mode())] = modes[int(browser()->mode())]; state["modes"] = previousModes;
           if (browser()->mode() != Browser::List) state["listVisibleColumns"] = previous.value("listVisibleColumns");
+          if (browser()->mode() != Browser::Gallery) state["galleryFilenames"] = previous.value("galleryFilenames");
         }
         QSettings().setValue("View/defaultState", QJsonDocument(state).toJson(QJsonDocument::Compact));
         defaults->setText("Defaults Updated");
@@ -3383,6 +3408,7 @@ private:
       browser()->setPreviewShown(namedActions["preview"]->isChecked()); refresh();
     });
     previewAction->setCheckable(true);
+    addAction(view, "previewOptions", "Show Preview Options", {}, [this] { previewOptions(); });
     for (int i = 0; i < 4; ++i)
       addAction(
           view, "mode" + QString::number(i),
@@ -3513,6 +3539,7 @@ private:
     actionsMenu->addAction(namedActions["statusBar"]);
     actionsMenu->addAction(namedActions["preview"]);
     actionsMenu->addAction(namedActions["viewOptions"]);
+    actionsMenu->addAction(namedActions["previewOptions"]);
     actionsMenu->addMenu(arrange->menu())->setText("Sort and Group");
     actionsMenu->addMenu(share->menu())->setText("Share");
     actionsMenu->addMenu(tagMenu)->setText("Tags");
@@ -4266,11 +4293,7 @@ int main(int argc, char **argv) {
   font.setWeight(QFont::Medium);
   app.setFont(font);
   FinderAppearance::apply(&app);
-  Manager manager;
   const QStringList args = app.arguments();
-  manager.daemon = args.contains("--daemon");
-  manager.testing = qEnvironmentVariable("KUBUNTU_VIRTUAL_SCREEN") == "1" &&
-                    args.contains("--test-mode");
   auto bus = QDBusConnection::sessionBus();
   bool quick = args.contains("--quick-look"),
        select = args.contains("--select");
@@ -4287,6 +4310,15 @@ int main(int argc, char **argv) {
                                  QUrl::AssumeLocalFile)
                  .toString();
   }
+  if (args.contains("--preview")) {
+    app.setDesktopFileName("org.local.preview"); app.setQuitOnLastWindowClosed(true);
+    QList<QUrl> urls; for (const auto &path : paths) urls.append(QUrl(path));
+    auto *viewer = new ViewerWindow(urls); viewer->setAttribute(Qt::WA_DeleteOnClose); viewer->show();
+    return app.exec();
+  }
+  Manager manager;
+  manager.daemon = args.contains("--daemon");
+  manager.testing = qEnvironmentVariable("KUBUNTU_VIRTUAL_SCREEN") == "1" && args.contains("--test-mode");
   if (!manager.testing && !bus.registerService("org.local.Finder")) {
     QDBusMessage msg = QDBusMessage::createMethodCall(
         "org.local.Finder", "/Finder", "org.local.Finder",

@@ -31,6 +31,9 @@
 #include <QThread>
 #include <QTimer>
 #include <QTreeView>
+#include <QListView>
+#include <QTabWidget>
+#include <QTabBar>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -226,8 +229,22 @@ int main(int argc, char **argv)
     preview.setUrls({QUrl::fromLocalFile(textFile.fileName())});
     auto *text = preview.findChild<QTextEdit *>("previewText");
     check(text && waitFor([&] { return text->toPlainText().contains("Readable preview"); }), "real preview worker result");
+    browser.setMode(Browser::Gallery); browser.show(); QApplication::processEvents();
+    auto *strip = browser.findChild<QListView *>("finderGalleryStrip");
+    const QImage names = strip->grab().toImage(); const int namedHeight = strip->height();
+    browser.setGalleryFilenamesShown(false); QApplication::processEvents();
+    check(strip->height() < namedHeight && strip->grab().toImage() != names, "Gallery filename option changes real filmstrip geometry and painting");
+    const auto galleryState = browser.saveViewState();
+    browser.setMode(Browser::Icons); browser.setMode(Browser::Gallery);
+    check(!browser.galleryFilenamesShown(), "Gallery filenames stay independent across mode changes");
+    browser.setGalleryFilenamesShown(true); browser.restoreViewState(galleryState);
+    check(!browser.galleryFilenamesShown(), "Gallery filename visibility persists in folder view state");
+    browser.setGalleryFilenamesShown(true);
     FinderSettings settings;
     settings.resize(580, 530);
+    auto *settingsTabs = settings.findChild<QTabWidget *>("finderSettingsTabs");
+    check(settingsTabs && settingsTabs->count() == 4 && settingsTabs->documentMode(), "four Settings sections use document-style navigation");
+    for (int i = 0; i < 4; ++i) check(!settingsTabs->tabIcon(i).isNull(), "Settings sections have native icons");
     auto *mode = settings.findChild<QComboBox *>("finderSettingsAppearanceMode");
     auto *increased = settings.findChild<QCheckBox *>("finderSettingsIncreaseContrast");
     auto *reduced = settings.findChild<QCheckBox *>("finderSettingsReduceTransparency");

@@ -168,3 +168,17 @@ target_link_libraries(finder-browser-layout-test PRIVATE Qt6::Widgets Threads::T
 target_compile_options(finder-browser-layout-test PRIVATE -Wall -Wextra)
 add_test(NAME finder-browser-layout-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-browser-layout-test>")
 set_tests_properties(finder-browser-layout-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")
+
+add_executable(finder-viewer-test viewer.cpp
+    ../src/viewer.cpp ../src/viewer.h ../src/preview.cpp ../src/preview.h
+    ../src/quickactions.cpp ../src/quickactions.h ../src/appearance.cpp ../src/appearance.h
+    ../src/tags.cpp ../src/preferences.cpp)
+target_include_directories(finder-viewer-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_definitions(finder-viewer-test PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
+target_link_libraries(finder-viewer-test PRIVATE Qt6::Widgets Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::PrintSupport
+    KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::FileMetaData KF6::Service)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(finder-viewer-test PRIVATE -Wall -Wextra)
+endif()
+add_test(NAME finder-viewer-test COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-headless.py" "$<TARGET_FILE:finder-viewer-test>")
+set_tests_properties(finder-viewer-test PROPERTIES TIMEOUT 40 LABELS "unit;headless")

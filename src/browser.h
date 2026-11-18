@@ -67,6 +67,7 @@ public:
     LabelPosition labelPosition() const;
     bool iconPreviewsShown() const;
     bool previewShown() const;
+    bool galleryFilenamesShown() const;
     int previewWidth() const;
     QByteArray saveViewState() const;
     bool canCompressSelection() const;
@@ -119,6 +120,7 @@ public slots:
     void setLabelPosition(LabelPosition position);
     void setIconPreviewsShown(bool shown);
     void setPreviewShown(bool shown);
+    void setGalleryFilenamesShown(bool shown);
     void setPreviewWidth(int width);
     void restoreViewState(const QByteArray &state);
     void refreshTags();

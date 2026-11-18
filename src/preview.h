@@ -79,6 +79,7 @@ public:
     qreal imageScale() const;
     void setTextWrapping(bool enabled);
     bool textWrapping() const;
+    void reloadPreviewPreferences();
     void setFullScreen(bool fullScreen);
     // Fullscreen transitions use the pane's top-level window, restore its
     // prior state and are disabled for compact/Gallery embedding.
@@ -236,6 +237,8 @@ private:
     quint64 m_tagGeneration = 0;
     bool m_readingTags = false;
     bool m_moreDetails = false;
+    bool m_showPreviewInformation = true, m_showPreviewDates = true;
+    bool m_showPreviewDimensions = true, m_showPreviewLocation = true, m_showPreviewActions = true;
     bool m_rotatableImage = false;
     quint64 m_previewGeneration = 0;
     int m_pageCount = 0;

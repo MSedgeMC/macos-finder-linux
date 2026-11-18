@@ -41,6 +41,7 @@
 #include <QToolButton>
 #include <QLineEdit>
 #include <QTextEdit>
+#include <QSettings>
 #include <QPdfDocument>
 #if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
 #include <QPrinter>
@@ -458,6 +459,17 @@ int main(int argc, char **argv)
     pane.tagChangeFinished(blueUrl, FileTags::addTag(blueUrl, "Portable Test Tag"));
     check(waitFor([&] { return tagEditor->isEnabled(); }), "successful native tag write refreshes");
     check(tagStatus->text().isEmpty(), "success clears tag error");
+    auto *information = pane.findChild<QWidget *>("previewInformation");
+    auto *galleryActions = pane.findChild<QWidget *>("previewQuickActions");
+    check(information->isVisible() && galleryActions->isVisible(), "preview details and native actions are available by default");
+    QSettings().setValue("Preview/showInformation", false); QSettings().setValue("Preview/showQuickActions", false);
+    pane.reloadPreviewPreferences();
+    check(information->isHidden() && galleryActions->isHidden(), "preview options hide their actual sections");
+    QSettings().setValue("Preview/showInformation", true); QSettings().setValue("Preview/showQuickActions", true);
+    QSettings().setValue("Preview/showDates", false); pane.reloadPreviewPreferences();
+    check(information->isVisible() && galleryActions->isVisible() && !pane.findChild<QLabel *>("previewMetadata")->text().contains("Modified"),
+        "preview option refresh restores sections and filters actual date metadata");
+    QSettings().setValue("Preview/showDates", true); pane.reloadPreviewPreferences();
     pane.setGallery(false);
     const auto textPath = files.filePath("preview.txt");
     { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n" + QByteArray(5000, 'x')); }

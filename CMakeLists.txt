@@ -30,6 +30,7 @@ find_package(KF6Archive 6.2 REQUIRED)
 
 add_executable(finder
     src/main.cpp
+    src/viewer.cpp src/viewer.h
     src/taboverview.cpp src/taboverview.h
     src/batchrename.cpp src/batchrename.h
     src/filedetails.cpp src/filedetails.h
