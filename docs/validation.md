@@ -512,8 +512,8 @@ source/hash/JUnit evidence and local runtime linkage were verified. There was
 no local compilation.
 
 Dark sidebar frost increases backdrop transmission from 9.02% to 16.86%,
-retaining RGB21/20/18 and native saturation0.35. Light transmission increases
-from 5.88% to 9.02%, with saturation0.7. Text/glyph contrast checks include
+retaining RGB 21/20/18 and native saturation 0.35. Light transmission increases
+from 5.88% to 9.02%, with saturation 0.7. Text/glyph contrast checks include
 both white and black backdrops; high contrast and reduced transparency keep
 opaque fallbacks. Sidebar glyph blue and neutral header/selected control
 colors were tuned against the supplied Finder capture. Resting toolbar fills
@@ -523,26 +523,29 @@ captures, shaders, idle timers or stacked compositor blur layers.
 
 The exact downloaded binary passed native material checks at 1× and 1.5×.
 Toolbar blur and backdrop-color deltas are zero. The sidebar's patterned
-backdrop color delta is3.457/3.931 RGB, with blurred/sharp detail ratios
-0.0144/0.00777. All168/426 transparent corner samples stayed unchanged outside
-the contour; all47/71 partial samples received material. The opaque file pane
+backdrop color delta is 3.457/3.931 RGB, with blurred/sharp detail ratios
+0.0144/0.00777. All 168/426 transparent corner samples stayed unchanged outside
+the contour; all 47/71 partial samples received material. The opaque file pane
 stayed unchanged. Dark/light before/after native captures over a private copy
 of the desktop wallpaper were inspected directly. A screenshot locator was
 corrected after the capture helper deactivated the native traffic lights;
-this was a test-harness failure, not an application crash. All22 sidebar
+this was a test-harness failure, not an application crash. All 22 sidebar
 boundary/layout captures passed, including modes, grouping, resize and search.
 
 914×433 Icons/List captures retain reference geometry. Sampled resting
 control fill, file surface and header background retain zero RGB error.
 A static matching view-control body/bevel profile improves from mean absolute
-RGB error3.27 to2.72. These small sampled comparisons do not establish
+RGB error 3.27 to 2.72. These small sampled comparisons do not establish
 whole-window pixel equality, genuine refraction or Apple's renderer.
 The selected font, icons, fixture names/images and backdrop differ. Current
 Apple Liquid Glass and adoption guidance was refreshed alongside the pinned
 community-source review; its AppKit/SwiftUI APIs are not Qt implementations.
 
-The artifact and nine-file deployment contents are staged and reviewed; only
-the executable differs from production. Installation currently awaits closed
-Finder/Quick Look windows because the scoped installer rejected preparation
-while they were open. The production service was not interrupted. Final
-installation verification will be recorded separately after the guard passes.
+The scoped installer applied and independently verified that exact artifact on
+2026-11-18 after Finder and Quick Look were closed. Installed bytes match the
+staged GitHub build; Finder remains the directory default and FileManager1
+owner; the daemon is active and the private test interface is absent. Only the
+executable changed among nine integration files. The previous executable and
+integration routes were backed up. The Finder preferences file retained its
+exact SHA256 through deployment. Only the file-manager daemon restarted; no
+working-screen input or compositor restart was performed.
