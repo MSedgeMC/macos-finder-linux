@@ -330,3 +330,38 @@ Their existing 20×28 hitboxes and native window actions are preserved. Gloss
 requires neither backdrop capture nor an animation timer. Main Finder and
 hosted Quick Look share the same controls. Native conflict, authentication and
 properties layouts remain KDE dialogs.
+
+### Finder and standalone Preview controls
+
+Finder’s sorting menu now limits None/Snap/Clean Up to Icons; Clean Up requires
+an ungrouped manual layout. Date Added and Last Opened remain disabled because
+there is no authoritative provider. Filesystem access time is named Accessed.
+View Options applies changes immediately, presents controls by mode, and offers
+Use as Defaults without closing. Search has its own presentation options.
+Gallery supports hiding filenames. Preview Options controls Information, dates,
+image/page geometry, location and Quick Actions. Settings retains four sections,
+with compact favorite slots and grouped Favorites/Locations/Advanced controls.
+
+Image Actual Size displays one original pixel per logical screen point using the
+bounded decoded raster. Enlargement preserves source geometry, with limited
+preview detail; it never triggers an unbounded full-resolution decode. Fit and
+zoom remain available. Plain text previews wrap by default, with an unwrapped
+option. No untrusted rich HTML is executed.
+
+`finder --preview -- <URLs>` starts a separate Preview window without claiming
+Finder’s desktop service. It reuses image/PDF/text viewing, PDF selection/search,
+printing, native image editing/export, PDF creation, native conflicts and Undo.
+The document sidebar loads visible native thumbnails in eight-item batches,
+retains up to 64 nearby decoded thumbnails and stops when idle. Menus support
+Open/Recent, view controls, text Find and a separate Settings panel. Source files
+remain unchanged during edits and export. The existing continuous contour and
+traffic lights are shared with Finder. This is a Linux approximation inspired by
+Finder and Preview, not an implementation of Apple’s renderer or platform APIs.
+
+The scoped Preview installer changes only its launcher, desktop entry and seven
+image/PDF defaults, with backups and rollback. Office formats and text editing
+retain their existing native handlers. Other image formats remain with installed
+viewers. OCR, structural PDF editing/markup, Apple signatures, HDR parity and
+Live Photos remain unavailable; codec/thumbnail availability determines format
+coverage. Five-second metadata budgets and decoder cancellation remain
+cooperative between native calls.
