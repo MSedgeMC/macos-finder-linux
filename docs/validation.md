@@ -550,19 +550,25 @@ integration routes were backed up. The Finder preferences file retained its
 exact SHA256 through deployment. Only the file-manager daemon restarted; no
 working-screen input or compositor restart was performed.
 
-### Finder/Preview completion pass, 2026-11-18 (final verification pending)
+### Finder/Preview completion pass, 2026-11-18
 
-All compilation runs on GitHub Actions. The first verified functional artifact
-passed 25/25 component suites, six private-Wayland presentation groups and
-three standalone image/PDF/text launch captures without acquiring Finder or
-FileManager1 services. The thumbnail-sidebar correction also passed 25/25
-component suites.
+All compilation runs on GitHub Actions. Run
+[44359283840](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44359283840)
+built e7bf3be and passed all 25 component suites, including standalone Preview
+and its scoped installer. Its exact artifact passed 34 private-Wayland feature
+checks, six presentation groups, 17 native windowing checks and three
+standalone image/PDF/text launch captures. The viewer did not acquire Finder
+or FileManager1 services. These counts overlap and do not measure macOS parity.
 
-The broad private-Wayland suite passed 33 checks, then exposed a real Browser
-teardown crash during session restoration. A native debugger traced
-KCoreDirLister's destructor cancellation to a callback using destroyed private
-state. The fix disconnects child callbacks before that state is released. New
-component coverage explicitly dispatches cancellation during child teardown
-and destroys pending listings. The final artifact and full session-restoration
-check must pass before deployment. No production files have changed in this
-pass yet.
+The broad suite initially exposed a Browser teardown crash during session
+restoration. A native debugger traced KCoreDirLister's destructor cancellation
+to a callback using destroyed private state. Child callbacks now disconnect
+before that state is released. The component regression dispatches
+cancellation during child teardown and destroys pending listings. Both the
+minimal two-window restart and full hidden-window search/chrome restoration
+pass on the fixed artifact.
+
+Native captures also established a duplicated selected-thumbnail label.
+The final viewer-only correction paints each label once while retaining
+selection, keyboard focus and filename elision. Its final GitHub build, native
+capture and production installation are still pending separate verification.
