@@ -557,6 +557,8 @@ public:
       auto *a = sortMenu->addAction(entry.first);
       a->setCheckable(true);
       a->setData(entry.second);
+      a->setObjectName("finderSort" + QString::number(entry.second));
+      namedActions["sort" + QString::number(entry.second)] = a;
       sortGroup->addAction(a);
       if (entry.second == 0)
         a->setChecked(true);
@@ -566,13 +568,13 @@ public:
         }
         if (browser())
           browser()->setSort(entry.second, !descending->isChecked());
-        saveView();
+        saveView(); refresh();
       });
     }
     auto *none = sortMenu->addAction("None"); none->setData(-1); none->setCheckable(true); sortGroup->addAction(none); namedActions["sortNone"] = none;
-    connect(none, &QAction::triggered, this, [this] { browser()->setSort(-1, true); saveView(); refresh(); });
+    connect(none, &QAction::triggered, this, [this] { if (!showingSearch() && browser()) { browser()->setSort(-1, true); saveView(); refresh(); } });
     auto *snap = sortMenu->addAction("Snap to Grid"); snap->setCheckable(true); namedActions["snapToGrid"] = snap;
-    connect(snap, &QAction::toggled, this, [this](bool enabled) { browser()->setSnapToGrid(enabled); saveView(); });
+    connect(snap, &QAction::toggled, this, [this](bool enabled) { if (!showingSearch() && browser()) { browser()->setSnapToGrid(enabled); saveView(); } });
     auto *clean = sortMenu->addAction("Clean Up", this, [this] { browser()->cleanUp(); saveView(); }); namedActions["cleanUp"] = clean;
     auto *cleanup = sortMenu->addMenu("Clean Up By"); namedActions["cleanUpBy"] = cleanup->menuAction();
     for (const auto &entry : QList<QPair<QString, int>>{{"Name", Browser::NameColumn}, {"Kind", Browser::KindColumn}, {"Date Modified", Browser::DateModifiedColumn}, {"Size", Browser::SizeColumn}, {"Tags", Browser::TagsColumn}})
@@ -581,10 +583,11 @@ public:
     descending = sortMenu->addAction("Reverse Order");
     descending->setCheckable(true);
     connect(descending, &QAction::toggled, this, [this](bool on) {
-      if (showingSearch()) { searchPresentation->sort(sortGroup->checkedAction()->data().toInt() == Browser::KindColumn ? 1 : 0, on ? Qt::DescendingOrder : Qt::AscendingOrder); return; }
-      if (browser())
-        browser()->setSort(sortGroup->checkedAction()->data().toInt(), !on);
-      saveView();
+      auto *checked = sortGroup->checkedAction();
+      if (!checked) return;
+      if (showingSearch()) { searchPresentation->sort(checked->data().toInt() == Browser::KindColumn ? 1 : 0, on ? Qt::DescendingOrder : Qt::AscendingOrder); return; }
+      if (browser()) browser()->setSort(checked->data().toInt(), !on);
+      saveView(); refresh();
     });
     auto *folders = sortMenu->addAction("Keep Folders on Top");
     namedActions["foldersFirst"] = folders;
@@ -2870,23 +2873,39 @@ private:
       namedActions["extract"]->setEnabled(!archives->busy() && urls.size() == 1 && Archives::canExtract(urls.first()).enabled);
       namedActions["cancelArchive"]->setEnabled(archives->busy());
     }
-    if (namedActions.contains("sortNone")) namedActions["sortNone"]->setEnabled(!showingSearch() && browser()->mode() == Browser::Icons);
-    if (namedActions.contains("snapToGrid")) {
-      QSignalBlocker block(namedActions["snapToGrid"]); namedActions["snapToGrid"]->setChecked(browser()->snapToGrid()); namedActions["snapToGrid"]->setEnabled(!showingSearch() && browser()->mode() == Browser::Icons);
+    const bool iconArrangement = !showingSearch() && browser()->mode() == Browser::Icons;
+    for (const auto &name : {"sortNone", "snapToGrid", "cleanUp", "cleanUpBy"}) {
+      if (!namedActions.contains(name)) continue;
+      auto *action = namedActions[name];
+      action->setVisible(iconArrangement);
+      action->setEnabled(iconArrangement && (QString(name) == "sortNone" || browser()->canArrangeIcons()));
     }
-    if (namedActions.contains("cleanUp")) namedActions["cleanUp"]->setEnabled(!showingSearch() && browser()->canArrangeIcons());
-    for (const auto &name : {"cleanUpBy", "groupBy", "foldersFirst"})
-      if (namedActions.contains(name)) namedActions[name]->setEnabled(!showingSearch());
+    if (namedActions.contains("snapToGrid")) {
+      QSignalBlocker block(namedActions["snapToGrid"]);
+      namedActions["snapToGrid"]->setChecked(browser()->snapToGrid());
+    }
+    if (namedActions.contains("groupBy")) namedActions["groupBy"]->setEnabled(!showingSearch());
+    if (namedActions.contains("foldersFirst")) {
+      auto *action = namedActions["foldersFirst"];
+      QSignalBlocker block(action);
+      action->setChecked(QSettings().value("View/foldersFirst", false).toBool());
+      action->setEnabled(!showingSearch() && browser()->sortColumn() == Browser::NameColumn);
+    }
     {
       QSignalBlocker blocker(iconSlider);
       iconSlider->setValue(browser()->iconSize());
     }
     iconSlider->setVisible(!showingSearch() && browser()->mode() == Browser::Icons);
     for (auto *a : sortGroup->actions()) {
-      a->setEnabled(!showingSearch() || a->data().toInt() == Browser::NameColumn || a->data().toInt() == Browser::KindColumn);
+      const int value = a->data().toInt();
+      const bool unavailable = value == Browser::DateAddedColumn || value == Browser::LastOpenedColumn;
+      a->setEnabled(!unavailable && (value == -1 ? iconArrangement :
+          (!showingSearch() || value == Browser::NameColumn || value == Browser::KindColumn)));
+      a->setToolTip(unavailable ? "This metadata is not available from the current filesystem provider." : QString());
       const int column = showingSearch() ? (searchPresentation->proxyModel()->sortColumn() == 1 ? Browser::KindColumn : Browser::NameColumn) : browser()->sortColumn();
-      a->setChecked(a->data().toInt() == column);
+      a->setChecked(value == column);
     }
+    descending->setEnabled(showingSearch() || browser()->sortColumn() >= 0);
     {
       QSignalBlocker blocker(descending);
       descending->setChecked(showingSearch() ? searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder : !browser()->sortAscending());
