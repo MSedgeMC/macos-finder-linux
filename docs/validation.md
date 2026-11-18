@@ -500,3 +500,49 @@ including the last-closed session width, and hiding Home/Recent Locations to
 match the supplied sidebar hierarchy. Other view, session and metadata values
 were preserved. Only the file-manager daemon restarted; the working compositor
 and desktop shell were not restarted.
+
+
+## Sidebar frost and color tuning, 2026-11-18
+
+[GitHub Actions run 44326241620](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44326241620)
+built source `f5052318857cf538f4f12ce453ed13a87d92805d`, passing all 23
+component suites. Downloaded artifact SHA256 is
+`714cca7af4883a1a6a3e75a1853506fbe5b207998b631695f9604a1b1faba49b`;
+source/hash/JUnit evidence and local runtime linkage were verified. There was
+no local compilation.
+
+Dark sidebar frost increases backdrop transmission from 9.02% to 16.86%,
+retaining RGB21/20/18 and native saturation0.35. Light transmission increases
+from 5.88% to 9.02%, with saturation0.7. Text/glyph contrast checks include
+both white and black backdrops; high contrast and reduced transparency keep
+opaque fallbacks. Sidebar glyph blue and neutral header/selected control
+colors were tuned against the supplied Finder capture. Resting toolbar fills
+and file-pane colors remain neutral and content-backed. Original bevel
+painting uses a quiet middle and top/bottom highlights; there are no new
+captures, shaders, idle timers or stacked compositor blur layers.
+
+The exact downloaded binary passed native material checks at 1× and 1.5×.
+Toolbar blur and backdrop-color deltas are zero. The sidebar's patterned
+backdrop color delta is3.457/3.931 RGB, with blurred/sharp detail ratios
+0.0144/0.00777. All168/426 transparent corner samples stayed unchanged outside
+the contour; all47/71 partial samples received material. The opaque file pane
+stayed unchanged. Dark/light before/after native captures over a private copy
+of the desktop wallpaper were inspected directly. A screenshot locator was
+corrected after the capture helper deactivated the native traffic lights;
+this was a test-harness failure, not an application crash. All22 sidebar
+boundary/layout captures passed, including modes, grouping, resize and search.
+
+914×433 Icons/List captures retain reference geometry. Sampled resting
+control fill, file surface and header background retain zero RGB error.
+A static matching view-control body/bevel profile improves from mean absolute
+RGB error3.27 to2.72. These small sampled comparisons do not establish
+whole-window pixel equality, genuine refraction or Apple's renderer.
+The selected font, icons, fixture names/images and backdrop differ. Current
+Apple Liquid Glass and adoption guidance was refreshed alongside the pinned
+community-source review; its AppKit/SwiftUI APIs are not Qt implementations.
+
+The artifact and nine-file deployment contents are staged and reviewed; only
+the executable differs from production. Installation currently awaits closed
+Finder/Quick Look windows because the scoped installer rejected preparation
+while they were open. The production service was not interrupted. Final
+installation verification will be recorded separately after the guard passes.
