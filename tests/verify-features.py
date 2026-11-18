@@ -28,6 +28,15 @@ def select(*paths):
  until(lambda:status()['count']>0,'listing before selection');assert api.selectFiles([str(path) for path in paths]);until(lambda:all(unquote(path.as_uri()) in [unquote(url) for url in status()['selected']] for path in paths),'selection');QTest.qWait(120)
 def action(name):return json.loads(str(api.actionState(name)))
 def navigate(path):assert api.navigate(str(path));until(lambda:unquote(status()['url'])==unquote(path.as_uri()),'navigate')
+def reconnect_after_exit():
+ global api
+ # D-Bus releases the old well-known name asynchronously. Wait for its
+ # departure before restarting, then bind to the replacement unique owner.
+ deadline=time.monotonic()+10
+ while bus.name_has_owner('org.local.FinderTest'):
+  assert time.monotonic()<deadline, 'old test service did not release its name'
+  QTest.qWait(25)
+ return deadline
 try:
  with tempfile.TemporaryDirectory(prefix='finder-extra-',dir=Path.home()) as scope:
   root=Path(scope)/'Documents';root.mkdir();other=Path(scope)/'Other';other.mkdir()
@@ -119,7 +128,7 @@ try:
    assert api.setControl('finderSettingsReduceTransparency',1);until(lambda:not status()['blur'],'reduced transparency disables blur');assert api.capture(str(out/'reduced-transparency.png'))
    assert api.setControl('finderSettingsReduceTransparency',0);assert api.setControl('finderSettingsIncreaseContrast',1);until(lambda:not status()['blur'],'increased contrast opaque');assert api.capture(str(out/'increased-contrast.png'))
    assert api.setControl('finderSettingsIncreaseContrast',0);assert api.setControl('finderSettingsAppearanceMode',0);until(lambda:status()['blur'],'dark blur restored');assert api.dialogButton('Close');record('appearance-light-contrast-and-transparency-controls')
-   trigger('search');assert api.setControl('finderSearchScope',1);assert api.setText('finderSearch','Bundle');until(lambda:status()['searchVisible'] and not status()['searchRunning'] and status()['searchResults']>=1,'session hidden search');hidden_index=next(i for i,w in enumerate(windows()) if w.get('searchVisible'));other_index=next(i for i in range(len(windows())) if i!=hidden_index);assert api.activateWindow(other_index);QTest.qWait(250);trigger('hideOthers');trigger('quit');p.wait(timeout=10);p=subprocess.Popen([str(args.binary.resolve()),'--test-mode','--restore-session'],stdout=log,stderr=log);until(lambda:bus.name_has_owner('org.local.FinderTest'),'restart session');api=dbus.Interface(bus.get_object('org.local.FinderTest','/Test'),'org.local.FinderTest');until(lambda:any(w.get('search')=='Bundle' and w.get('searchVisible') and w.get('sidebarVisible') and w.get('headerHeight')==52 for w in windows()),'hidden window chrome and search restored');record('hidden-window-session-preserves-chrome-and-search')
+   trigger('search');assert api.setControl('finderSearchScope',1);assert api.setText('finderSearch','Bundle');until(lambda:status()['searchVisible'] and not status()['searchRunning'] and status()['searchResults']>=1,'session hidden search');hidden_index=next(i for i,w in enumerate(windows()) if w.get('searchVisible'));other_index=next(i for i in range(len(windows())) if i!=hidden_index);assert api.activateWindow(other_index);QTest.qWait(250);trigger('hideOthers');trigger('quit');p.wait(timeout=10);reconnect_after_exit();p=subprocess.Popen([str(args.binary.resolve()),'--test-mode','--restore-session'],stdout=log,stderr=log);until(lambda:bus.name_has_owner('org.local.FinderTest'),'restart session');api=dbus.Interface(bus.get_object('org.local.FinderTest','/Test'),'org.local.FinderTest');until(lambda:any(w.get('search')=='Bundle' and w.get('searchVisible') and w.get('sidebarVisible') and w.get('headerHeight')==52 for w in windows()),'hidden window chrome and search restored');record('hidden-window-session-preserves-chrome-and-search')
    assert api.capture(str(out/'completed-window.png'))
    result={'passed':True,'checks':checks,'privateWayland':True,'fixtureOnlyWrites':True}
 except Exception as e:

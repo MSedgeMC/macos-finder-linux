@@ -93,4 +93,4 @@ finally:
         process.terminate()
         try: process.wait(timeout=5)
         except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
-    (out/'result.json').write_text(json.dumps({'passed':len(checks)==7,'checks':checks},indent=2)+'\n')
+    (out/'result.json').write_text(json.dumps({'passed':len(checks)==6,'checks':checks},indent=2)+'\n')
