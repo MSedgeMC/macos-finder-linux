@@ -88,6 +88,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(gestures, &FinderGestures::Controller::zoomRequested, this, [this](QWidget *, qreal factor, const QPointF &) { m_preview->setZoomFactor(m_preview->zoomFactor() * factor); });
     splitter->setStretchFactor(0, 0); splitter->setStretchFactor(1, 1); splitter->setSizes({166, 794});
     m_edits = new QuickActions(this);
+    m_status = new QStatusBar(base); m_status->setSizeGripEnabled(false); m_status->hide(); layout->addWidget(m_status);
     auto *application = menus->addMenu(tr("Preview"));
     auto *preferences = application->addAction(tr("Settings…"), this, [this] { settingsDialog(); });
     preferences->setObjectName("previewAppSettings"); preferences->setShortcuts({QKeySequence("Ctrl+,"), QKeySequence("Meta+,")});
@@ -172,9 +173,9 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(m_preview, &PreviewPane::pdfPageChanged, this, [this] { updateActions(); });
     connect(m_preview, &PreviewPane::actionError, this, [this](const QUrl &, const QString &error) { FinderAlert::showError(this, tr("The document couldn’t be opened."), error); });
     connect(m_edits, &QuickActions::busyChanged, this, [this] { updateActions(); });
-    connect(m_edits, &QuickActions::statusChanged, this, [this](const QString &text) { statusBar()->showMessage(text); });
+    connect(m_edits, &QuickActions::statusChanged, this, [this](const QString &text) { m_status->show(); m_status->showMessage(text); });
     connect(m_edits, &QuickActions::errorOccurred, this, [this](const QString &error) { FinderAlert::showError(this, tr("The export couldn’t be completed."), error); });
-    connect(m_edits, &QuickActions::outputCreated, this, [this](const QUrl &url) { statusBar()->showMessage(tr("Created %1").arg(url.fileName()), 10000); });
+    connect(m_edits, &QuickActions::outputCreated, this, [this](const QUrl &url) { m_status->show(); m_status->showMessage(tr("Created %1").arg(url.fileName()), 10000); });
     auto restyle = [this] {
         setPalette(FinderAppearance::palette());
         setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} QMenuBar{background:palette(window);color:palette(window-text);border:0;padding:2px;} QMenuBar::item{padding:4px 10px;} #previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"

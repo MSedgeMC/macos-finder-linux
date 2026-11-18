@@ -11,6 +11,7 @@ namespace KIO { class PreviewJob; }
 class PreviewPane;
 class QListWidget;
 class QMenu;
+class QStatusBar;
 class QuickActions;
 class ViewerWindow final : public QMainWindow {
 public:
@@ -34,6 +35,7 @@ private:
     QMenu *m_recent;
     QMenu *m_tools;
     QuickActions *m_edits;
+    QStatusBar *m_status;
     QTimer m_thumbnailTimer;
     QPointer<KIO::PreviewJob> m_thumbnailJob;
     QSet<QUrl> m_thumbnailLoaded;
