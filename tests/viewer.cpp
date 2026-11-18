@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     window.findChild<QAction *>("previewAppNext")->trigger();
     auto *text = pane->findChild<QTextEdit *>("previewText");
     check(waitFor([&] { return text->toPlainText().contains("Readable standalone document"); }) && sidebar->currentRow() == 2, "text opens asynchronously and advances exact URL");
-    check(!window.findChild<QAction *>("previewAppNext")->isEnabled() && window.findChild<QAction *>("previewAppFind")->isEnabled(), "last item and text Find capabilities");
+    check(waitFor([&] { return !window.findChild<QAction *>("previewAppNext")->isEnabled() && window.findChild<QAction *>("previewAppFind")->isEnabled(); }), "last item and text Find capabilities");
     window.findChild<QAction *>("previewAppFind")->trigger();
     auto *find = window.findChild<QDialog *>("previewAppTextFind"); check(find, "text Find opens native panel"); find->close();
     window.findChild<QAction *>("previewAppSettings")->trigger();

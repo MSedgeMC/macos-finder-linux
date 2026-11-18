@@ -250,7 +250,7 @@ void ViewerWindow::setUrls(const QList<QUrl> &urls) {
     QStringList recent = QSettings().value("Viewer/recentUrls").toStringList();
     for (const auto &url : accepted) { const auto key = url.toString(QUrl::FullyEncoded); recent.removeAll(key); recent.prepend(key); }
     while (recent.size() > 20) recent.removeLast(); QSettings().setValue("Viewer/recentUrls", recent);
-    updateActions(); m_thumbnailTimer.start();
+    rebuildSidebar(); updateActions(); m_thumbnailTimer.start();
 }
 QList<QUrl> ViewerWindow::urls() const { return m_preview->urls(); }
 PreviewPane *ViewerWindow::preview() const { return m_preview; }
