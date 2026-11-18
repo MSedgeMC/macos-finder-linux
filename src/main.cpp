@@ -4111,6 +4111,9 @@ public slots:
           b->setValue(value);
           return true;
         }
+        if (auto *b = w->findChild<QSlider *>(name)) {
+          b->setValue(value); return true;
+        }
         if (auto *b = w->findChild<QCheckBox *>(name)) {
           if (!b->isEnabled() || !b->isVisible()) continue;
           b->setChecked(value);
