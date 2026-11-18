@@ -283,6 +283,8 @@ public:
     using QLabel::QLabel;
     QImage raster;
     qreal zoom = 1;
+    bool actualSize = false;
+    QSize originalSize;
     QPointF pan;
     std::function<void(qreal)> zoomRequested;
     void constrainPan() {
@@ -301,7 +303,7 @@ protected:
         painter.drawImage(QRectF(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2) + pan, size), raster);
     }
     void mousePressEvent(QMouseEvent *event) override {
-        if (event->button() == Qt::LeftButton && zoom > 1) {
+        if (event->button() == Qt::LeftButton && (fittedSize().width() > width() || fittedSize().height() > height())) {
             dragging = true; last = event->position(); setCursor(Qt::ClosedHandCursor); event->accept();
         } else QLabel::mousePressEvent(event);
     }
@@ -326,7 +328,7 @@ protected:
         } else QLabel::wheelEvent(event);
     }
 private:
-    QSizeF fittedSize() const { return QSizeF(raster.size()).scaled(QSizeF(size()), Qt::KeepAspectRatio) * zoom; }
+    QSizeF fittedSize() const { return actualSize && !originalSize.isEmpty() ? QSizeF(originalSize) : QSizeF(raster.size()).scaled(QSizeF(size()), Qt::KeepAspectRatio) * zoom; }
     bool dragging = false;
     QPointF last;
 };
@@ -676,7 +678,7 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_text = new QTextEdit(this);
     m_text->setObjectName(QStringLiteral("previewText"));
     m_text->setReadOnly(true);
-    m_text->setLineWrapMode(QTextEdit::NoWrap);
+    m_text->setLineWrapMode(QTextEdit::WidgetWidth);
     m_text->setAcceptRichText(false);
     m_text->setFrameShape(QFrame::NoFrame);
     QFont monospace(QStringLiteral("Noto Sans Mono"));
@@ -777,13 +779,22 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     auto *viewMenu = nativeMenu->addMenu(tr("View"));
     m_zoomOutAction = viewMenu->addAction(tr("Zoom Out"));
     m_zoomOutAction->setObjectName(QStringLiteral("previewZoomOutAction"));
-    m_zoomOutAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+-")));
+    m_zoomOutAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+-")), QKeySequence(QStringLiteral("Meta+-"))});
     m_zoomInAction = viewMenu->addAction(tr("Zoom In"));
     m_zoomInAction->setObjectName(QStringLiteral("previewZoomInAction"));
-    m_zoomInAction->setShortcut(QKeySequence(QStringLiteral("Ctrl++")));
-    m_zoomResetAction = viewMenu->addAction(tr("Fit"));
+    m_zoomInAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl++")), QKeySequence(QStringLiteral("Meta++"))});
+    m_zoomResetAction = viewMenu->addAction(tr("Fit to Window"));
     m_zoomResetAction->setObjectName(QStringLiteral("previewFitAction"));
-    m_zoomResetAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    m_zoomResetAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+0")), QKeySequence(QStringLiteral("Meta+0"))});
+    m_actualSizeAction = viewMenu->addAction(tr("Actual Size"));
+    m_actualSizeAction->setObjectName(QStringLiteral("previewActualSizeAction"));
+    m_actualSizeAction->setShortcuts({QKeySequence(QStringLiteral("Ctrl+1")), QKeySequence(QStringLiteral("Meta+1"))});
+    m_actualSizeAction->setToolTip(tr("One original image pixel per screen point. Preview detail is limited by the decoded raster."));
+    connect(m_actualSizeAction, &QAction::triggered, this, &PreviewPane::actualSize);
+    m_textWrapAction = viewMenu->addAction(tr("Wrap Text"));
+    m_textWrapAction->setObjectName(QStringLiteral("previewWrapTextAction"));
+    m_textWrapAction->setCheckable(true); m_textWrapAction->setChecked(true);
+    connect(m_textWrapAction, &QAction::toggled, this, &PreviewPane::setTextWrapping);
     viewMenu->addSeparator();
     m_contactAction = viewMenu->addAction(tr("Index Sheet"));
     m_contactAction->setObjectName(QStringLiteral("previewIndexSheetAction"));
@@ -1009,6 +1020,7 @@ void PreviewPane::updateQuickLook(const QList<QUrl> &urls, const QUrl &primary)
 void PreviewPane::setZoomFactor(qreal factor)
 {
     if (!std::isfinite(factor)) return;
+    m_actualSize = false;
     m_zoom = std::clamp(factor, .25, 16.0);
     if (m_content->currentWidget() == m_pdfView) {
         const int page = m_pdfView->currentPage();
@@ -1024,6 +1036,29 @@ void PreviewPane::resetZoom()
     static_cast<PreviewImageLabel *>(m_picture)->pan = {};
     setZoomFactor(1);
 }
+
+void PreviewPane::actualSize()
+{
+    if (m_originalImageSize.isEmpty() || m_image.isNull() || m_content->currentWidget() != m_picture) return;
+    m_actualSize = true;
+    static_cast<PreviewImageLabel *>(m_picture)->pan = {};
+    updateImageSize(); updatePreviewControls();
+}
+
+qreal PreviewPane::imageScale() const
+{
+    if (m_originalImageSize.isEmpty() || m_picture->width() < 1 || m_picture->height() < 1) return 0;
+    return m_actualSize ? 1 : std::min(qreal(m_picture->width()) / m_originalImageSize.width(),
+        qreal(m_picture->height()) / m_originalImageSize.height()) * m_zoom;
+}
+
+void PreviewPane::setTextWrapping(bool enabled)
+{
+    m_text->setLineWrapMode(enabled ? QTextEdit::WidgetWidth : QTextEdit::NoWrap);
+    const QSignalBlocker blocker(m_textWrapAction); m_textWrapAction->setChecked(enabled);
+}
+
+bool PreviewPane::textWrapping() const { return m_text->lineWrapMode() != QTextEdit::NoWrap; }
 
 void PreviewPane::setFullScreen(bool enabled)
 {
@@ -1318,7 +1353,9 @@ void PreviewPane::updatePreviewControls()
     m_zoomIn->setEnabled(raster && m_zoom < 16);
     m_zoomOut->setEnabled(raster && m_zoom > .25);
     m_zoomReset->setEnabled(raster);
-    m_zoomReset->setText(qFuzzyCompare(m_zoom, 1) ? tr("Fit") : tr("%1% of Fit").arg(qRound(m_zoom * 100)));
+    m_zoomReset->setText(m_content->currentWidget() == m_picture && imageScale() > 0 ? tr("%1%").arg(qRound(imageScale() * 100)) :
+        qFuzzyCompare(m_zoom, 1) ? tr("Fit") : tr("%1% of Fit").arg(qRound(m_zoom * 100)));
+    m_zoomReset->setToolTip(tr("Fit to Window"));
     m_contactToggle->setEnabled(m_urls.size() > 1);
     m_contactToggle->setChecked(m_contactSheet);
     m_slideshow->setEnabled(m_urls.size() > 1);
@@ -1329,7 +1366,10 @@ void PreviewPane::updatePreviewControls()
     m_zoomOutAction->setEnabled(m_zoomOut->isEnabled());
     m_zoomInAction->setEnabled(m_zoomIn->isEnabled());
     m_zoomResetAction->setEnabled(raster);
-    m_zoomResetAction->setText(m_zoomReset->text());
+    m_actualSizeAction->setVisible(m_content->currentWidget() == m_picture);
+    m_actualSizeAction->setEnabled(raster && !m_originalImageSize.isEmpty() && m_content->currentWidget() == m_picture);
+    m_textWrapAction->setVisible(m_content->currentWidget() == m_text);
+    m_textWrapAction->setEnabled(m_textReady);
     const bool quickLook = !m_compact && !m_gallery;
     m_contactAction->setEnabled(quickLook && m_urls.size() > 1);
     m_contactAction->setChecked(m_contactSheet);
@@ -2190,7 +2230,9 @@ void PreviewPane::updateImageSize()
 {
     if (m_image.isNull()) return;
     auto *picture = static_cast<PreviewImageLabel *>(m_picture);
-    picture->zoom = m_zoom;
+    if (m_actualSize && !m_originalImageSize.isEmpty() && m_picture->width() > 0 && m_picture->height() > 0)
+        m_zoom = 1 / std::min(qreal(m_picture->width()) / m_originalImageSize.width(), qreal(m_picture->height()) / m_originalImageSize.height());
+    picture->zoom = m_zoom; picture->actualSize = m_actualSize; picture->originalSize = m_originalImageSize;
     picture->constrainPan();
     picture->update();
     const QSize size = m_picture->contentsRect().size();
@@ -2802,7 +2844,7 @@ void PreviewPane::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     if (m_gallery) updateGalleryWidth();
-    updateImageSize();
+    updateImageSize(); updatePreviewControls();
     if (m_contactSheet) m_contactTimer->start();
 }
 
@@ -2870,6 +2912,8 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
     } else if (command && event->key() == Qt::Key_0 && (m_content->currentWidget() == m_picture || m_content->currentWidget() == m_pdfView)) {
         resetZoom();
         event->accept();
+    } else if (command && event->key() == Qt::Key_1 && m_content->currentWidget() == m_picture) {
+        actualSize(); event->accept();
     } else if (command && event->key() == Qt::Key_F && m_content->currentWidget() == m_pdfView) {
         m_pageControls->show();
         m_pdfSearch->setFocus(); m_pdfSearch->selectAll(); event->accept();

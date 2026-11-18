@@ -326,6 +326,18 @@ int main(int argc, char **argv)
     check(pane.toggleQuickLook({redUrl, blueUrl}, blueUrl), "reusable Quick Look opens");
     check(pane.currentUrl() == blueUrl && changes == 1, "host primary selection emits one change");
     check(waitFor([&] { return pane.originalImageSize() == blue.size(); }), "primary selection renders");
+    auto *actualSizeAction = pane.findChild<QAction *>("previewActualSizeAction");
+    check(actualSizeAction && actualSizeAction->isEnabled(), "image actual-size action is available");
+    const QImage fitCapture = image->grab().toImage();
+    const QImage boundedRaster = image->pixmap().toImage();
+    actualSizeAction->trigger();
+    check(qFuzzyCompare(pane.imageScale(), 1) && image->grab().toImage() != fitCapture, "actual size uses source geometry instead of fit");
+    pane.resize(820, 620); QApplication::processEvents();
+    check(qFuzzyCompare(pane.imageScale(), 1) && image->pixmap().size().width() <= 4096, "actual size survives resizing with bounded raster");
+    pane.resetZoom();
+    check(pane.imageScale() != 1 && pane.zoomFactor() == 1, "Fit restores responsive image scaling");
+    pane.resize(640, 480); QApplication::processEvents();
+    check(!boundedRaster.isNull(), "actual-size fixture raster was decoded");
     pane.setZoomFactor(2);
     check(pane.zoomFactor() == 2, "zoom API");
     pane.setHostWindowControls(true);
@@ -448,13 +460,21 @@ int main(int argc, char **argv)
     check(tagStatus->text().isEmpty(), "success clears tag error");
     pane.setGallery(false);
     const auto textPath = files.filePath("preview.txt");
-    { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n"); }
+    { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n" + QByteArray(5000, 'x')); }
     int readiness = 0;
     QObject::connect(&pane, &PreviewPane::printReadinessChanged, [&](bool ready) { if (ready) ++readiness; });
     pane.setUrls({QUrl::fromLocalFile(textPath)});
     check(!pane.canPrintCurrent(), "text Print waits for asynchronous readiness");
     auto *text = pane.findChild<QTextEdit *>("previewText");
     check(waitFor([&] { return content->currentWidget() == text; }), "text preview loads asynchronously");
+    auto *wrap = pane.findChild<QAction *>("previewWrapTextAction");
+    check(wrap && wrap->isVisible() && pane.textWrapping() && !actualSizeAction->isVisible(), "document-specific wrapping replaces image controls");
+    const QString originalText = text->toPlainText(); wrap->trigger(); QApplication::processEvents();
+    check(!pane.textWrapping() && text->horizontalScrollBar()->maximum() > 0 && text->toPlainText() == originalText,
+        "unwrapped long text scrolls horizontally without altering content");
+    wrap->trigger(); QApplication::processEvents();
+    check(pane.textWrapping() && text->horizontalScrollBar()->maximum() == 0 && text->toPlainText() == originalText,
+        "wrapped text stays readable at the current viewport width");
 #if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
     check(readiness == 1 && pane.canPrintCurrent(), "text Print readiness notifies host after first load");
     pane.printToPrinter(pdfPrinter(files.filePath("printed-text.pdf")));

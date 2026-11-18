@@ -73,6 +73,12 @@ public:
     void setZoomFactor(qreal factor);
     qreal zoomFactor() const;
     void resetZoom();
+    // Image dimensions at one original pixel per logical screen pixel. Uses
+    // the bounded raster; large enlargement may be less detailed than source.
+    void actualSize();
+    qreal imageScale() const;
+    void setTextWrapping(bool enabled);
+    bool textWrapping() const;
     void setFullScreen(bool fullScreen);
     // Fullscreen transitions use the pane's top-level window, restore its
     // prior state and are disabled for compact/Gallery embedding.
@@ -240,6 +246,7 @@ private:
     bool m_compact = false;
     bool m_contactSheet = false;
     qreal m_zoom = 1;
+    bool m_actualSize = false;
     Qt::WindowStates m_beforeFullScreen;
     quint64 m_contactGeneration = 0;
     QListWidget *m_contactList;
@@ -271,6 +278,8 @@ private:
     QAction *m_zoomOutAction;
     QAction *m_zoomInAction;
     QAction *m_zoomResetAction;
+    QAction *m_actualSizeAction;
+    QAction *m_textWrapAction;
     QAction *m_contactAction;
     QAction *m_slideshowAction;
     QAction *m_fullScreenAction;
