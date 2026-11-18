@@ -229,8 +229,7 @@ int main(int argc, char **argv)
     preview.setUrls({QUrl::fromLocalFile(textFile.fileName())});
     auto *text = preview.findChild<QTextEdit *>("previewText");
     check(text && waitFor([&] { return text->toPlainText().contains("Readable preview"); }), "real preview worker result");
-    browser.setAttribute(Qt::WA_DontShowOnScreen);
-    browser.setMode(Browser::Gallery); browser.show(); QApplication::processEvents();
+    browser.setMode(Browser::Gallery); QApplication::processEvents();
     auto *strip = browser.findChild<QListView *>("finderGalleryStrip");
     const QImage names = strip->grab().toImage(); const int namedHeight = strip->height();
     browser.setGalleryFilenamesShown(false); QApplication::processEvents();
