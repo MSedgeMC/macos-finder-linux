@@ -59,6 +59,9 @@ The chrome keeps native move, edge resize with cursor feedback, minimize, fill/r
 The sidebar and the header's sidebar segment request region-limited KWin blur
 of the actual compositor backdrop. They use a restrained dark neutral tint,
 reduced backdrop saturation and a readable solid fallback when blur is unavailable.
+The sidebar frost uses dark RGB21/20/18 at alpha212 and light RGB242/242/245
+at alpha232, with native backdrop saturation0.35/0.7 respectively. Its modest
+transmission reveals broad blurred color while keeping navigation readable.
 The content toolbar remains an opaque `#1e1e1e` surface in normal dark mode;
 individual controls never expose holes into the unrelated desktop behind it.
 Wallpaper is not substituted for windows behind the application. The coating approximates a glass appearance; genuine backdrop
@@ -66,7 +69,9 @@ refraction and Apple's proprietary material renderer are not implemented.
 Foreground text, icons and file content remain crisp. Shared toolbar capsules
 use an original directional coating, contour highlights and native button
 hover, pressed, checked and keyboard-focus states. Capsules are neutral,
-content-backed controls with restrained meniscus shading; they do not capture
+content-backed controls with restrained top/bottom bevel highlights; selected
+dark controls use RGB45 and navigation glyphs have a dedicated saturated blue
+separate from readable link colors. They do not capture
 wallpaper or add continuous sampling.
 High contrast and reduced transparency use readable opaque fills. These
 controls do not implement refraction or Apple's material interaction physics.
