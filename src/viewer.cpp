@@ -53,7 +53,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     print->setShortcuts({QKeySequence("Ctrl+P"), QKeySequence("Meta+P")}); file->addSeparator();
     auto *close = file->addAction(tr("Close"), this, &QWidget::close); close->setShortcuts({QKeySequence("Ctrl+W"), QKeySequence("Meta+W")});
     auto *edit = menuBar()->addMenu(tr("Edit"));
-    auto *undo = edit->addAction(tr("Undo"), this, [this] { KIO::FileUndoManager::self()->undo(this); });
+    auto *undo = edit->addAction(tr("Undo"), this, [this] { auto *manager = KIO::FileUndoManager::self(); manager->uiInterface()->setParentWidget(this); if (manager->isUndoAvailable()) manager->undo(); });
     undo->setObjectName("previewAppUndo"); undo->setShortcuts({QKeySequence("Ctrl+Z"), QKeySequence("Meta+Z")});
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable, undo, &QAction::setEnabled);
     undo->setEnabled(KIO::FileUndoManager::self()->isUndoAvailable());
