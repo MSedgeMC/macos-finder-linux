@@ -24,6 +24,7 @@
 #include "windowcontrols.h"
 #include "glasscontrols.h"
 #include "windowcontour.h"
+#include "sidebarsplitter.h"
 #include "viewer.h"
 #include <KDirLister>
 #include <KDirModel>
@@ -232,31 +233,6 @@ protected:
   void paintEvent(QPaintEvent *) override {
     QPainter painter(this);
     painter.fillRect(rect(), palette().color(QPalette::Base));
-  }
-};
-class SidebarHandle : public QSplitterHandle {
-public:
-  using QSplitterHandle::QSplitterHandle;
-
-protected:
-  // The zero-width handle overlaps both adjoining panes for native resize
-  // input. Leave their pixels visible instead of painting a style separator.
-  void paintEvent(QPaintEvent *) override {}
-};
-class SidebarSplitter : public QSplitter {
-public:
-  explicit SidebarSplitter(QWidget *parent = nullptr)
-      : QSplitter(Qt::Horizontal, parent) {
-    // Qt retains a wider overlapping grab area when the layout width is zero.
-    // No transparent layout strip is reserved between sidebar and file pane.
-    setHandleWidth(0);
-  }
-
-protected:
-  QSplitterHandle *createHandle() override {
-    auto *handle = new SidebarHandle(orientation(), this);
-    handle->setAccessibleName("Resize Sidebar");
-    return handle;
   }
 };
 class Header : public Material {

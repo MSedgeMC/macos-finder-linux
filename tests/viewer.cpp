@@ -20,6 +20,8 @@
 #include <QDropEvent>
 #include <QSettings>
 #include <QDialog>
+#include <QSplitter>
+#include <QScrollBar>
 #include <iostream>
 #include <functional>
 namespace {
@@ -31,7 +33,7 @@ bool waitFor(const std::function<bool()> &condition) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv); app.setOrganizationName("FinderViewerTests"); app.setApplicationName("Finder"); FinderAppearance::apply(&app);
     QTemporaryDir fixture; check(fixture.isValid(), "private fixtures");
-    const QUrl imageUrl = QUrl::fromLocalFile(fixture.filePath("Image.png"));
+    const QUrl imageUrl = QUrl::fromLocalFile(fixture.filePath("A very long image filename that needs an accessible elided label.png"));
     const QUrl pdfUrl = QUrl::fromLocalFile(fixture.filePath("Document.pdf"));
     const QUrl textUrl = QUrl::fromLocalFile(fixture.filePath("Readme.txt"));
     QImage image(600, 400, QImage::Format_RGB32); image.fill(Qt::cyan); check(image.save(imageUrl.toLocalFile()), "image fixture");
@@ -42,6 +44,11 @@ int main(int argc, char **argv) {
     check(sidebar && sidebar->count() == 3 && waitFor([&] { return pane->originalImageSize() == image.size(); }), "standalone opens an image with ordered documents");
     pane->actualSize(); check(pane->imageScale() == 1, "standalone actual size");
     check(waitFor([&] { return sidebar->item(0)->data(Qt::UserRole + 1).toBool(); }), "native image thumbnail delivered");
+    auto *splitter = window.findChild<QSplitter *>("previewAppSplitter");
+    splitter->setSizes({100, 860}); QApplication::processEvents();
+    check(sidebar->horizontalScrollBar()->maximum() == 0 && sidebar->visualItemRect(sidebar->item(0)).right() < sidebar->viewport()->width(), "narrow sidebar retains thumbnail and long filename without horizontal scrolling");
+    splitter->setSizes({220, 740}); QApplication::processEvents();
+    check(sidebar->visualItemRect(sidebar->item(0)).width() > 150, "thumbnail layout follows native sidebar resizing");
     QKeyEvent space(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier); QApplication::sendEvent(pane, &space);
     QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier); QApplication::sendEvent(pane, &escape);
     check(window.isVisible() && pane->isVisible(), "standalone Space and Escape retain the document window");

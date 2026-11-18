@@ -5,6 +5,7 @@
 #include "quickactions.h"
 #include "appearance.h"
 #include "windowcontour.h"
+#include "sidebarsplitter.h"
 #include "windowcontrols.h"
 #include "windowframe.h"
 #include "gestures.h"
@@ -43,11 +44,28 @@
 #include <QClipboard>
 #include <QToolButton>
 #include <QScrollBar>
+#include <QResizeEvent>
 #include <KIO/PreviewJob>
 #include <KFileItem>
 #include <KIO/FileUndoManager>
 
 namespace {
+class DocumentSidebar final : public QListWidget {
+public:
+    explicit DocumentSidebar(QWidget *parent) : QListWidget(parent) {
+        setViewMode(QListView::IconMode); setFlow(QListView::TopToBottom);
+        setWrapping(false); setMovement(QListView::Static);
+        setResizeMode(QListView::Adjust); setSpacing(6);
+        setWordWrap(false); setTextElideMode(Qt::ElideMiddle);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        setIconSize(QSize(80, 80));
+    }
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QListWidget::resizeEvent(event);
+        setGridSize(QSize(qMax(1, viewport()->width() - 2 * spacing()), 112));
+    }
+};
 class ViewerHeader final : public QWidget {
 public: using QWidget::QWidget;
 protected:
@@ -69,10 +87,10 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *header = new ViewerHeader(base); header->setFixedHeight(40); header->setObjectName("previewAppHeader");
     auto *chrome = new QHBoxLayout(header); chrome->setContentsMargins(12, 4, 12, 4); chrome->setSpacing(7);
     layout->addWidget(header);
-    auto *splitter = new QSplitter(base); splitter->setObjectName("previewAppSplitter"); layout->addWidget(splitter, 1);
-    m_sidebar = new QListWidget(splitter); m_sidebar->setObjectName("previewAppSidebar");
-    m_sidebar->setAccessibleName(tr("Open documents")); m_sidebar->setIconSize(QSize(64, 64));
-    m_sidebar->setMinimumWidth(100); m_sidebar->setMaximumWidth(260); m_sidebar->setWordWrap(true);
+    auto *splitter = new SidebarSplitter(base); splitter->setObjectName("previewAppSplitter"); layout->addWidget(splitter, 1);
+    m_sidebar = new DocumentSidebar(splitter); m_sidebar->setObjectName("previewAppSidebar");
+    m_sidebar->setAccessibleName(tr("Open documents"));
+    m_sidebar->setMinimumWidth(100); m_sidebar->setMaximumWidth(260);
     m_preview = new PreviewPane(splitter); m_preview->setHostWindowControls(true); m_preview->setHostedQuickLook(true);
     for (const auto &kind : {"close", "minimize", "maximize"}) {
         auto *control = new WindowControl(kind, header); chrome->addWidget(control);
