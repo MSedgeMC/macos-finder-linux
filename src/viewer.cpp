@@ -45,11 +45,47 @@
 #include <QToolButton>
 #include <QScrollBar>
 #include <QResizeEvent>
+#include <QStyledItemDelegate>
+#include <QStyleOptionFocusRect>
+#include <QStyle>
 #include <KIO/PreviewJob>
 #include <KFileItem>
 #include <KIO/FileUndoManager>
 
 namespace {
+class ThumbnailDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &) const override {
+        const auto *view = qobject_cast<const QListWidget *>(option.widget);
+        return QSize(view ? qMax(1, view->viewport()->width() - 2 * view->spacing()) : 140, 112);
+    }
+    void paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
+        QStyleOptionViewItem item(option); initStyleOption(&item, index);
+        painter->save(); painter->setClipRect(item.rect);
+        const bool selected = item.state & QStyle::State_Selected;
+        if (selected) {
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(Qt::NoPen); painter->setBrush(item.palette.highlight());
+            painter->drawRoundedRect(item.rect.adjusted(2, 2, -2, -2), 7, 7);
+        }
+        const QRect icon(item.rect.center().x() - 40, item.rect.top() + 6, 80, 80);
+        item.icon.paint(painter, icon, Qt::AlignCenter,
+                        item.state & QStyle::State_Enabled ? QIcon::Normal : QIcon::Disabled);
+        const QRect label = item.rect.adjusted(6, 88, -6, -5);
+        painter->setFont(item.font);
+        painter->setPen(selected ? item.palette.highlightedText().color() : item.palette.text().color());
+        painter->drawText(label, Qt::AlignHCenter | Qt::AlignVCenter,
+                          item.fontMetrics.elidedText(item.text, Qt::ElideMiddle, label.width()));
+        if (item.state & QStyle::State_HasFocus) {
+            QStyleOptionFocusRect focus; focus.QStyleOption::operator=(item);
+            focus.rect = item.rect.adjusted(3, 3, -3, -3);
+            focus.backgroundColor = selected ? item.palette.highlight().color() : item.palette.base().color();
+            (item.widget ? item.widget->style() : QApplication::style())->drawPrimitive(QStyle::PE_FrameFocusRect, &focus, painter, item.widget);
+        }
+        painter->restore();
+    }
+};
 class DocumentSidebar final : public QListWidget {
 public:
     explicit DocumentSidebar(QWidget *parent) : QListWidget(parent) {
@@ -59,6 +95,7 @@ public:
         setWordWrap(false); setTextElideMode(Qt::ElideMiddle);
         setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         setIconSize(QSize(80, 80));
+        setItemDelegate(new ThumbnailDelegate(this));
     }
 protected:
     void resizeEvent(QResizeEvent *event) override {
