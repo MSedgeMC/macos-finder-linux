@@ -238,7 +238,7 @@ ViewerWindow::~ViewerWindow() {
 }
 void ViewerWindow::setUrls(const QList<QUrl> &urls) {
     QList<QUrl> accepted; for (const auto &url : urls) if (url.isValid() && !url.isEmpty() && !url.isRelative() && url.password().isEmpty() && !accepted.contains(url) && accepted.size() < 4096) accepted.append(url);
-    ++m_thumbnailGeneration; m_sidebarPdf = {}; m_pageThumbnailsPending = false;
+    ++m_thumbnailGeneration; m_sidebarPdf = QUrl(); m_pageThumbnailsPending = false;
     if (m_thumbnailJob) { m_thumbnailJob->kill(); m_thumbnailJob = nullptr; }
     m_thumbnailLoaded.clear();
     const QSignalBlocker blocker(m_sidebar); m_sidebar->clear();
