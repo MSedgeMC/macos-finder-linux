@@ -2390,7 +2390,13 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->strip->setAccessibleName(tr("Files in gallery view"));
 }
 
-Browser::~Browser() = default;
+Browser::~Browser() {
+    // QWidget destroys children after d has been released. KCoreDirLister
+    // emits canceled while it is destroyed, and models/views may emit reset
+    // or selection signals. Detach their callbacks while private state lives.
+    for (auto *child : findChildren<QObject *>())
+        QObject::disconnect(child, nullptr, this, nullptr);
+}
 QUrl Browser::url() const { return d->currentUrl; }
 Browser::Mode Browser::mode() const { return d->currentMode; }
 int Browser::iconSize() const { return activeView()->iconSize().width(); }

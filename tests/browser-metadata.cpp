@@ -26,6 +26,7 @@
 #include <QSettings>
 #include <QTreeView>
 #include <KDirModel>
+#include <KDirLister>
 #include <functional>
 #include <iostream>
 #include <sys/stat.h>
@@ -237,6 +238,24 @@ int main(int argc, char **argv) {
     // Repeated reads use already-delivered caches; no metadata queue/timer is started by paint roles.
     for (int i = 0; i < 1000; ++i) browser.metadata(QUrl::fromLocalFile(files.filePath("folder-z/other")), Browser::DateCreatedRole);
     browser.hide();
+    // Emulate KCoreDirLister's synchronous canceled signal during child
+    // teardown. Browser private state is already gone at this point.
+    auto *closing = new Browser;
+    auto *lister = closing->directoryModel()->dirLister();
+    bool canceledDuringTeardown = false;
+    QObject::connect(closing->directoryModel(), &QObject::destroyed, &app, [&] {
+        canceledDuringTeardown = QMetaObject::invokeMethod(lister, "canceled", Qt::DirectConnection);
+    });
+    closing->navigate(root);
+    delete closing;
+    check(canceledDuringTeardown, "native cancellation during child teardown cannot access destroyed Browser state");
+    for (int i = 0; i < 8; ++i) {
+        auto *pending = new Browser;
+        pending->navigate(root);
+        pending->navigate(otherFolder);
+        delete pending;
+        QApplication::processEvents();
+    }
     std::cout << "PASS: Browser metadata, List state, proxy mapping, real tags, bounded sizes and cancellation" <<
         (tagsSupported ? "\n" : " (xattr tags unavailable on fixture filesystem)\n");
     return 0;
