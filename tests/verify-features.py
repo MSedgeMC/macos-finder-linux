@@ -54,7 +54,7 @@ try:
    assert action('putBack')['enabled'];assert not action('rename')['enabled'];trigger('putBack');until(second.exists,'put back original');assert second.read_text()=='Keep this file unchanged';record('trash-put-back-and-correct-capabilities')
    navigate(root);select(second);trigger('deleteImmediately');until(lambda:any(w['title']=='Delete Immediately' for w in top()),'permanent delete confirmation');assert api.dialogButton('Cancel');assert second.exists();record('permanent-delete-cancel-preserves-file')
    assert api.setMode(1);QTest.qWait(120);trigger('viewOptions');assert api.setControl('viewOptionIconSize',32);assert status()['iconSize']==32
-   assert api.setControl('viewOptionGridSpacing',24);assert api.dialogButton('Save');navigate(other);navigate(root);until(lambda:status()['mode']==1 and status()['iconSize']==32,'per-folder view settings');record('live-view-options-and-folder-state')
+   assert api.setControl('viewOptionGridSpacing',24);assert api.dialogButton('Close');navigate(other);navigate(root);until(lambda:status()['mode']==1 and status()['iconSize']==32,'per-folder view settings');record('live-view-options-and-folder-state')
    trigger('viewOptions');trigger('viewOptions');until(lambda:not any(w['title'].startswith('View Options') for w in top()),'view options toggle');record('view-options-toggle')
    trigger('allTabs');until(lambda:any(w['title']=='All Tabs' for w in top()),'tab overview');assert api.dialogButton('Close');record('tab-overview-window')
    trigger('connectServer');until(lambda:any(w['title']=='Connect to Server' for w in top()),'connect dialog');assert api.dialogButton('Cancel');record('connect-server-dialog-cancel')
@@ -75,7 +75,7 @@ try:
    assert api.setMode(0);QTest.qWait(120);trigger('viewOptions');assert api.setControl('viewOptionIconSize',128)
    assert api.setControl('viewOptionMode',1);QTest.qWait(120);assert status()['iconSize']==32,status()
    assert api.setControl('viewOptionMode',0);QTest.qWait(120);assert status()['iconSize']==128,status()
-   assert api.setControl('viewOptionAlwaysOpen',1);assert api.setControl('viewOptionBrowseIn',1);assert api.dialogButton('Save')
+   assert api.setControl('viewOptionAlwaysOpen',1);assert api.setControl('viewOptionBrowseIn',1);assert api.dialogButton('Close')
    navigate(folder);until(lambda:status()['mode']==0,'ancestor view inheritance');navigate(root);record('independent-mode-options-and-folder-inheritance')
    trigger('viewOptions');trigger('newTab');until(lambda:not any(w['title'].startswith('View Options') for w in top()),'view panel closes across tabs');trigger('close');record('view-panel-target-tab-ownership')
    trigger('customizeToolbar');until(lambda:any(w['title']=='Customize Toolbar' for w in top()),'toolbar customization');assert api.captureTopLevel('Customize Toolbar',str(out/'toolbar-customization.png'));assert api.dialogButton('Close');record('toolbar-customization-dialog')

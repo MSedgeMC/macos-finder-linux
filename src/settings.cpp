@@ -30,6 +30,9 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QShortcut>
+#include <QStyle>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -121,10 +124,25 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     setObjectName("finderSettings");
     setWindowTitle(tr("Finder Settings"));
     setAttribute(Qt::WA_DeleteOnClose);
-    resize(560, 520);
+    resize(580, 540);
+    setMinimumSize(370, 320);
     auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 12, 16, 12);
     auto *tabs = new QTabWidget(this);
     tabs->setObjectName("finderSettingsTabs");
+    tabs->setDocumentMode(true); tabs->setIconSize(QSize(20, 20));
+    tabs->tabBar()->setExpanding(true); tabs->tabBar()->setAccessibleName(tr("Finder Settings sections"));
+    auto restyle = [this] {
+        const auto colors = FinderAppearance::palette();
+        setStyleSheet(QStringLiteral(
+            "#finderSettingsTabs::pane{border:0;} #finderSettingsTabs QTabBar::tab{border:0;border-radius:8px;padding:9px 12px;background:transparent;color:%1;}"
+            "#finderSettingsTabs QTabBar::tab:selected{background:%2;color:%3;} #finderSettingsTabs QTabBar::tab:hover{background:%4;}"
+            "QLabel[settingsSection=true]{color:%1;font-weight:600;padding-top:8px;}"
+            "QLabel[settingsHelp=true]{color:%5;}")
+            .arg(colors.color(QPalette::Text).name(), colors.color(QPalette::Highlight).name(),
+                 colors.color(QPalette::HighlightedText).name(), colors.color(QPalette::Mid).name(), colors.color(QPalette::PlaceholderText).name()));
+    };
+    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, restyle);
     layout->addWidget(tabs);
     auto page = [&](const QString &label, const QString &name) {
         auto *scroll = new SettingsPage(tabs);
@@ -138,8 +156,16 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         form->setSpacing(12);
         form->setRowWrapPolicy(QFormLayout::WrapLongRows);
         scroll->setWidget(widget);
-        tabs->addTab(scroll, label);
+        const auto icon = label == tr("General") ? QStyle::SP_ComputerIcon : label == tr("Tags") ? QStyle::SP_FileDialogDetailedView :
+            label == tr("Sidebar") ? QStyle::SP_DirIcon : QStyle::SP_FileDialogInfoView;
+        const int index = tabs->addTab(scroll, style()->standardIcon(icon), label);
+        tabs->setTabToolTip(index, tr("%1 settings · Alt+%2").arg(label).arg(index + 1));
+        auto *shortcut = new QShortcut(QKeySequence(QStringLiteral("Alt+%1").arg(index + 1)), this);
+        connect(shortcut, &QShortcut::activated, tabs, [tabs, index] { tabs->setCurrentIndex(index); });
         return form;
+    };
+    auto section = [this](QFormLayout *form, const QString &text, const QString &name) {
+        auto *label = new QLabel(text, this); label->setObjectName(name); label->setProperty("settingsSection", true); form->addRow(label);
     };
     auto option = [&](QFormLayout *form, const QString &text, const QString &key,
                       bool fallback, const QString &name) {
@@ -199,6 +225,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         chooser->open();
     });
     option(general, tr("Open folders in tabs instead of new windows"), "General/openFoldersInTabs", true, "finderSettingsOpenTabs");
+    section(general, tr("Appearance and accessibility"), "finderSettingsAppearanceHeading");
     auto *appearanceMode = new QComboBox(this);
     appearanceMode->setObjectName("finderSettingsAppearanceMode");
     appearanceMode->setAccessibleName(tr("Finder appearance"));
@@ -216,7 +243,9 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     option(general, tr("Increase contrast"), "Appearance/increaseContrast", false, "finderSettingsIncreaseContrast");
     auto *reduceTransparency = option(general, tr("Reduce transparency"), "Appearance/reduceTransparency", false, "finderSettingsReduceTransparency");
     reduceTransparency->setToolTip(tr("Use an opaque material for Finder window surfaces."));
-    auto *desktop = new QLabel(tr("Plasma manages desktop icons and folder sorting. Use Configure Desktop and Wallpaper on the desktop for Folder View options, or System Settings for desktop appearance."), this);
+    section(general, tr("Desktop"), "finderSettingsDesktopHeading");
+    auto *desktop = new QLabel(tr("Desktop items are managed in Plasma’s Configure Desktop and Wallpaper settings."), this);
+    desktop->setProperty("settingsHelp", true);
     desktop->setWordWrap(true);
     general->addRow(desktop);
     auto *desktopSettings = new QPushButton(tr("Open System Settings…"), this);
@@ -276,7 +305,11 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     favorites->setAccessibleName(tr("Seven ordered favorite tag slots"));
     favorites->setDragDropMode(QAbstractItemView::DragDrop);
     favorites->setDefaultDropAction(Qt::CopyAction);
-    favorites->setMinimumHeight(160);
+    favorites->setViewMode(QListView::IconMode); favorites->setMovement(QListView::Static);
+    favorites->setDragEnabled(true); favorites->setAcceptDrops(true); favorites->viewport()->setAcceptDrops(true);
+    favorites->setFlow(QListView::LeftToRight); favorites->setWrapping(true); favorites->setResizeMode(QListView::Adjust);
+    favorites->setIconSize(QSize(20, 20)); favorites->setGridSize(QSize(68, 58)); favorites->setSpacing(2);
+    favorites->setMinimumHeight(130); favorites->setMaximumHeight(160);
     tagPage->addRow(tr("Favorite Tags:"), favorites);
     m_assignFavorite = new QPushButton(tr("Use Selected Tag"), this);
     m_clearFavorite = new QPushButton(tr("Clear Slot"), this);
@@ -386,6 +419,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     reloadTags();
 
     auto *sidebar = page(tr("Sidebar"), "finderSettingsSidebar");
+    section(sidebar, tr("Favorites"), "finderSettingsFavoritesHeading");
     for (const auto &entry : QList<QPair<QString, QString>>{
         {"recents", tr("Recents")}, {"shared", tr("Shared")}, {"applications", tr("Applications")},
         {"desktop", tr("Desktop")}, {"documents", tr("Documents")}, {"downloads", tr("Downloads")},
@@ -393,6 +427,8 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         {"videos", tr("Movies")}, {"internalDisks", tr("Hard disks")},
         {"externalDisks", tr("External disks")}, {"opticalMedia", tr("CDs, DVDs, and removable media")},
         {"connectedServers", tr("Connected servers")}, {"network", tr("Network")}, {"trash", tr("Trash")}}) {
+        if (entry.first == "internalDisks") section(sidebar, tr("Locations"), "finderSettingsLocationsHeading");
+        if (entry.first == "trash") section(sidebar, tr("Other"), "finderSettingsOtherHeading");
         auto *box = new QCheckBox(entry.second, this);
         box->setObjectName("finderSettingsSidebar_" + entry.first);
         if (entry.first == "internalDisks") box->setToolTip(tr("Includes Linux Filesystem."));
@@ -409,12 +445,15 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     sidebarHelp->setWordWrap(true);
     sidebar->addRow(sidebarHelp);
     auto *advanced = page(tr("Advanced"), "finderSettingsAdvanced");
+    section(advanced, tr("Filename extensions"), "finderSettingsExtensionsHeading");
     option(advanced, tr("Show all filename extensions"), "Advanced/showAllExtensions", false, "finderSettingsShowExtensions");
     option(advanced, tr("Show a warning before changing an extension"), "Advanced/warnExtensionChange", true, "finderSettingsWarnExtension");
+    section(advanced, tr("Trash"), "finderSettingsTrashHeading");
     option(advanced, tr("Show a warning before emptying the Trash"), "Advanced/warnEmptyTrash", true, "finderSettingsWarnTrash");
     auto *trashAge = option(advanced, tr("Remove items from the Trash after 30 days"), "Advanced/removeTrashAfter30Days", false, "finderSettingsTrash30Days");
     trashAge->setToolTip(tr("Age is counted from the time an item was moved to the Trash. Applies to supported local Trash locations while Finder is running."));
-    option(advanced, tr("Keep folders on top when sorting by name"), "View/foldersFirst", false, "finderSettingsFoldersFirst");
+    section(advanced, tr("Keep folders on top"), "finderSettingsSortingHeading");
+    option(advanced, tr("In windows when sorting by name"), "View/foldersFirst", false, "finderSettingsFoldersFirst");
     auto *searchScope = new QComboBox(this);
     searchScope->setObjectName("finderSettingsSearchScope");
     searchScope->addItem(tr("Search This Computer"), "computer");
@@ -428,6 +467,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         settings.remove("Search/currentFolder");
         emit preferencesChanged();
     });
+    section(advanced, tr("Scrolling and motion"), "finderSettingsInputHeading");
     option(advanced, tr("Use smooth scrolling for mouse wheels"), "Input/smoothScrolling", true, "finderSettingsSmoothScroll");
     auto *wheelSpeed = new QSpinBox(this);
     wheelSpeed->setObjectName("finderSettingsWheelSpeed");
@@ -467,7 +507,8 @@ void FinderSettings::reloadTags() {
         QColor color(Qt::transparent);
         for (const auto &tag : tags)
             if (tag.id == favoriteIds.at(slot)) { name = tag.name; color = tag.color; break; }
-        auto *item = new QListWidgetItem(tagIcon(color), tr("%1. %2").arg(slot + 1).arg(name.isEmpty() ? tr("None") : name), m_favoriteList);
+        auto *item = new QListWidgetItem(tagIcon(color), name.isEmpty() ? tr("None") : name, m_favoriteList);
+        item->setToolTip(tr("Slot %1: %2").arg(slot + 1).arg(name.isEmpty() ? tr("None") : name));
         item->setData(Qt::UserRole, favoriteIds.at(slot));
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
     }

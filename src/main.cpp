@@ -2249,6 +2249,7 @@ private:
     }
   }
   void stopSearch() {
+    if (auto *panel = findChild<QDialog *>("finderSearchViewOptions")) panel->close();
     cancelRenamePreflight();
     pendingSearchSelection.clear();
     selectedTag.clear();
@@ -2664,16 +2665,41 @@ private:
     installScrolling(dialog);
   }
   void viewOptions() {
-    if (showingSearch()) { searchCriteriaDialog(); return; }
+    if (showingSearch()) {
+      if (auto *existing = findChild<QDialog *>("finderSearchViewOptions")) { existing->close(); return; }
+      auto *dialog = new QDialog(this); dialog->setObjectName("finderSearchViewOptions");
+      dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->setWindowTitle("View Options — Search");
+      auto *form = new QFormLayout(dialog); form->setContentsMargins(24, 20, 24, 20); form->setSpacing(14);
+      auto *mode = new QComboBox(dialog); mode->setObjectName("viewOptionMode");
+      mode->addItems({"Icons", "List", "Columns", "Gallery"}); mode->setCurrentIndex(int(searchPresentation->mode())); form->addRow("View", mode);
+      auto *sort = new QComboBox(dialog); sort->setObjectName("viewOptionSort"); sort->addItems({"Name", "Kind"});
+      sort->setCurrentIndex(searchPresentation->proxyModel()->sortColumn() == 1 ? 1 : 0); form->addRow("Sort by", sort);
+      auto *reverse = new QCheckBox("Reverse order", dialog); reverse->setObjectName("viewOptionReverse");
+      reverse->setChecked(searchPresentation->proxyModel()->sortOrder() == Qt::DescendingOrder); form->addRow(reverse);
+      auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); form->addRow(buttons);
+      QPointer<Browser> target(browser());
+      auto apply = [this, dialog, target, mode, sort, reverse] {
+        if (!target || browser() != target || !showingSearch()) { dialog->close(); return; }
+        setMode(mode->currentIndex()); searchPresentation->sort(sort->currentIndex(), reverse->isChecked() ? Qt::DescendingOrder : Qt::AscendingOrder); refresh();
+      };
+      connect(mode, &QComboBox::currentIndexChanged, dialog, apply); connect(sort, &QComboBox::currentIndexChanged, dialog, apply);
+      connect(reverse, &QCheckBox::toggled, dialog, apply); connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+      connect(tabs, &QTabWidget::currentChanged, dialog, [dialog] { dialog->close(); });
+      connect(search, &QLineEdit::textChanged, dialog, [this, dialog] { if (!showingSearch()) dialog->close(); });
+      dialog->open(); return;
+    }
     auto *existing = findChild<QDialog *>("finderViewOptions");
     if (existing) { existing->close(); return; }
     auto *dialog = new QDialog(this);
     dialog->setObjectName("finderViewOptions");
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle("View Options — " + title(browser()->url()));
-    auto *layout = new QVBoxLayout(dialog);
-    auto *form = new QFormLayout;
-    layout->addLayout(form);
+    dialog->resize(360, 560);
+    auto *layout = new QVBoxLayout(dialog); layout->setContentsMargins(0, 0, 0, 12);
+    auto *scroll = new QScrollArea(dialog); scroll->setWidgetResizable(true); scroll->setFrameShape(QFrame::NoFrame);
+    auto *content = new QWidget(scroll); auto *form = new QFormLayout(content);
+    form->setContentsMargins(24, 20, 24, 20); form->setSpacing(14); form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    scroll->setWidget(content); layout->addWidget(scroll);
     auto *mode = new QComboBox;
     mode->setObjectName("viewOptionMode");
     mode->addItems({"Icons", "List", "Columns", "Gallery"});
@@ -2691,13 +2717,15 @@ private:
     };
     connect(alwaysOpen, &QCheckBox::toggled, dialog, persistInheritance);
     connect(browseIn, &QCheckBox::toggled, dialog, persistInheritance);
-    auto *size = new QSpinBox;
+    auto *size = new QSlider(Qt::Horizontal);
     size->setObjectName("viewOptionIconSize");
+    size->setAccessibleName("Icon size");
     size->setRange(browser()->mode() == Browser::List ? 16 : 32, browser()->mode() == Browser::List ? 32 : 256);
     size->setValue(browser()->iconSize());
     form->addRow("Icon size", size);
-    auto *spacing = new QSpinBox;
+    auto *spacing = new QSlider(Qt::Horizontal);
     spacing->setObjectName("viewOptionGridSpacing");
+    spacing->setAccessibleName("Grid spacing");
     spacing->setRange(0, 64); spacing->setValue(browser()->gridSpacing());
     form->addRow("Grid spacing", spacing);
     auto *textSize = new QSpinBox;
@@ -2716,21 +2744,32 @@ private:
     group->setCurrentIndex(int(browser()->group())); form->addRow("Group by", group);
     auto *sort = new QComboBox;
     sort->setObjectName("viewOptionSort");
-    for (auto a : sortGroup->actions())
-      sort->addItem(a->text(), a->data());
+    auto populateSort = [this, sort](Browser::Mode selected, int column) {
+      const QSignalBlocker blocker(sort); sort->clear();
+      for (auto *action : sortGroup->actions()) {
+        const int value = action->data().toInt();
+        if (value == Browser::DateAddedColumn || value == Browser::LastOpenedColumn || (value == -1 && selected != Browser::Icons)) continue;
+        sort->addItem(action->text(), action->data());
+      }
+      sort->setCurrentIndex(qMax(0, sort->findData(column)));
+    };
+    populateSort(browser()->mode(), browser()->sortColumn());
     sort->setCurrentIndex(sort->findData(browser()->sortColumn()));
     form->addRow("Sort by", sort);
-    auto *reverse = new QCheckBox("Descending");
+    auto *reverse = new QCheckBox("Reverse order");
     reverse->setObjectName("viewOptionReverse");
     reverse->setChecked(!browser()->sortAscending());
     form->addRow(reverse);
     auto *tree = browser()->findChild<QTreeView *>("finderListView");
     QList<QPair<int, QCheckBox *>> columns;
+    auto *columnHeading = new QLabel("Show columns", dialog); columnHeading->setObjectName("viewOptionColumnsHeading");
+    form->addRow(columnHeading);
     for (int c = 1; c < browser()->listColumnCount(); ++c) {
       auto *box = new QCheckBox(
           tree->model()->headerData(c, Qt::Horizontal).toString());
       box->setObjectName("viewOptionColumn" + QString::number(c));
       box->setChecked(!tree->isColumnHidden(c));
+      if (c == Browser::DateAddedColumn || c == Browser::LastOpenedColumn) box->setToolTip("This metadata is unavailable from the current filesystem provider.");
       form->addRow(box);
       columns << qMakePair(c, box);
     }
@@ -2739,39 +2778,43 @@ private:
     QPointer<Browser> sizeTarget(browser());
     connect(calculateSizes, &QCheckBox::toggled, dialog, [sizeTarget](bool enabled) { if (sizeTarget) { if (enabled) sizeTarget->calculateAllSizes(); else sizeTarget->cancelSizeCalculation(); } });
     connect(browser(), &Browser::sizeCalculationRunningChanged, dialog, [calculateSizes](bool running) { QSignalBlocker blocker(calculateSizes); calculateSizes->setChecked(running); });
-    auto *defaults = new QCheckBox("Use these settings for new folders");
-    defaults->setEnabled(browser()->mode() != Browser::Columns);
-    form->addRow(defaults);
-    auto *buttons =
-        new QDialogButtonBox(QDialogButtonBox::Close | QDialogButtonBox::Save);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    auto *defaults = buttons->addButton("Use as Defaults", QDialogButtonBox::ActionRole);
+    defaults->setObjectName("viewOptionUseDefaults"); defaults->setAutoDefault(false);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     const QUrl targetUrl = browser()->url();
     QPointer<Browser> target(browser());
     auto apply = [this, dialog, target, size, spacing, textSize, labels, previews, group, sort, reverse, columns, targetUrl] {
       if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return false; }
-      browser()->setIconSize(size->value()); browser()->setGridSpacing(spacing->value()); browser()->setTextSize(textSize->value());
-      browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex())); browser()->setIconPreviewsShown(previews->isChecked());
+      if (browser()->mode() != Browser::Columns) browser()->setIconSize(size->value());
+      if (browser()->mode() == Browser::Icons) browser()->setGridSpacing(spacing->value());
+      browser()->setTextSize(textSize->value());
+      if (browser()->mode() == Browser::Icons) browser()->setLabelPosition(Browser::LabelPosition(labels->currentIndex()));
+      browser()->setIconPreviewsShown(previews->isChecked());
       browser()->setGroup(Browser::Group(group->currentIndex())); browser()->setSort(sort->currentData().toInt(), !reverse->isChecked());
       auto *tree = browser()->findChild<QTreeView *>("finderListView");
       for (auto [column, box] : columns) tree->setColumnHidden(column, !box->isChecked());
       saveView(); refresh();
       return true;
     };
-    auto updateControls = [form, mode, size, spacing, labels, defaults, columns] {
+    auto updateControls = [form, mode, size, spacing, labels, defaults, columns, columnHeading, calculateSizes, reverse, sort] {
       const auto selected = mode->currentIndex();
-      size->setRange(selected == Browser::List ? 16 : 32, selected == Browser::List ? 32 : 256);
+      const QSignalBlocker sizeBlock(size);
+      size->setRange(selected == Browser::Columns ? 18 : selected == Browser::List ? 16 : 32, selected == Browser::Columns ? 18 : selected == Browser::List ? 32 : 256);
       form->setRowVisible(spacing, selected == Browser::Icons);
       form->setRowVisible(labels, selected == Browser::Icons);
       form->setRowVisible(size, selected != Browser::Columns);
       for (auto [column, box] : columns) { Q_UNUSED(column); form->setRowVisible(box, selected == Browser::List); }
-      form->setRowVisible(defaults, selected != Browser::Columns);
-      defaults->setEnabled(selected != Browser::Columns);
+      form->setRowVisible(columnHeading, selected == Browser::List);
+      form->setRowVisible(calculateSizes, selected == Browser::List);
+      reverse->setEnabled(sort->currentData().toInt() >= 0);
+      defaults->setVisible(selected != Browser::Columns);
     };
-    auto reload = [this, dialog, target, targetUrl, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, updateControls] {
+    auto reload = [this, dialog, target, targetUrl, mode, size, spacing, textSize, labels, previews, group, sort, reverse, columns, updateControls, populateSort] {
       if (!target || target != browser() || target->url() != targetUrl) { dialog->close(); return; }
       const QSignalBlocker b0(mode), b1(size), b2(spacing), b3(textSize), b4(labels), b5(previews), b6(group), b7(sort), b8(reverse);
-      mode->setCurrentIndex(int(target->mode())); updateControls();
+      mode->setCurrentIndex(int(target->mode())); populateSort(target->mode(), target->sortColumn()); updateControls();
       size->setValue(target->iconSize()); spacing->setValue(target->gridSpacing()); textSize->setValue(target->textSize());
       labels->setCurrentIndex(int(target->labelPosition())); previews->setChecked(target->iconPreviewsShown());
       group->setCurrentIndex(int(target->group())); sort->setCurrentIndex(sort->findData(target->sortColumn())); reverse->setChecked(!target->sortAscending());
@@ -2785,24 +2828,33 @@ private:
     connect(tabs, &QTabWidget::currentChanged, dialog, [this, dialog, target] { if (target != browser()) dialog->close(); });
     connect(target, &Browser::urlChanged, dialog, [dialog, targetUrl](const QUrl &url) { if (url != targetUrl) dialog->close(); });
     connect(modeActions, &QActionGroup::triggered, dialog, [reload] { reload(); });
-    for (auto *control : {spacing, size, textSize}) connect(control, &QSpinBox::valueChanged, dialog, apply);
+    for (auto *control : {spacing, size}) connect(control, &QSlider::valueChanged, dialog, apply);
+    connect(textSize, &QSpinBox::valueChanged, dialog, apply);
+    connect(sort, &QComboBox::currentIndexChanged, dialog, [sort, reverse] { reverse->setEnabled(sort->currentData().toInt() >= 0); });
     for (auto *control : {labels, group, sort}) connect(control, &QComboBox::currentIndexChanged, dialog, apply);
     for (auto *control : {previews, reverse}) connect(control, &QCheckBox::toggled, dialog, apply);
     for (auto [column, box] : columns) { Q_UNUSED(column); connect(box, &QCheckBox::toggled, dialog, apply); }
     updateControls();
-    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, apply, defaults] {
-      if (!apply()) return;
-      if (defaults->isChecked() && browser()->mode() != Browser::Columns) {
+    connect(defaults, &QPushButton::clicked, dialog, [this, apply, defaults] {
+      if (!apply() || browser()->mode() == Browser::Columns) return;
+      {
         auto state = QJsonDocument::fromJson(browser()->saveViewState()).object();
         auto modes = state.value("modes").toArray();
         for (int i = 0; i < modes.size(); ++i) { auto value = modes[i].toObject(); value["horizontal"] = 0; value["vertical"] = 0; modes[i] = value; }
         state["modes"] = modes;
         state.remove("iconPositions"); state.remove("positionsUrl"); state.remove("columnWidths");
+        state.remove("listHeader");
+        auto previous = QJsonDocument::fromJson(QSettings().value("View/defaultState").toByteArray()).object();
+        auto previousModes = previous.value("modes").toArray();
+        if (previousModes.size() == 4) {
+          previousModes[int(browser()->mode())] = modes[int(browser()->mode())]; state["modes"] = previousModes;
+          if (browser()->mode() != Browser::List) state["listVisibleColumns"] = previous.value("listVisibleColumns");
+        }
         QSettings().setValue("View/defaultState", QJsonDocument(state).toJson(QJsonDocument::Compact));
+        defaults->setText("Defaults Updated");
       }
-      dialog->accept();
     });
-    dialog->open();
+    dialog->open(); installScrolling(dialog);
   }
   void refresh() {
     if (!browser())
@@ -4029,8 +4081,15 @@ public slots:
       for (auto *widget : window->findChildren<QWidget *>()) {
         if (widget->objectName().isEmpty()) continue;
         const auto pos = widget->mapTo(window, QPoint());
-        widgets << QJsonObject{{"name", widget->objectName()}, {"visible", widget->isVisible()},
+        QJsonObject detail{{"name", widget->objectName()}, {"visible", widget->isVisible()}, {"enabled", widget->isEnabled()},
           {"x", pos.x()}, {"y", pos.y()}, {"width", widget->width()}, {"height", widget->height()}};
+        if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+          QJsonArray items; for (int i = 0; i < combo->count(); ++i) items << combo->itemText(i);
+          detail["items"] = items; detail["value"] = combo->currentIndex();
+        }
+        if (auto *slider = qobject_cast<QSlider *>(widget)) detail["value"] = slider->value();
+        if (auto *spin = qobject_cast<QSpinBox *>(widget)) detail["value"] = spin->value();
+        widgets << detail;
       }
       return QString::fromUtf8(QJsonDocument(QJsonObject{{"width", window->width()}, {"height", window->height()},
         {"fullscreen", window->isFullScreen()}, {"widgets", widgets}}).toJson(QJsonDocument::Compact));
