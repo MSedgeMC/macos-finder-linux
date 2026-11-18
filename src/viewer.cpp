@@ -274,11 +274,20 @@ void ViewerWindow::updateActions() {
     findChild<QAction *>("previewAppPrint")->setEnabled(m_preview->canPrintCurrent());
     auto *text = m_preview->findChild<QTextEdit *>("previewText");
     findChild<QAction *>("previewAppFind")->setEnabled(m_preview->pdfPageCount() > 0 || (text && text->isVisible() && !text->toPlainText().isEmpty()));
-    const auto capabilities = QuickActions::actionsForUrls({m_preview->currentUrl()});
-    bool image = false; for (const auto &capability : capabilities) if (capability.action == FinderQuickActions::Action::ConvertImage) image = capability.enabled;
-    findChild<QAction *>("previewAppExport")->setEnabled(image && !m_edits->busy());
-    bool pdf = false; for (const auto &capability : QuickActions::actionsForUrls(list)) if (capability.action == FinderQuickActions::Action::CreatePdf) pdf = capability.enabled;
-    findChild<QAction *>("previewAppCreatePdf")->setEnabled(pdf && !m_edits->busy());
+    // PDF scroll/page callbacks update UI frequently. Cache capability checks
+    // by source/list, so they never rescan every document during scrolling.
+    if (m_capabilitySource != m_preview->currentUrl()) {
+        m_capabilitySource = m_preview->currentUrl(); m_canExportImage = false;
+        for (const auto &capability : QuickActions::actionsForUrls({m_capabilitySource}))
+            if (capability.action == FinderQuickActions::Action::ConvertImage) m_canExportImage = capability.enabled;
+    }
+    if (m_capabilitySelection != list) {
+        m_capabilitySelection = list; m_canCreatePdf = false;
+        for (const auto &capability : QuickActions::actionsForUrls(list))
+            if (capability.action == FinderQuickActions::Action::CreatePdf) m_canCreatePdf = capability.enabled;
+    }
+    findChild<QAction *>("previewAppExport")->setEnabled(m_canExportImage && !m_edits->busy());
+    findChild<QAction *>("previewAppCreatePdf")->setEnabled(m_canCreatePdf && !m_edits->busy());
 }
 void ViewerWindow::dragEnterEvent(QDragEnterEvent *event) { if (event->mimeData()->hasUrls()) event->acceptProposedAction(); }
 void ViewerWindow::dropEvent(QDropEvent *event) { if (event->mimeData()->hasUrls()) { setUrls(event->mimeData()->urls()); event->acceptProposedAction(); } }

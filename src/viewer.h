@@ -42,5 +42,8 @@ private:
     QSet<QUrl> m_thumbnailLoaded;
     quint64 m_thumbnailGeneration = 0;
     QUrl m_sidebarPdf;
+    QUrl m_capabilitySource;
+    QList<QUrl> m_capabilitySelection;
+    bool m_canExportImage = false, m_canCreatePdf = false;
     bool m_pageThumbnailsPending = false;
 };
