@@ -162,15 +162,37 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     // relaunching Preview when it is the default image/PDF handler.
     connect(m_preview, &PreviewPane::openRequested, m_preview, &PreviewPane::openWithCurrent);
     connect(m_sidebar, &QListWidget::currentRowChanged, this, [this](int row) {
-        const auto list = m_preview->urls(); if (row >= 0 && row < list.size()) m_preview->updateQuickLook(list, list[row]);
+        const auto list = m_preview->urls();
+        if (!m_sidebarPdf.isEmpty()) { if (row >= 0) m_preview->setPdfPage(row); }
+        else if (row >= 0 && row < list.size()) m_preview->updateQuickLook(list, list[row]);
     });
     connect(m_preview, &PreviewPane::currentUrlChanged, this, [this](const QUrl &url) {
-        const QSignalBlocker blocker(m_sidebar); m_sidebar->setCurrentRow(m_preview->urls().indexOf(url));
+        rebuildSidebar();
+        const QSignalBlocker blocker(m_sidebar); if (m_sidebarPdf.isEmpty()) m_sidebar->setCurrentRow(m_preview->urls().indexOf(url));
         setWindowTitle(url.isEmpty() ? tr("Preview") : url.fileName() + tr(" — Preview")); updateActions();
     });
     connect(m_preview, &PreviewPane::printReadinessChanged, this, [this] { updateActions(); });
     connect(m_preview->findChild<QTextEdit *>("previewText"), &QTextEdit::textChanged, this, [this] { QTimer::singleShot(0, this, [this] { updateActions(); }); });
-    connect(m_preview, &PreviewPane::pdfPageChanged, this, [this] { updateActions(); });
+    connect(m_preview, &PreviewPane::pdfPageChanged, this, [this](int page, int count) {
+        if (count > 0) { rebuildSidebar(); const QSignalBlocker blocker(m_sidebar); m_sidebar->setCurrentRow(page); }
+        updateActions(); m_thumbnailTimer.start();
+    });
+    connect(m_preview, &PreviewPane::pdfThumbnailsReady, this, [this](const QUrl &source, const QList<int> &pages, const QList<QImage> &images) {
+        if (source != m_sidebarPdf) return;
+        m_pageThumbnailsPending = false;
+        for (int i = 0; i < pages.size() && i < images.size(); ++i) {
+            auto *item = m_sidebar->item(pages[i]); if (!item) continue;
+            item->setData(Qt::UserRole + 1, true); if (!images[i].isNull()) item->setIcon(QIcon(QPixmap::fromImage(images[i])));
+        }
+        const QRect nearby = m_sidebar->viewport()->rect().adjusted(0, -160, 0, 160);
+        for (int row = 0; row < m_sidebar->count(); ++row) {
+            auto *item = m_sidebar->item(row);
+            if (!m_sidebar->visualItemRect(item).intersects(nearby) && item->data(Qt::UserRole + 1).toBool()) {
+                item->setIcon(QIcon::fromTheme("application-pdf")); item->setData(Qt::UserRole + 1, false);
+            }
+        }
+        m_thumbnailTimer.start();
+    });
     connect(m_preview, &PreviewPane::actionError, this, [this](const QUrl &, const QString &error) { FinderAlert::showError(this, tr("The document couldn’t be opened."), error); });
     connect(m_edits, &QuickActions::busyChanged, this, [this] { updateActions(); });
     connect(m_edits, &QuickActions::statusChanged, this, [this](const QString &text) { m_status->show(); m_status->showMessage(text); });
@@ -216,7 +238,7 @@ ViewerWindow::~ViewerWindow() {
 }
 void ViewerWindow::setUrls(const QList<QUrl> &urls) {
     QList<QUrl> accepted; for (const auto &url : urls) if (url.isValid() && !url.isEmpty() && !url.isRelative() && url.password().isEmpty() && !accepted.contains(url) && accepted.size() < 4096) accepted.append(url);
-    ++m_thumbnailGeneration;
+    ++m_thumbnailGeneration; m_sidebarPdf = {}; m_pageThumbnailsPending = false;
     if (m_thumbnailJob) { m_thumbnailJob->kill(); m_thumbnailJob = nullptr; }
     m_thumbnailLoaded.clear();
     const QSignalBlocker blocker(m_sidebar); m_sidebar->clear();
@@ -261,8 +283,39 @@ void ViewerWindow::updateActions() {
 void ViewerWindow::dragEnterEvent(QDragEnterEvent *event) { if (event->mimeData()->hasUrls()) event->acceptProposedAction(); }
 void ViewerWindow::dropEvent(QDropEvent *event) { if (event->mimeData()->hasUrls()) { setUrls(event->mimeData()->urls()); event->acceptProposedAction(); } }
 
+void ViewerWindow::rebuildSidebar() {
+    const QUrl pdf = m_preview->pdfPageCount() > 0 ? m_preview->currentUrl() : QUrl();
+    if (pdf == m_sidebarPdf) return;
+    ++m_thumbnailGeneration; if (m_thumbnailJob) { m_thumbnailJob->kill(); m_thumbnailJob = nullptr; }
+    m_sidebarPdf = pdf; m_pageThumbnailsPending = false; m_thumbnailLoaded.clear();
+    const QSignalBlocker blocker(m_sidebar); m_sidebar->clear();
+    if (!pdf.isEmpty()) {
+        m_sidebar->setAccessibleName(tr("PDF page thumbnails"));
+        for (int page = 0; page < m_preview->pdfPageCount(); ++page) {
+            auto *item = new QListWidgetItem(QIcon::fromTheme("application-pdf"), tr("Page %1").arg(page + 1), m_sidebar);
+            item->setData(Qt::UserRole, pdf); item->setData(Qt::UserRole + 2, page);
+        }
+        m_sidebar->setCurrentRow(m_preview->pdfCurrentPage());
+    } else {
+        m_sidebar->setAccessibleName(tr("Open documents"));
+        for (const auto &url : urls()) {
+            auto *item = new QListWidgetItem(QIcon::fromTheme(QMimeDatabase().mimeTypeForUrl(url).iconName()), url.fileName(), m_sidebar);
+            item->setData(Qt::UserRole, url); item->setToolTip(url.toDisplayString(QUrl::RemovePassword));
+        }
+        m_sidebar->setCurrentRow(urls().indexOf(m_preview->currentUrl()));
+    }
+    m_thumbnailTimer.start();
+}
 void ViewerWindow::loadThumbnails() {
     if (!isVisible() || !m_sidebar->isVisible() || m_thumbnailJob) return;
+    if (!m_sidebarPdf.isEmpty()) {
+        if (m_pageThumbnailsPending) return;
+        QList<int> pages; const QRect visible = m_sidebar->viewport()->rect().adjusted(0, -80, 0, 80);
+        for (int row = 0; row < m_sidebar->count() && pages.size() < 8; ++row)
+            if (!m_sidebar->item(row)->data(Qt::UserRole + 1).toBool() && m_sidebar->visualItemRect(m_sidebar->item(row)).intersects(visible)) pages.append(row);
+        if (!pages.isEmpty()) { m_pageThumbnailsPending = true; m_preview->requestPdfThumbnails(pages); }
+        return;
+    }
     KFileItemList files; const QRect visible = m_sidebar->viewport()->rect().adjusted(0, -80, 0, 80);
     for (int row = 0; row < m_sidebar->count() && files.size() < 8; ++row) {
         auto *item = m_sidebar->item(row); const QUrl url = item->data(Qt::UserRole).toUrl();

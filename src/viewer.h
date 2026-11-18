@@ -30,6 +30,7 @@ private:
     void updateActions();
     void populateRecent();
     void loadThumbnails();
+    void rebuildSidebar();
     PreviewPane *m_preview;
     QListWidget *m_sidebar;
     QMenu *m_recent;
@@ -40,4 +41,6 @@ private:
     QPointer<KIO::PreviewJob> m_thumbnailJob;
     QSet<QUrl> m_thumbnailLoaded;
     quint64 m_thumbnailGeneration = 0;
+    QUrl m_sidebarPdf;
+    bool m_pageThumbnailsPending = false;
 };

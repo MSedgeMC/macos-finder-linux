@@ -597,7 +597,7 @@ QPushButton *button(const QString &text, const QString &name, QWidget *parent)
 PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     m_renderWork(std::make_shared<PreviewWorkQueue>()), m_tagWork(std::make_shared<PreviewWorkQueue>()),
     m_contactWork(std::make_shared<PreviewWorkQueue>()), m_printWork(std::make_shared<PreviewWorkQueue>()),
-    m_pdfSearchWork(std::make_shared<PreviewWorkQueue>()), m_pdfSelectionWork(std::make_shared<PreviewWorkQueue>())
+    m_pdfSearchWork(std::make_shared<PreviewWorkQueue>()), m_pdfSelectionWork(std::make_shared<PreviewWorkQueue>()), m_pdfThumbnailWork(std::make_shared<PreviewWorkQueue>())
 {
     setObjectName(QStringLiteral("finderPreviewPane"));
     setAutoFillBackground(true);
@@ -974,7 +974,7 @@ PreviewPane::~PreviewPane()
     m_contactWork->cancel();
     m_printWork->cancel();
     m_pdfSearchWork->cancel();
-    m_pdfSelectionWork->cancel();
+    m_pdfSelectionWork->cancel(); m_pdfThumbnailWork->cancel();
     cancelTrim();
 #if defined(FINDER_PREVIEW_PRINT_SUPPORT) && FINDER_PREVIEW_PRINT_SUPPORT
     if (m_printState && m_printState->painter) m_printState->painter->end();
@@ -2376,12 +2376,31 @@ QString PreviewPane::selectedPdfText() const { return m_pdfSelectedText; }
 void PreviewPane::resetPdf()
 {
     ++m_pdfSearchGeneration; ++m_pdfSelectionGeneration;
-    m_pdfSearchWork->cancel(); m_pdfSelectionWork->cancel();
+    m_pdfSearchWork->cancel(); m_pdfSelectionWork->cancel(); m_pdfThumbnailWork->cancel();
     m_pdfRenderTimer->stop(); m_pdfView->clear(); m_pdfRenderTimer->stop();
     m_pdfQuery.clear(); m_pdfMatches.clear(); m_pdfMatch = -1;
     m_pdfSelectedText.clear();
     if (m_pdfSearch) { QSignalBlocker block(m_pdfSearch); m_pdfSearch->clear(); }
     if (m_pdfSearchStatus) m_pdfSearchStatus->clear();
+}
+
+void PreviewPane::requestPdfThumbnails(const QList<int> &pages)
+{
+    if (m_pageCount < 1 || !currentUrl().isLocalFile()) return;
+    QList<int> requested;
+    for (int page : pages) if (page >= 0 && page < m_pageCount && !requested.contains(page) && requested.size() < 8) requested.append(page);
+    if (requested.isEmpty()) return;
+    const QUrl source = currentUrl(); const auto generation = m_previewGeneration;
+    submitPreview(m_pdfThumbnailWork, this, [source, requested](const auto &cancelled) {
+        QList<QImage> images;
+        for (int page : requested) {
+            if (cancelled->load()) break;
+            images.append(readRaster(source.toLocalFile(), true, page, QSize(128, 160), cancelled).image);
+        }
+        return images;
+    }, [this, source, generation, requested](const QList<QImage> &images) {
+        if (source == currentUrl() && generation == m_previewGeneration) emit pdfThumbnailsReady(source, requested, images);
+    });
 }
 
 void PreviewPane::setPdfPage(int page)

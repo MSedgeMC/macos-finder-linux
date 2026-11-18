@@ -129,6 +129,7 @@ public:
     // Zero-based PDF navigation. Search/selection are asynchronous and bounded;
     // image-only PDFs require an external OCR provider for searchable text.
     int pdfPageCount() const;
+    void requestPdfThumbnails(const QList<int> &pages);
     int pdfCurrentPage() const;
     void setPdfPage(int page);
     void searchPdf(const QString &text);
@@ -165,6 +166,7 @@ signals:
     void quickActionsMenuRequested(QMenu *menu, const QList<QUrl> &urls);
     void printReadinessChanged(bool ready);
     void pdfPageChanged(int page, int pageCount);
+    void pdfThumbnailsReady(const QUrl &source, const QList<int> &pages, const QList<QImage> &images);
     void pdfSearchFinished(const QString &query, int matches, bool limited);
     void pdfSelectionChanged(const QString &text);
     void trimProgressChanged(int percent);
@@ -297,6 +299,7 @@ private:
     QTimer *m_pdfRenderTimer;
     std::shared_ptr<PreviewWorkQueue> m_pdfSearchWork;
     std::shared_ptr<PreviewWorkQueue> m_pdfSelectionWork;
+    std::shared_ptr<PreviewWorkQueue> m_pdfThumbnailWork;
     quint64 m_pdfSearchGeneration = 0;
     quint64 m_pdfSelectionGeneration = 0;
     QString m_pdfQuery;

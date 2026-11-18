@@ -46,7 +46,9 @@ int main(int argc, char **argv) {
     QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier); QApplication::sendEvent(pane, &escape);
     check(window.isVisible() && pane->isVisible(), "standalone Space and Escape retain the document window");
     window.findChild<QAction *>("previewAppNext")->trigger();
-    check(waitFor([&] { return pane->pdfPageCount() == 2; }) && pane->currentUrl() == pdfUrl && sidebar->currentRow() == 1, "Next synchronizes document and sidebar");
+    check(waitFor([&] { return pane->pdfPageCount() == 2; }) && pane->currentUrl() == pdfUrl && sidebar->count() == 2 && sidebar->currentRow() == 0, "Next opens PDF page thumbnails");
+    check(waitFor([&] { return sidebar->item(1)->data(Qt::UserRole + 1).toBool(); }), "PDF page thumbnails decode asynchronously");
+    sidebar->setCurrentRow(1); check(pane->pdfCurrentPage() == 1, "PDF thumbnail activates its real page");
     check(window.findChild<QAction *>("previewAppFind")->isEnabled(), "PDF Find uses document capability");
     pane->searchPdf("Viewer");
     window.findChild<QAction *>("previewAppNext")->trigger();
