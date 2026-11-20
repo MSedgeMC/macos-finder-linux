@@ -3997,6 +3997,10 @@ public slots:
         const auto pos = widget->mapTo(window, QPoint());
         QJsonObject detail{{"name", widget->objectName()}, {"visible", widget->isVisible()}, {"enabled", widget->isEnabled()},
           {"x", pos.x()}, {"y", pos.y()}, {"width", widget->width()}, {"height", widget->height()}};
+        if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
+          detail["keyboardFocus"] = button->property("finderKeyboardFocus").toBool();
+          detail["hasFocus"] = button->hasFocus();
+        }
         if (auto *combo = qobject_cast<QComboBox *>(widget)) {
           QJsonArray items; for (int i = 0; i < combo->count(); ++i) items << combo->itemText(i);
           detail["items"] = items; detail["value"] = combo->currentIndex();
