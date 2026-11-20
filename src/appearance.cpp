@@ -7,6 +7,9 @@
 #include <QSettings>
 #include <QStyleHints>
 #include <QThread>
+#include <QAbstractButton>
+#include <QFocusEvent>
+#include <QStyle>
 
 namespace {
 QPointer<FinderAppearance> appearance;
@@ -95,12 +98,24 @@ void FinderAppearance::refresh()
     }
     const bool contrast = settings.value("Appearance/increaseContrast", false).toBool();
     const bool reduced = settings.value("Appearance/reduceTransparency", false).toBool();
+    const bool glossy = settings.value("Appearance/windowControlsStyle", "glossy").toString() != "flat";
+    const bool left = settings.value("Appearance/windowControlsSide", "right").toString() == "left";
+    const bool hover = settings.value("Appearance/windowControlsSymbols", "always").toString() == "hover";
+    bool validTranslucency = false;
+    const int storedTranslucency = settings.value("Appearance/sidebarTranslucency", isDark ? 17 : 9).toInt(&validTranslucency);
+    const int translucency = validTranslucency ? qBound(0, storedTranslucency, 40) : (isDark ? 17 : 9);
     const QPalette next = makePalette(isDark, contrast);
     const bool changedPolicy = !m_initialized || isDark != m_dark || contrast != m_highContrast
-        || reduced != m_reduceTransparency || next != m_palette;
+        || reduced != m_reduceTransparency || next != m_palette
+        || glossy != m_glossyControls || left != m_leftControls
+        || hover != m_hoverSymbols || translucency != m_sidebarTranslucency;
     m_dark = isDark;
     m_highContrast = contrast;
     m_reduceTransparency = reduced;
+    m_glossyControls = glossy;
+    m_leftControls = left;
+    m_hoverSymbols = hover;
+    m_sidebarTranslucency = translucency;
     m_palette = next;
     m_initialized = true;
     m_applying = true;
@@ -111,6 +126,20 @@ void FinderAppearance::refresh()
 
 bool FinderAppearance::eventFilter(QObject *object, QEvent *event)
 {
+    if (auto *button = qobject_cast<QAbstractButton *>(object)) {
+        bool change = false, keyboard = false;
+        if (event->type() == QEvent::FocusIn) {
+            const auto reason = static_cast<QFocusEvent *>(event)->reason();
+            keyboard = reason == Qt::TabFocusReason || reason == Qt::BacktabFocusReason
+                || reason == Qt::ShortcutFocusReason;
+            change = true;
+        } else if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::TouchBegin
+                   || event->type() == QEvent::FocusOut) change = true;
+        if (change && button->property("finderKeyboardFocus").toBool() != keyboard) {
+            button->setProperty("finderKeyboardFocus", keyboard);
+            button->style()->unpolish(button); button->style()->polish(button); button->update();
+        }
+    }
     if (object == m_application && event->type() == QEvent::ApplicationPaletteChange
         && !m_applying && m_application->palette() != m_palette) {
         // Keep a native fallback separate: our dark palette must never become
@@ -125,6 +154,10 @@ QPalette FinderAppearance::palette() { return appearance ? appearance->m_palette
 bool FinderAppearance::dark() { return !appearance || appearance->m_dark; }
 bool FinderAppearance::highContrast() { return appearance && appearance->m_highContrast; }
 bool FinderAppearance::reduceTransparency() { return appearance && appearance->m_reduceTransparency; }
+bool FinderAppearance::glossyWindowControls() { return !appearance || appearance->m_glossyControls; }
+bool FinderAppearance::leftWindowControls() { return appearance && appearance->m_leftControls; }
+bool FinderAppearance::hoverWindowSymbols() { return appearance && appearance->m_hoverSymbols; }
+int FinderAppearance::sidebarTranslucency() { return appearance ? appearance->m_sidebarTranslucency : 17; }
 
 QColor FinderAppearance::materialTint()
 {
@@ -132,7 +165,7 @@ QColor FinderAppearance::materialTint()
     // A modestly transmitting frost lets native blur reveal broad backdrop
     // colors while retaining the reference's dark neutral navigation tint.
     // The toolbar has its own content-backed coating.
-    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : (dark() ? 212 : 232));
+    tint.setAlpha(reduceTransparency() || highContrast() ? 255 : qRound(255 * (100 - sidebarTranslucency()) / 100.0));
     return tint;
 }
 
@@ -170,7 +203,12 @@ QColor FinderAppearance::color(Role role)
     case ToolbarSurface: return highContrast() ? p.color(QPalette::Button) : QColor(dark() ? "#191919" : "#eeeeef");
     case ToolbarActive: return highContrast() ? p.color(QPalette::Highlight) : QColor(dark() ? "#2d2d2d" : "#dcdcdf");
     case ToolbarEdge: return highContrast() ? p.color(QPalette::Mid) : QColor(dark() ? "#393939" : "#c5c5c8");
-    case SidebarGlyph: return highContrast() ? p.color(QPalette::Link) : QColor(dark() ? "#0a8bff" : "#0866d9");
+    case SidebarGlyph: return highContrast() ? p.color(QPalette::Link) : QColor(dark() ? (sidebarTranslucency()>25 ? "#8fcaff" : "#0a8bff") : "#0866d9");
+    case SidebarText: return highContrast() ? p.color(QPalette::Text) : QColor(dark() ? (sidebarTranslucency()>25 ? "#ffffff" : "#ededf2") : "#202024");
+    case SidebarSecondaryText:
+        if(highContrast()) return p.color(QPalette::PlaceholderText);
+        if(dark()) return QColor(sidebarTranslucency()>25 ? "#f5f5f8" : sidebarTranslucency()>17 ? "#d0d0d6" : "#aaaab1");
+        return QColor(sidebarTranslucency()>9 ? "#303036" : "#5a5a63");
     }
     return p.color(QPalette::Text);
 }

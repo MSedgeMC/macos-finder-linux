@@ -26,6 +26,8 @@
 #include <QLineEdit>
 #include <QSplitter>
 #include <QScrollBar>
+#include <QComboBox>
+#include <QSlider>
 #include <iostream>
 #include <functional>
 namespace {
@@ -83,7 +85,20 @@ int main(int argc, char **argv) {
     window.findChild<QAction *>("previewAppFind")->trigger();
     auto *find = window.findChild<QDialog *>("previewAppTextFind"); check(find, "text Find opens native panel"); find->close();
     window.findChild<QAction *>("previewAppSettings")->trigger();
-    auto *preferences = window.findChild<QDialog *>("previewAppPreferences"); check(preferences, "standalone Settings panel"); preferences->close();
+    auto *preferences = window.findChild<QDialog *>("previewAppPreferences"); check(preferences, "standalone Settings panel");
+    auto *controlSide=preferences->findChild<QComboBox *>("finderSettingsWindowControlsSide");
+    auto *group=window.findChild<QWidget *>("finderWindowControls");
+    auto *menuButton=window.findChild<QToolButton *>("previewAppMenuButton");
+    check(group->x()>menuButton->x(),"default Preview controls at right");
+    auto *closeControl=window.findChild<QToolButton *>("window-close");
+    controlSide->setCurrentIndex(controlSide->findData("left")); QApplication::processEvents();
+    check(group->x()<window.findChild<QToolButton *>("previewAppSidebarButton")->x()
+        && window.findChild<QToolButton *>("window-close")==closeControl,"live side switch preserves controls and native connections");
+    auto *translucency=preferences->findChild<QSlider *>("finderSettingsSidebarTranslucency");
+    translucency->setValue(40); check(FinderAppearance::materialTint().alpha()==153,"standalone shares sidebar translucency");
+    controlSide->setCurrentIndex(controlSide->findData("right")); QApplication::processEvents();
+    check(group->x()>menuButton->x(),"right-side restored live");
+    preferences->close();
     window.findChild<QAction *>("previewAppThumbnails")->trigger(); check(sidebar->isHidden(), "thumbnail sidebar toggles");
     sidebar->setCurrentRow(0); check(waitFor([&] { return pane->originalImageSize() == image.size(); }), "sidebar primary selection follows image");
     QMimeData mime; mime.setUrls({pdfUrl}); QDragEnterEvent enter(QPoint(50, 50), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
@@ -101,7 +116,7 @@ int main(int argc, char **argv) {
       single.resize(480,320); QApplication::processEvents();
       check(single.findChild<QWidget *>("previewAppDocumentTools")->isHidden() && single.findChild<QToolButton *>("previewAppMenuButton")->isVisible(), "narrow toolbar collapses tools into persistent menu");
       check(single.findChild<QWidget *>("previewAppZoomGroup")->geometry().right() < single.findChild<QToolButton *>("previewAppMenuButton")->geometry().left(), "narrow toolbar has no overlapping action groups");
-      check(single.findChild<QToolButton *>("window-close")->x()>single.findChild<QToolButton *>("previewAppMenuButton")->x(), "explicit right-side controls preserved");
+      check(single.findChild<QWidget *>("finderWindowControls")->x()>single.findChild<QToolButton *>("previewAppMenuButton")->x(), "explicit right-side controls preserved");
     }
     { ViewerWindow remembered({imageUrl}); check(!remembered.findChild<QListWidget *>("previewAppSidebar")->isHidden(), "explicit thumbnail preference survives another window"); }
     QSettings().remove("Viewer/showThumbnails");

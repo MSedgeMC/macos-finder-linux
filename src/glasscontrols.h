@@ -84,7 +84,7 @@ protected:
         if (FinderAppearance::highContrast() && isChecked())
             option.palette.setColor(QPalette::ButtonText, FinderAppearance::palette().color(QPalette::HighlightedText));
         style()->drawControl(QStyle::CE_ToolButtonLabel, &option, &painter, this);
-        if (hasFocus()) {
+        if (hasFocus() && property("finderKeyboardFocus").toBool()) {
             painter.setRenderHint(QPainter::Antialiasing);
             painter.setBrush(Qt::NoBrush); painter.setPen(QPen(FinderAppearance::color(FinderAppearance::Focus), 1.5));
             painter.drawPath(FinderGlass::contour(QRectF(rect()).adjusted(2, 2, -2, -2)));

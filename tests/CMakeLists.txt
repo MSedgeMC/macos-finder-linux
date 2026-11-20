@@ -176,7 +176,7 @@ add_executable(finder-viewer-test viewer.cpp
 target_include_directories(finder-viewer-test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_definitions(finder-viewer-test PRIVATE FINDER_PREVIEW_PRINT_SUPPORT=1)
 target_link_libraries(finder-viewer-test PRIVATE Qt6::Widgets Qt6::Pdf Qt6::Multimedia Qt6::MultimediaWidgets Qt6::PrintSupport
-    KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::FileMetaData KF6::Service)
+    KF6::KIOCore KF6::KIOGui KF6::KIOWidgets KF6::FileMetaData KF6::Service KF6::WindowSystem)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(finder-viewer-test PRIVATE -Wall -Wextra)
 endif()

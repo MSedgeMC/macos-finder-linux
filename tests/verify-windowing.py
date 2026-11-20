@@ -22,7 +22,8 @@ runtime=Path(os.environ['XDG_RUNTIME_DIR'])
 assert str(runtime) in os.environ['DBUS_SESSION_BUS_ADDRESS']
 parser=argparse.ArgumentParser();parser.add_argument('--binary',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
 args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
-app=QApplication([]);bus=dbus.SessionBus();checks={}
+from PyQt6.QtCore import QSettings
+app=QApplication([]);QSettings('LocalDesktop','Finder').setValue('Appearance/windowControlsSide','left');bus=dbus.SessionBus();checks={}
 spec=importlib.util.spec_from_file_location('private_input',Path(__file__).with_name('private-wayland-input.py'))
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 fixture=runtime/'window-fixture';fixture.mkdir();(fixture/'Notes.txt').write_text('Private file fixture')

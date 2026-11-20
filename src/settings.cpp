@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "settings.h"
 #include "appearance.h"
+#include "appearancecontrols.h"
 #include <QApplication>
 #include <KProtocolInfo>
 #include <QCloseEvent>
@@ -243,6 +244,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     option(general, tr("Increase contrast"), "Appearance/increaseContrast", false, "finderSettingsIncreaseContrast");
     auto *reduceTransparency = option(general, tr("Reduce transparency"), "Appearance/reduceTransparency", false, "finderSettingsReduceTransparency");
     reduceTransparency->setToolTip(tr("Use an opaque material for Finder window surfaces."));
+    FinderAppearanceControls::addRows(general, this, [this] { emit preferencesChanged(); });
     section(general, tr("Desktop"), "finderSettingsDesktopHeading");
     auto *desktop = new QLabel(tr("Desktop items are managed in Plasma’s Configure Desktop and Wallpaper settings."), this);
     desktop->setProperty("settingsHelp", true);

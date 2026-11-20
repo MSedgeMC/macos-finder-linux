@@ -22,6 +22,7 @@
 #include "infohost.h"
 #include "alerts.h"
 #include "windowcontrols.h"
+#include "sidebarmaterial.h"
 #include "glasscontrols.h"
 #include "windowcontour.h"
 #include "sidebarsplitter.h"
@@ -366,9 +367,10 @@ public:
     auto *hs = new QHBoxLayout(headerSidebar);
     hs->setContentsMargins(6, 0, 6, 0);
     hs->setSpacing(3);
+    windowControls = new WindowControls(headerSidebar);
+    hs->addWidget(windowControls);
     for (auto name : {"close", "minimize", "maximize"}) {
-      auto *control = new WindowControl(QString(name), headerSidebar);
-      hs->addWidget(control);
+      auto *control = windowControls->findChild<QToolButton *>("window-" + QString(name));
       connect(control, &QToolButton::clicked, this, [this, name] {
         if (QString(name) == "minimize") showMinimized();
         else if (QString(name) == "maximize") {
@@ -928,7 +930,7 @@ public:
     makeActions();
     applyToolbarOrder();
     applyStyle();
-    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); refreshToolbarSymbols(); header->update(); sidebar->update(); updateMaterial(); });
+    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] { applyStyle(); refreshToolbarSymbols(); layoutHeader(); header->update(); sidebar->update(); updateMaterial(); });
     addTab(initial, true);
     rebuildTagMenu();
     qApp->installEventFilter(this);
@@ -1418,8 +1420,9 @@ public:
       auto *layout = new QVBoxLayout(base); layout->setContentsMargins(0,0,0,0); layout->setSpacing(0);
       auto *previewHeader = new Header(base); previewHeader->setObjectName("finderQuickLookHeader"); previewHeader->setFixedHeight(40);
       auto *controls = new QHBoxLayout(previewHeader); controls->setContentsMargins(12,4,12,4); controls->setSpacing(7);
+      auto *windowControls = new WindowControls(previewHeader); controls->addWidget(windowControls);
       for (auto kind : {"close", "minimize", "maximize"}) {
-        auto *control = new WindowControl(kind, previewHeader); controls->addWidget(control);
+        auto *control = windowControls->findChild<QToolButton *>("window-" + QString(kind));
         connect(control, &QToolButton::clicked, window, [window, kind] {
           if (QString(kind) == "close") window->hide(); else if (QString(kind) == "minimize") window->showMinimized();
           else if (auto *pane = window->findChild<PreviewPane *>()) pane->setFullScreen(!window->isFullScreen());
@@ -1427,6 +1430,11 @@ public:
       }
       auto *pane = new PreviewPane(base); pane->setHostedQuickLook(true);
       controls->addWidget(pane->quickLookHeaderWidget(), 1);
+      auto placeControls = [controls, windowControls] {
+        controls->removeWidget(windowControls);
+        controls->insertWidget(FinderAppearance::leftWindowControls() ? 0 : controls->count(), windowControls);
+      };
+      placeControls(); connect(FinderAppearance::instance(), &FinderAppearance::changed, window, placeControls);
       layout->addWidget(previewHeader); layout->addWidget(pane, 1);
       quickWindow = window; quickPane = pane;
       window->setWindowFlags(Qt::Window | Qt::FramelessWindowHint); window->setAttribute(Qt::WA_TranslucentBackground);
@@ -1954,13 +1962,10 @@ private:
   bool tabDragMoved = false;
   QPointer<QWidget> editorTarget;
   bool uiReady = false;
-  QSize materialContourSize;
-  QRegion materialContour;
-  bool materialContourSquare = false;
-  qreal materialContourScale = 0;
-  int materialContourAlpha = 0;
+  SidebarMaterial sidebarMaterial;
   QToolButton *persistentMenu = nullptr;
   Header *header;
+  WindowControls *windowControls;
   Material *sidebar;
   QSplitter *body;
   int pendingSidebarWidth = -1;
@@ -2222,6 +2227,16 @@ private:
     // an extra icon competing with the reference titlebar in ordinary use.
     if (auto *toggle = headerSidebar->findChild<QToolButton *>("finderSidebarToggle"))
       toggle->setVisible(!sidebar->isVisible() || !toolbar);
+    QWidget *controlParent = FinderAppearance::leftWindowControls() ? headerSidebar : header;
+    auto *destination = qobject_cast<QHBoxLayout *>(controlParent->layout());
+    const int destinationIndex = FinderAppearance::leftWindowControls() ? 0 : destination->count()-1;
+    if (windowControls->parentWidget() != controlParent || destination->indexOf(windowControls) != destinationIndex) {
+      windowControls->parentWidget()->layout()->removeWidget(windowControls);
+      windowControls->setParent(controlParent);
+      if (FinderAppearance::leftWindowControls()) destination->insertWidget(0, windowControls);
+      else destination->addWidget(windowControls);
+      windowControls->show();
+    }
     headerSidebar->setFixedWidth(
         sidebar->isVisible() ? qMax(94, sidebar->width() - 12) : 94);
     arrange->setVisible(toolbar && width() >= 740 && !search->isVisible() && !hidden.contains("sort"));
@@ -2983,7 +2998,7 @@ private:
     if (!windowHandle() || !sidebar)
       return;
     const bool supported = KWindowEffects::isEffectAvailable(KWindowEffects::BlurBehind);
-    const bool available = supported && !property("finderDisableBlur").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast();
+    const bool available = SidebarMaterial::supported(this);
     header->blur = sidebar->blur = available || (supported && property("finderTestCoating").toBool() && !FinderAppearance::reduceTransparency() && !FinderAppearance::highContrast());
     header->update();
     sidebar->update();
@@ -2992,46 +3007,7 @@ private:
     if (sidebar->isVisible())
       region += QRegion(
           sidebar->rect().translated(sidebar->mapTo(this, QPoint(0, 0))));
-    // The KDE Wayland API takes wl_surface units. QT_SCALE_FACTOR adds
-    // application zoom above the native output scale; convert that once.
-    qreal surfaceScale = 1;
-    if (QGuiApplication::platformName() == "wayland") {
-      bool valid = false; const qreal scale = qEnvironmentVariable("QT_SCALE_FACTOR").toDouble(&valid);
-      if (valid && std::isfinite(scale) && scale > 0) surfaceScale = scale;
-    }
-    const QTransform surfaceTransform = QTransform::fromScale(surfaceScale, surfaceScale);
-    region = surfaceTransform.map(region);
-    // KWin can change fully transparent client pixels. Cache a matching
-    // contour in surface units, without rounding each scaled row separately.
-    const bool square = isMaximized() || isFullScreen();
-    const int coatingAlpha = FinderAppearance::materialTint().alpha();
-    if (materialContourSize != size() || materialContourSquare != square || materialContourScale != surfaceScale || materialContourAlpha != coatingAlpha) {
-      const int sw = qRound(width() * surfaceScale), sh = qRound(height() * surfaceScale);
-      materialContour = QRegion(QRect(0, 0, sw, sh));
-      if (!square) {
-        // Match the client antialias raster, including partial coverage. A
-        // whole-cell geometric test left a sharp backdrop fringe at corners.
-        QImage coverage(QSize(sw, sh), QImage::Format_ARGB32_Premultiplied);
-        coverage.setDevicePixelRatio(surfaceScale); coverage.fill(Qt::transparent);
-        QPainter maskPainter(&coverage); maskPainter.setRenderHint(QPainter::Antialiasing);
-        maskPainter.setPen(Qt::NoPen); maskPainter.setBrush(Qt::white);
-        maskPainter.drawPath(windowContour(QRectF(rect()), 16)); maskPainter.end();
-        const int span = qMin(int(std::ceil(26 * surfaceScale)), qMin(sw, sh) / 2);
-        materialContour = QRegion(QRect(0, span, sw, sh - 2 * span));
-        for (int row = 0; row < span; ++row) for (int y : {row, sh - row - 1}) {
-          int left = 0, right = 0;
-          while (left < span && (qAlpha(coverage.pixel(left, y)) * coatingAlpha + 127) / 255 == 0) ++left;
-          while (right < span && (qAlpha(coverage.pixel(sw - right - 1, y)) * coatingAlpha + 127) / 255 == 0) ++right;
-          materialContour += QRegion(QRect(left, y, sw - left - right, 1));
-        }
-      }
-      materialContourSize = size(); materialContourSquare = square; materialContourScale = surfaceScale; materialContourAlpha = coatingAlpha;
-    }
-    region &= materialContour;
-    KWindowEffects::enableBlurBehind(windowHandle(), available && !region.isEmpty(), region);
-    // Saturation reduction applies only to the genuinely translucent sidebar.
-    KWindowEffects::enableBackgroundContrast(windowHandle(), available && !region.isEmpty(), 1.0, 1.0,
-                                             FinderAppearance::materialBackdropSaturation(), region);
+    sidebarMaterial.update(this, region, available);
   }
   void applyStyle() {
     QString sheet = R"(
@@ -3064,7 +3040,7 @@ private:
       {"#424248", palette.color(QPalette::Button).lighter(115)}, {"#ffffff38", FinderAppearance::color(FinderAppearance::ScrollHandle)}};
     for (auto it = colors.cbegin(); it != colors.cend(); ++it) sheet.replace(it.key(), css(it.value()));
     if (!FinderAppearance::dark()) { sheet.replace("rgba(255,255,255,", "rgba(0,0,0,"); sheet.replace("color:white", "color:" + css(palette.color(QPalette::Text))); }
-    sheet += QString("QToolButton:focus,QPushButton:focus,QLineEdit:focus,QComboBox:focus{border:1px solid %1;} QCheckBox:focus{outline:1px solid %1;} QToolButton:disabled{color:%2;}").arg(css(FinderAppearance::color(FinderAppearance::Focus)), css(palette.color(QPalette::Disabled, QPalette::Text)));
+    sheet += QString("QToolButton[finderKeyboardFocus=true]:focus,QPushButton[finderKeyboardFocus=true]:focus,QLineEdit:focus,QComboBox:focus{border:1px solid %1;} QCheckBox[finderKeyboardFocus=true]:focus{outline:1px solid %1;} QToolButton:disabled{color:%2;}").arg(css(FinderAppearance::color(FinderAppearance::Focus)), css(palette.color(QPalette::Disabled, QPalette::Text)));
     if (FinderAppearance::highContrast()) sheet += QString("QMenu,QHeaderView::section{border:1px solid %1;} QScrollBar::handle{background:%1;}").arg(css(FinderAppearance::color(FinderAppearance::Border)));
     setStyleSheet(sheet);
   }

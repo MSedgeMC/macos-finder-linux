@@ -135,7 +135,7 @@ public:
         if (index.data(HeadingRole).toBool()) {
             QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Medium);
             p->setFont(font);
-            p->setPen(option.palette.color(QPalette::PlaceholderText));
+            p->setPen(FinderAppearance::color(FinderAppearance::SidebarSecondaryText));
             const QRect label = option.rect.adjusted(10, 10, -10, 0);
             p->drawText(label, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
                         QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, label.width()));
@@ -162,7 +162,7 @@ public:
             const bool gray = glyph == "trash" || glyph == "device";
             const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
             p->setPen(QPen(contrastSelection ? option.palette.color(QPalette::HighlightedText)
-                          : gray ? option.palette.color(QPalette::PlaceholderText) : FinderAppearance::color(FinderAppearance::SidebarGlyph),
+                          : gray ? FinderAppearance::color(FinderAppearance::SidebarSecondaryText) : FinderAppearance::color(FinderAppearance::SidebarGlyph),
                            1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p->setBrush(Qt::NoBrush); p->drawPath(placeGlyphs().value(glyph)); p->restore();
         }
@@ -173,8 +173,8 @@ public:
         font.setWeight(option.state & QStyle::State_Selected ? QFont::Bold : QFont::Medium);
         p->setFont(font);
         const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
-        p->setPen(option.palette.color(option.state & QStyle::State_Enabled ? QPalette::Active : QPalette::Disabled,
-                                        contrastSelection ? QPalette::HighlightedText : QPalette::Text));
+        p->setPen(contrastSelection ? option.palette.color(QPalette::HighlightedText) : FinderAppearance::color(
+            option.state & QStyle::State_Enabled ? FinderAppearance::SidebarText : FinderAppearance::SidebarSecondaryText));
         p->drawText(textRect, (reverse ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter,
                     QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, textRect.width()));
         if (hasAction) {

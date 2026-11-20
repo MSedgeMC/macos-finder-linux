@@ -4,6 +4,7 @@
 #include "preview.h"
 #include "quickactions.h"
 #include "appearance.h"
+#include "appearancecontrols.h"
 #include "windowcontour.h"
 #include "sidebarsplitter.h"
 #include "windowcontrols.h"
@@ -78,7 +79,7 @@ public:
                         item.state & QStyle::State_Enabled ? QIcon::Normal : QIcon::Disabled);
         const QRect label = item.rect.adjusted(6, 114, -6, -5);
         painter->setFont(item.font);
-        painter->setPen(selected ? item.palette.highlightedText().color() : item.palette.text().color());
+        painter->setPen(selected ? item.palette.highlightedText().color() : FinderAppearance::color(FinderAppearance::SidebarText));
         painter->drawText(label, Qt::AlignHCenter | Qt::AlignVCenter,
                           item.fontMetrics.elidedText(item.text, Qt::ElideMiddle, label.width()));
         if (item.state & QStyle::State_HasFocus) {
@@ -153,10 +154,29 @@ private:
     void refresh() { setText(fontMetrics().elidedText(title, Qt::ElideMiddle, width())); }
     QString title;
 };
-class ViewerHeader final : public QWidget {
-public: using QWidget::QWidget;
+class ViewerSplitter final : public SidebarSplitter {
+public:
+    using SidebarSplitter::SidebarSplitter;
+    bool blur = false;
 protected:
-    void paintEvent(QPaintEvent *) override { QPainter painter(this); painter.fillRect(rect(), FinderAppearance::color(FinderAppearance::Header)); }
+    void paintEvent(QPaintEvent *event) override {
+        QPainter painter(this); QColor tint = FinderAppearance::materialTint();
+        if (!blur) tint.setAlpha(255);
+        if (count() && widget(0)->isVisible()) painter.fillRect(widget(0)->geometry(), tint);
+        painter.end(); SidebarSplitter::paintEvent(event);
+    }
+};
+class ViewerHeader final : public QWidget {
+public:
+    using QWidget::QWidget;
+    bool blur = false;
+    int sidebarWidth = 0;
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this); painter.fillRect(QRect(sidebarWidth,0,width()-sidebarWidth,height()),FinderAppearance::color(FinderAppearance::Header));
+        QColor tint = FinderAppearance::materialTint(); if (!blur) tint.setAlpha(255);
+        painter.fillRect(QRect(0,0,sidebarWidth,height()),tint);
+    }
     void mousePressEvent(QMouseEvent *event) override {
         if (event->button() == Qt::LeftButton && !window()->isFullScreen() && window()->windowHandle()) window()->windowHandle()->startSystemMove();
     }
@@ -174,9 +194,10 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *header = new ViewerHeader(base); header->setFixedHeight(56); header->setObjectName("previewAppHeader");
     auto *chrome = new QHBoxLayout(header); chrome->setContentsMargins(14, 8, 14, 8); chrome->setSpacing(10);
     layout->addWidget(header);
-    auto *splitter = new SidebarSplitter(base); splitter->setObjectName("previewAppSplitter"); layout->addWidget(splitter, 1);
+    auto *splitter = new ViewerSplitter(base); splitter->setObjectName("previewAppSplitter"); layout->addWidget(splitter, 1);
     m_sidebar = new DocumentSidebar(splitter); m_sidebar->setObjectName("previewAppSidebar");
     m_sidebar->setAccessibleName(tr("Open documents"));
+    m_sidebar->setAutoFillBackground(false); m_sidebar->viewport()->setAutoFillBackground(false);
     m_sidebar->setMinimumWidth(100); m_sidebar->setMaximumWidth(260);
     m_preview = new PreviewPane(splitter); m_preview->setHostWindowControls(true); m_preview->setDocumentPresentation(true);
     // Export application menus to Plasma; a persistent toolbar menu gives the
@@ -303,9 +324,15 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     menuButton->setAccessibleName(tr("Preview menus")); menuButton->setToolTip(tr("Preview menus")); menuButton->setMenu(localMenu); menuButton->setPopupMode(QToolButton::InstantPopup); menuButton->setProperty("finderGlassSurface",true); chrome->addWidget(menuButton);
     auto *menuShortcut = new QAction(tr("Preview menus"),this); menuShortcut->setShortcut(QKeySequence(Qt::Key_F10)); addAction(menuShortcut);
     connect(menuShortcut, &QAction::triggered,this,[menuButton] { menuButton->showMenu(); });
-    // Keep the user's explicit right-side window-control arrangement.
+    auto *windowControls = new WindowControls(header); chrome->addWidget(windowControls);
+    auto placeControls = [chrome, windowControls] {
+        chrome->removeWidget(windowControls);
+        chrome->insertWidget(FinderAppearance::leftWindowControls() ? 0 : chrome->count(), windowControls);
+    };
+    placeControls(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, placeControls);
+    connect(splitter, &QSplitter::splitterMoved, this, [this] { updateMaterial(); });
     for (const auto &kind : {"minimize", "maximize", "close"}) {
-        auto *control = new WindowControl(kind,header); chrome->addWidget(control);
+        auto *control = windowControls->findChild<QToolButton *>("window-" + QString(kind));
         connect(control,&QToolButton::clicked,this,[this,kind] {
             if (QString(kind)=="close") this->close(); else if (QString(kind)=="minimize") showMinimized(); else m_preview->setFullScreen(!isFullScreen());
         });
@@ -359,10 +386,10 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     connect(m_edits, &QuickActions::outputCreated, this, [this](const QUrl &url) { m_status->show(); m_status->showMessage(tr("Created %1").arg(url.fileName()), 10000); });
     auto restyle = [this] {
         setPalette(FinderAppearance::palette());
-        setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} #previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
+        setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} #previewAppSidebar{background:transparent;border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
             "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);} QMenu{background:palette(window);color:palette(window-text);padding:6px;}"));
     };
-    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) { const QIcon icon(new DocumentIcon(button->property("documentSymbol").toString())); if (button->defaultAction()) button->defaultAction()->setIcon(icon); else button->setIcon(icon); } button->update(); } updateActions(); });
+    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) { const QIcon icon(new DocumentIcon(button->property("documentSymbol").toString())); if (button->defaultAction()) button->defaultAction()->setIcon(icon); else button->setIcon(icon); } button->update(); } updateActions(); updateMaterial(); });
     m_thumbnailTimer.setSingleShot(true); m_thumbnailTimer.setInterval(75);
     connect(&m_thumbnailTimer, &QTimer::timeout, this, [this] { loadThumbnails(); });
     connect(m_sidebar->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_thumbnailTimer.start(); });
@@ -388,6 +415,7 @@ void ViewerWindow::settingsDialog() {
         auto *box = new QCheckBox(entry.second, dialog); box->setObjectName("previewAppSetting_" + entry.first); box->setChecked(QSettings().value("Viewer/" + entry.first, true).toBool()); form->addRow(box);
         connect(box, &QCheckBox::toggled, dialog, [this, key = entry.first](bool enabled) { QSettings().setValue("Viewer/" + key, enabled); reloadSettings(); });
     }
+    FinderAppearanceControls::addRows(form, dialog);
     auto *note = new QLabel(tr("Image edits and exports create a new file. The original document is preserved."), dialog); note->setWordWrap(true); form->addRow(note);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog); form->addRow(buttons); connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close); dialog->open();
 }
@@ -484,6 +512,7 @@ void ViewerWindow::rebuildSidebar() {
         m_sidebar->setCurrentRow(m_preview->pdfCurrentPage());
     } else {
         m_sidebar->setAccessibleName(tr("Open documents"));
+    m_sidebar->setAutoFillBackground(false); m_sidebar->viewport()->setAutoFillBackground(false);
         for (const auto &url : urls()) {
             auto *item = new QListWidgetItem(QIcon::fromTheme(QMimeDatabase().mimeTypeForUrl(url).iconName()), url.fileName(), m_sidebar);
             item->setData(Qt::UserRole, url); item->setToolTip(url.toDisplayString(QUrl::RemovePassword));
@@ -540,10 +569,35 @@ void ViewerWindow::updateSidebarVisibility() {
     const bool visible = m_sidebarOverride ? m_sidebarEnabled : (urls().size()>1 || m_preview->pdfPageCount()>0);
     const QSignalBlocker blocker(findChild<QAction *>("previewAppThumbnails"));
     findChild<QAction *>("previewAppThumbnails")->setChecked(visible);
+    const bool wasHidden = m_sidebar->isHidden();
     m_sidebar->setVisible(visible);
+    if (wasHidden != !visible) QTimer::singleShot(0, this, [this] { updateMaterial(); });
     if (visible) m_thumbnailTimer.start();
 }
 void ViewerWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
     if (auto *tools = findChild<QWidget *>("previewAppDocumentTools")) tools->setVisible(width()>=760);
+    updateMaterial();
+}
+
+void ViewerWindow::updateMaterial() {
+    auto *header = static_cast<ViewerHeader *>(findChild<QWidget *>("previewAppHeader"));
+    auto *splitter = static_cast<ViewerSplitter *>(findChild<QSplitter *>("previewAppSplitter"));
+    if (!header || !splitter || !m_sidebar) return;
+    const bool available = SidebarMaterial::supported(this);
+    header->blur = splitter->blur = available;
+    header->sidebarWidth = m_sidebar->isVisible() ? m_sidebar->width() : 0;
+    header->update(); splitter->update();
+    QRegion region;
+    if (m_sidebar->isVisible()) {
+        region += QRegion(m_sidebar->rect().translated(m_sidebar->mapTo(this,QPoint())));
+        region += QRegion(QRect(header->mapTo(this,QPoint()),QSize(header->sidebarWidth,header->height())));
+    }
+    m_material.update(this,region,available);
+}
+bool ViewerWindow::event(QEvent *event) {
+    const bool result = QMainWindow::event(event);
+    if (event->type()==QEvent::Show || event->type()==QEvent::WindowStateChange || event->type()==QEvent::WinIdChange)
+        QTimer::singleShot(0,this,[this] {updateMaterial();});
+    return result;
 }

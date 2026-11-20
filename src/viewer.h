@@ -2,6 +2,7 @@
 // Copyright 2026 kubuntu-customization contributors
 #pragma once
 #include <QMainWindow>
+#include "sidebarmaterial.h"
 #include <QList>
 #include <QUrl>
 #include <QTimer>
@@ -24,6 +25,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override;
 private:
     void openFiles();
     void settingsDialog();
@@ -33,8 +35,10 @@ private:
     void loadThumbnails();
     void rebuildSidebar();
     void updateSidebarVisibility();
+    void updateMaterial();
+    SidebarMaterial m_material;
     PreviewPane *m_preview;
-    QListWidget *m_sidebar;
+    QListWidget *m_sidebar = nullptr;
     QMenu *m_recent;
     QMenu *m_tools;
     QuickActions *m_edits;

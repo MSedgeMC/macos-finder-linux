@@ -1666,7 +1666,7 @@ void PreviewPane::createGallery()
         "#previewQuickActions QPushButton,#previewQuickActions QToolButton{background:transparent;color:palette(button-text);border:0;border-radius:5px;padding:5px;font-size:11px;}"
         "#previewQuickActions QPushButton:hover,#previewQuickActions QToolButton:hover{background:palette(button);}"
         "#previewQuickActions QPushButton:disabled,#previewQuickActions QToolButton:disabled{color:palette(placeholder-text);}"
-        "#previewGalleryDetails QToolButton:focus,#previewQuickActions QPushButton:focus,#previewShowMore:focus{outline:2px solid palette(highlight);}"
+        "#previewGalleryDetails QToolButton[finderKeyboardFocus=true]:focus,#previewQuickActions QPushButton[finderKeyboardFocus=true]:focus,#previewShowMore[finderKeyboardFocus=true]:focus{outline:2px solid palette(highlight);}"
     ));
     auto *details = new QVBoxLayout(m_gallerySidebar);
     details->setContentsMargins(0, 0, 0, 0);

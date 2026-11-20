@@ -21,7 +21,7 @@ public:
         Selection, SelectedText, IconSelection, IconLabelSelection,
         SidebarSelection, SidebarHover, ScrollHandle, Error,
         MaterialEdge, MaterialShadow, ToolbarSurface, ToolbarActive, ToolbarEdge,
-        SidebarGlyph
+        SidebarGlyph, SidebarText, SidebarSecondaryText
     };
     Q_ENUM(Role)
 
@@ -35,6 +35,12 @@ public:
     static bool dark();
     static bool highContrast();
     static bool reduceTransparency();
+    static bool glossyWindowControls();
+    static bool leftWindowControls();
+    static bool hoverWindowSymbols();
+    // Percentage of backdrop contribution, bounded to 0..40. Missing values
+    // retain the established dark/light frosting (17/9 percent).
+    static int sidebarTranslucency();
     static QColor materialTint();
     static qreal materialBackdropSaturation();
     static QColor color(Role role);
@@ -55,6 +61,10 @@ private:
     bool m_dark = true;
     bool m_highContrast = false;
     bool m_reduceTransparency = false;
+    bool m_glossyControls = true;
+    bool m_leftControls = false;
+    bool m_hoverSymbols = false;
+    int m_sidebarTranslucency = 17;
     bool m_initialized = false;
     bool m_applying = false;
     QPointer<QApplication> m_application;

@@ -52,7 +52,7 @@ public:
         auto *ok = new QPushButton(tr("OK"),this); ok->setObjectName("finderAlertOK"); ok->setMinimumHeight(28);
         ok->setDefault(true); ok->setAutoDefault(true); layout->addWidget(ok); connect(ok,&QPushButton::clicked,this,&QDialog::accept);
         const auto p=palette();
-        setStyleSheet(QStringLiteral("#finderErrorAlert QLabel{background:transparent;color:%1;} #finderAlertOK{background:%2;color:%3;border:0;border-radius:14px;padding:4px 14px;} #finderAlertOK:focus{border:2px solid %4;} #finderAlertOK:pressed{background:%5;} #finderAlertDetails{background:%6;border:1px solid %7;border-radius:8px;} #finderAlertDetailsToggle{border:0;background:transparent;padding:2px;}")
+        setStyleSheet(QStringLiteral("#finderErrorAlert QLabel{background:transparent;color:%1;} #finderAlertOK{background:%2;color:%3;border:0;border-radius:14px;padding:4px 14px;} #finderAlertOK[finderKeyboardFocus=true]:focus{border:2px solid %4;} #finderAlertOK:pressed{background:%5;} #finderAlertDetails{background:%6;border:1px solid %7;border-radius:8px;} #finderAlertDetailsToggle{border:0;background:transparent;padding:2px;}")
             .arg(p.color(QPalette::Text).name(),p.color(QPalette::Highlight).name(),p.color(QPalette::HighlightedText).name(),
                  p.color(QPalette::Link).name(),p.color(QPalette::Highlight).darker(115).name(),p.color(QPalette::Base).name(),p.color(QPalette::Mid).name()));
         setFixedWidth(320); adjustSize(); ok->setFocus();

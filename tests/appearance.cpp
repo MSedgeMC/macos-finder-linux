@@ -4,6 +4,10 @@
 // places, preview, settings, tags, preferences, scroll (AUTOMOC); the existing
 // Qt Widgets/Pdf/Multimedia and browser/places/settings KF6 dependencies.
 #include "appearance.h"
+#include "windowcontrols.h"
+#include "glasscontrols.h"
+#include <QSlider>
+#include <QFocusEvent>
 #include "browser.h"
 #include "places.h"
 #include "preview.h"
@@ -142,6 +146,36 @@ int main(int argc, char **argv)
     QObject::connect(policy, &FinderAppearance::changed, &app, [&] { ++changes; });
     FinderAppearance::apply(&app);
     check(changes == 0, "idempotent refresh");
+    check(FinderAppearance::glossyWindowControls() && !FinderAppearance::leftWindowControls()
+        && !FinderAppearance::hoverWindowSymbols() && FinderAppearance::sidebarTranslucency()==17, "control defaults preserve explicit desktop choices");
+    QSettings().setValue("Appearance/windowControlsStyle","flat");
+    QSettings().setValue("Appearance/windowControlsSide","left");
+    QSettings().setValue("Appearance/windowControlsSymbols","hover");
+    QSettings().setValue("Appearance/sidebarTranslucency",40);
+    FinderAppearance::apply(&app);
+    check(!FinderAppearance::glossyWindowControls() && FinderAppearance::leftWindowControls()
+        && FinderAppearance::hoverWindowSymbols() && FinderAppearance::materialTint().alpha()==153, "cached control and translucency preferences applied");
+    for (const QString modeName : {QString("dark"),QString("light")}) {
+        QSettings().setValue("Appearance/mode",modeName); FinderAppearance::apply(&app);
+        for(const QColor backdrop:{QColor(Qt::black),QColor(Qt::white)}) {
+            QImage surface(1,1,QImage::Format_ARGB32_Premultiplied);surface.fill(backdrop);
+            QPainter painter(&surface);painter.fillRect(surface.rect(),FinderAppearance::materialTint());painter.end();
+            check(contrast(FinderAppearance::color(FinderAppearance::SidebarText),surface.pixelColor(0,0))>=4.5
+                && contrast(FinderAppearance::color(FinderAppearance::SidebarSecondaryText),surface.pixelColor(0,0))>=4.5,"navigation text readable at maximum translucency");
+        }
+    }
+    QSettings().setValue("Appearance/mode","dark");FinderAppearance::apply(&app);
+    const int controlChanges=changes;
+    for(int i=0;i<10000;++i) { (void)FinderAppearance::materialTint(); (void)FinderAppearance::hoverWindowSymbols(); }
+    check(changes==controlChanges,"painting policy reads never reapply settings");
+    QSettings().setValue("Appearance/sidebarTranslucency",300); FinderAppearance::apply(&app);
+    check(FinderAppearance::sidebarTranslucency()==40 && FinderAppearance::materialTint().alpha()==153,"translucency bounded");
+    QSettings().setValue("Appearance/sidebarTranslucency","invalid"); FinderAppearance::apply(&app);
+    check(FinderAppearance::sidebarTranslucency()==17,"invalid translucency retains default");
+    QSettings().remove("Appearance/sidebarTranslucency");
+    QSettings().remove("Appearance/windowControlsStyle"); QSettings().remove("Appearance/windowControlsSide"); QSettings().remove("Appearance/windowControlsSymbols");
+    FinderAppearance::apply(&app); changes=0;
+
     checkContrast(false);
     apply("light");
     check(!FinderAppearance::dark() && changes == 1, "light switch signal");
@@ -248,6 +282,19 @@ int main(int argc, char **argv)
     auto *mode = settings.findChild<QComboBox *>("finderSettingsAppearanceMode");
     auto *increased = settings.findChild<QCheckBox *>("finderSettingsIncreaseContrast");
     auto *reduced = settings.findChild<QCheckBox *>("finderSettingsReduceTransparency");
+    auto *style = settings.findChild<QComboBox *>("finderSettingsWindowControlsStyle");
+    auto *side = settings.findChild<QComboBox *>("finderSettingsWindowControlsSide");
+    auto *symbols = settings.findChild<QComboBox *>("finderSettingsWindowControlsSymbols");
+    auto *translucency = settings.findChild<QSlider *>("finderSettingsSidebarTranslucency");
+    check(style && side && symbols && translucency,"shared appearance settings exist");
+    style->setCurrentIndex(style->findData("flat")); side->setCurrentIndex(side->findData("left")); symbols->setCurrentIndex(symbols->findData("hover"));
+    translucency->setValue(35);
+    check(!FinderAppearance::glossyWindowControls() && FinderAppearance::leftWindowControls() && FinderAppearance::hoverWindowSymbols()
+        && FinderAppearance::sidebarTranslucency()==35,"settings control changes apply immediately");
+    apply("dark",true); check(!translucency->isEnabled() && translucency->value()==35 && FinderAppearance::materialTint().alpha()==255,"accessibility preserves stored translucency");
+    apply("dark"); check(translucency->isEnabled(),"translucency restored after accessibility override");
+    QSettings().setValue("Appearance/windowControlsSide","right"); FinderAppearance::apply(&app);
+    check(side->currentData().toString()=="right","other settings views reload without feedback writes");
     check(mode && increased && reduced && !mode->accessibleName().isEmpty(), "accessible appearance settings controls");
     for (const auto &name : {QStringLiteral("dark"), QStringLiteral("light")}) {
         for (bool high : {false, true}) {
