@@ -23,6 +23,7 @@ public:
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 private:
     void openFiles();
     void settingsDialog();
@@ -31,6 +32,7 @@ private:
     void populateRecent();
     void loadThumbnails();
     void rebuildSidebar();
+    void updateSidebarVisibility();
     PreviewPane *m_preview;
     QListWidget *m_sidebar;
     QMenu *m_recent;
@@ -46,4 +48,6 @@ private:
     QList<QUrl> m_capabilitySelection;
     bool m_canExportImage = false, m_canCreatePdf = false;
     bool m_pageThumbnailsPending = false;
+    bool m_sidebarOverride = false;
+    bool m_sidebarEnabled = true;
 };

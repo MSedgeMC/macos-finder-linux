@@ -121,6 +121,11 @@ public:
     // The host owns its background, window controls, size and window flags.
     void setHostedQuickLook(bool hosted);
     bool hostedQuickLook() const;
+    // Standalone document hosts provide their own toolbar/title. Keep content,
+    // native actions and async lifetimes; suppress Quick Look-only chrome.
+    void setDocumentPresentation(bool enabled);
+    bool documentPresentation() const;
+    void showPdfSearch(bool visible = true);
     // Reparent this widget, never copy its contents or delete it independently.
     // Keep pane and header together for the host lifetime. On disabling hosted
     // mode the pane reclaims the header; pane destruction deletes it if moved.
@@ -165,6 +170,7 @@ signals:
     // Host supplies genuine file actions for the current preview selection.
     void quickActionsMenuRequested(QMenu *menu, const QList<QUrl> &urls);
     void printReadinessChanged(bool ready);
+    void viewStateChanged();
     void pdfPageChanged(int page, int pageCount);
     void pdfThumbnailsReady(const QUrl &source, const QList<int> &pages, const QList<QImage> &images);
     void pdfSearchFinished(const QString &query, int matches, bool limited);
@@ -280,6 +286,8 @@ private:
     bool m_textReady = false;
     bool m_hostWindowControls = false;
     bool m_hostedQuickLook = false;
+    bool m_documentPresentation = false;
+    bool m_documentSearchVisible = false;
     QAction *m_zoomOutAction;
     QAction *m_zoomInAction;
     QAction *m_zoomResetAction;

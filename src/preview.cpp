@@ -874,9 +874,12 @@ PreviewPane::PreviewPane(QWidget *parent) : QWidget(parent),
     auto *pageBox = new QVBoxLayout(m_pageControls);
     pageBox->setContentsMargins(0, 0, 0, 0);
     pageBox->setSpacing(4);
-    auto *pageLayout = new QHBoxLayout;
+    m_pageControls->setObjectName(QStringLiteral("previewPdfControls"));
+    auto *pageNavigation = new QWidget(m_pageControls);
+    pageNavigation->setObjectName(QStringLiteral("previewPdfNavigation"));
+    auto *pageLayout = new QHBoxLayout(pageNavigation);
     auto *searchLayout = new QHBoxLayout;
-    pageBox->addLayout(pageLayout);
+    pageBox->addWidget(pageNavigation);
     pageBox->addLayout(searchLayout);
     pageLayout->setContentsMargins(0, 0, 0, 0);
     m_pagePrevious = button(QStringLiteral("‹"), QStringLiteral("previewPreviousPage"), this);
@@ -1400,6 +1403,7 @@ void PreviewPane::updatePreviewControls()
     m_informationAction->setVisible(m_hostedQuickLook && quickLook);
     if (m_contactSheet) { m_pageControls->hide(); m_mediaControls->hide(); }
     updateNativeActions();
+    emit viewStateChanged();
 }
 
 void PreviewPane::updatePresentation()
@@ -1413,16 +1417,23 @@ void PreviewPane::updatePresentation()
         m_header->removeWidget(m_nativeActions);
         viewLayout->addWidget(m_nativeActions);
     }
-    m_nativeActions->show();
-    m_viewControls->setVisible(!m_compact && !m_gallery && !hosted);
+    m_nativeActions->setVisible(!m_documentPresentation);
+    m_viewControls->setVisible(!m_documentPresentation && !m_compact && !m_gallery && !hosted);
     m_close->setVisible(!m_compact && !m_hostWindowControls && !hosted);
-    m_metadata->setVisible(m_gallery ? m_showPreviewInformation : !hosted || m_informationAction->isChecked());
+    m_metadata->setVisible(!m_documentPresentation && (m_gallery ? m_showPreviewInformation : !hosted || m_informationAction->isChecked()));
     if (m_gallerySidebar) {
         m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewInformation"))->setVisible(m_showPreviewInformation);
         m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewQuickActions"))->setVisible(m_showPreviewActions);
     }
-    if (m_headerWidget) m_headerWidget->setVisible(!m_gallery && !(m_hostedQuickLook && m_compact));
-    if (!m_gallery) {
+    if (m_headerWidget) m_headerWidget->setVisible(!m_documentPresentation && !m_gallery && !(m_hostedQuickLook && m_compact));
+    if (m_documentPresentation) {
+        m_layout->setContentsMargins(0, 0, 0, 0);
+        m_layout->setSpacing(0);
+        m_pageControls->findChild<QWidget *>(QStringLiteral("previewPdfNavigation"))->hide();
+        m_pageControls->setVisible(m_pageCount > 0 && m_documentSearchVisible);
+    } else if (!m_gallery) {
+        m_layout->setSpacing(10);
+        m_pageControls->findChild<QWidget *>(QStringLiteral("previewPdfNavigation"))->show();
         m_layout->setContentsMargins(hosted ? 12 : m_compact ? 12 : 16, hosted ? 8 : 12,
             hosted ? 12 : m_compact ? 12 : 16, hosted ? 8 : 12);
     }
@@ -2029,6 +2040,7 @@ void PreviewPane::requestNativePreview(bool contentPreview)
 void PreviewPane::showCurrent()
 {
     const QUrl url = currentUrl();
+    m_documentSearchVisible = false;
     m_previous->setEnabled(m_index > 0);
     m_next->setEnabled(m_index >= 0 && m_index + 1 < m_urls.size());
     m_previous->setVisible(m_urls.size() > 1);
@@ -2306,7 +2318,7 @@ void PreviewPane::applyRaster(const PreviewRaster &raster, bool pdf)
         if (m_pageCount > 0) {
             m_page = std::clamp(m_page, 0, m_pageCount - 1);
             setInformation(tr("Pages"), QLocale().toString(m_pageCount));
-            m_pageControls->show();
+            m_pageControls->setVisible(!m_documentPresentation || m_documentSearchVisible);
             m_pagePrevious->setEnabled(m_page > 0);
             m_pageNext->setEnabled(m_page + 1 < m_pageCount);
             m_pageLabel->setText(tr("Page %1 of %2").arg(m_page + 1).arg(m_pageCount));
@@ -2367,6 +2379,22 @@ void PreviewPane::setHostedQuickLook(bool hosted)
 }
 
 bool PreviewPane::hostedQuickLook() const { return m_hostedQuickLook; }
+void PreviewPane::setDocumentPresentation(bool enabled)
+{
+    if (m_documentPresentation == enabled) return;
+    if (enabled && m_hostedQuickLook) setHostedQuickLook(false);
+    m_documentPresentation = enabled;
+    m_documentSearchVisible = false;
+    updatePresentation();
+}
+bool PreviewPane::documentPresentation() const { return m_documentPresentation; }
+void PreviewPane::showPdfSearch(bool visible)
+{
+    m_documentSearchVisible = visible;
+    m_pageControls->setVisible(m_pageCount > 0 && visible);
+    if (visible && m_pageCount > 0) { m_pdfSearch->setFocus(); m_pdfSearch->selectAll(); }
+}
+
 QWidget *PreviewPane::quickLookHeaderWidget() const { return m_headerWidget.data(); }
 
 int PreviewPane::pdfPageCount() const { return m_pageCount; }
@@ -2960,7 +2988,7 @@ void PreviewPane::keyPressEvent(QKeyEvent *event)
     } else if (command && event->key() == Qt::Key_1 && m_content->currentWidget() == m_picture) {
         actualSize(); event->accept();
     } else if (command && event->key() == Qt::Key_F && m_content->currentWidget() == m_pdfView) {
-        m_pageControls->show();
+        showPdfSearch();
         m_pdfSearch->setFocus(); m_pdfSearch->selectAll(); event->accept();
     } else if (command && event->key() == Qt::Key_C && m_content->currentWidget() == m_pdfView) {
         QGuiApplication::clipboard()->setText(m_pdfSelectedText); event->accept();

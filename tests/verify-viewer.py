@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='preview-native-',dir=Path.home()) as te
     paint.fillRect(0,440,1200,360,QColor('#447c64'));paint.fillRect(170,150,260,260,QColor('#6e95ae'));paint.end();assert canvas.save(str(image))
     text=root/'Readme.txt';text.write_text('A readable document\n\n'+'This line follows the document width. '*90)
     pdf=root/'Document.pdf';writer=QPdfWriter(str(pdf));paint=QPainter(writer);paint.drawText(400,500,'Native Preview document');writer.newPage();paint.drawText(400,500,'Page two');paint.end();del writer
-    for name,files in [('image',[image,pdf]),('pdf',[pdf,image]),('text',[text,image])]:
+    for name,files in [('single-image',[image]),('image',[image,pdf]),('pdf',[pdf,image]),('text',[text,image])]:
         with (out/(name+'.log')).open('w') as log:
             process=subprocess.Popen([str(args.binary.resolve()),'--preview','--',*[str(path) for path in files]],stdout=log,stderr=log)
             try:

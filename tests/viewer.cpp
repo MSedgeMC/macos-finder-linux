@@ -20,6 +20,10 @@
 #include <QDropEvent>
 #include <QSettings>
 #include <QDialog>
+#include <QLabel>
+#include <QMenuBar>
+#include <QToolButton>
+#include <QLineEdit>
 #include <QSplitter>
 #include <QScrollBar>
 #include <iostream>
@@ -42,6 +46,11 @@ int main(int argc, char **argv) {
     ViewerWindow window({imageUrl, pdfUrl, textUrl}); window.show();
     auto *pane = window.preview(); auto *sidebar = window.findChild<QListWidget *>("previewAppSidebar");
     check(sidebar && sidebar->count() == 3 && waitFor([&] { return pane->originalImageSize() == image.size(); }), "standalone opens an image with ordered documents");
+    check(pane->documentPresentation() && !pane->hostedQuickLook() && pane->quickLookHeaderWidget()->isHidden(), "document host keeps Quick Look chrome hidden");
+    check(window.menuBar()->isHidden() && window.findChild<QToolButton *>("previewAppMenuButton")->menu(), "global menus with persistent local fallback and no duplicate menu row");
+    auto *title = window.findChild<QLabel *>("previewAppDocumentTitle");
+    check(title && title->toolTip() == imageUrl.fileName(), "leading document title preserves full accessible name");
+    window.findChild<QToolButton *>("previewAppZoomInButton")->click(); check(pane->zoomFactor()>1, "grouped zoom button invokes real image zoom");
     pane->actualSize(); check(pane->imageScale() == 1, "standalone actual size");
     check(waitFor([&] { return sidebar->item(0)->data(Qt::UserRole + 1).toBool(); }), "native image thumbnail delivered");
     auto *splitter = window.findChild<QSplitter *>("previewAppSplitter");
@@ -57,6 +66,11 @@ int main(int argc, char **argv) {
     check(waitFor([&] { return sidebar->item(1)->data(Qt::UserRole + 1).toBool(); }), "PDF page thumbnails decode asynchronously");
     sidebar->setCurrentRow(1); check(pane->pdfCurrentPage() == 1, "PDF thumbnail activates its real page");
     check(window.findChild<QAction *>("previewAppFind")->isEnabled(), "PDF Find uses document capability");
+    check(window.findChild<QLabel *>("previewAppDocumentSubtitle")->text()=="Page 2 of 2", "document title follows PDF page selection");
+    check(pane->findChild<QWidget *>("previewPdfControls")->isHidden(), "PDF begins without permanent bottom search/navigation chrome");
+    window.findChild<QAction *>("previewAppFind")->trigger();
+    check(pane->findChild<QLineEdit *>("previewPdfSearch")->isVisible(), "PDF Find reveals functional search on demand");
+    pane->showPdfSearch(false);
     pane->searchPdf("Viewer");
     window.findChild<QAction *>("previewAppNext")->trigger();
     auto *text = pane->findChild<QTextEdit *>("previewText");
@@ -75,6 +89,18 @@ int main(int argc, char **argv) {
     check(QSettings().value("Viewer/recentUrls").toStringList().contains(pdfUrl.toString(QUrl::FullyEncoded)), "recent documents persisted");
     if (argc > 1) check(window.grab().save(QString::fromLocal8Bit(argv[1])), "standalone screenshot");
     window.setUrls({QUrl("relative.png"), imageUrl, imageUrl}); check(window.urls() == QList<QUrl>{imageUrl}, "exact URL identity and invalid inputs");
+    QSettings().remove("Viewer/showThumbnails");
+    { ViewerWindow single({imageUrl}); single.show();
+      auto *thumbnails=single.findChild<QListWidget *>("previewAppSidebar");
+      check(thumbnails->isHidden(), "single image opens without automatic sidebar");
+      single.findChild<QToolButton *>("previewAppSidebarButton")->click(); check(thumbnails->isVisible(), "leading sidebar toggle works and persists explicit preference");
+      single.resize(480,320); QApplication::processEvents();
+      check(single.findChild<QWidget *>("previewAppDocumentTools")->isHidden() && single.findChild<QToolButton *>("previewAppMenuButton")->isVisible(), "narrow toolbar collapses tools into persistent menu");
+      check(single.findChild<QWidget *>("previewAppZoomGroup")->geometry().right() < single.findChild<QToolButton *>("previewAppMenuButton")->geometry().left(), "narrow toolbar has no overlapping action groups");
+      check(single.findChild<QToolButton *>("window-close")->x()>single.findChild<QToolButton *>("previewAppMenuButton")->x(), "explicit right-side controls preserved");
+    }
+    { ViewerWindow remembered({imageUrl}); check(!remembered.findChild<QListWidget *>("previewAppSidebar")->isHidden(), "explicit thumbnail preference survives another window"); }
+    QSettings().remove("Viewer/showThumbnails");
     for (int i = 0; i < 8; ++i) { auto *closing = new ViewerWindow({imageUrl}); closing->show(); delete closing; }
     QApplication::processEvents();
     std::cout << "PASS standalone Preview image/PDF/text, thumbnails, selection, capabilities, keyboard, MIME, recent files and lifecycle\n";
