@@ -8,6 +8,7 @@
 #include <QPointer>
 
 class QApplication;
+class QFileSystemWatcher;
 
 // GUI-thread appearance policy, independent of native actions and rendering.
 // Call apply() after setting the application's organization/name, and after
@@ -70,6 +71,6 @@ private:
     bool m_initialized = false;
     bool m_applying = false;
     bool m_refreshQueued = false;
-    class QFileSystemWatcher *m_preferencesWatcher = nullptr;
+    QFileSystemWatcher *m_preferencesWatcher = nullptr;
     QPointer<QApplication> m_application;
 };
