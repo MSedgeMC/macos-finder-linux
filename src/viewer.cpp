@@ -277,6 +277,8 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
             button->setEnabled(action->isEnabled());
             connect(action,&QAction::changed,button,[button,action] { button->setEnabled(action->isEnabled()); });
         } else button->setDefaultAction(action);
+        button->setProperty("documentSymbol", symbol);
+        connect(action,&QAction::changed,button,[button,symbol] { button->setIcon(QIcon(new DocumentIcon(symbol))); });
         button->setIcon(QIcon(new DocumentIcon(symbol))); button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         button->setIconSize(QSize(22,22)); button->setFixedSize(36,32); button->setFocusPolicy(Qt::StrongFocus);
         button->setAccessibleName(action->text().remove('&')); return button;
@@ -297,7 +299,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *shareButton = tool(documentTools,share,"share","previewAppShareButton");
     shareButton->setMenu(m_preview->shareMenu()); shareButton->setPopupMode(QToolButton::InstantPopup); toolsLayout->addWidget(shareButton);
     toolsLayout->addWidget(tool(documentTools,find,"find","previewAppFindButton")); chrome->addWidget(documentTools);
-    auto *menuButton = new GlassToolButton(header); menuButton->setObjectName("previewAppMenuButton"); menuButton->setIcon(QIcon(new DocumentIcon("menu"))); menuButton->setIconSize(QSize(22,22)); menuButton->setFixedSize(36,32);
+    auto *menuButton = new GlassToolButton(header); menuButton->setObjectName("previewAppMenuButton"); menuButton->setProperty("documentSymbol", "menu"); menuButton->setIcon(QIcon(new DocumentIcon("menu"))); menuButton->setIconSize(QSize(22,22)); menuButton->setFixedSize(36,32);
     menuButton->setAccessibleName(tr("Preview menus")); menuButton->setToolTip(tr("Preview menus")); menuButton->setMenu(localMenu); menuButton->setPopupMode(QToolButton::InstantPopup); menuButton->setProperty("finderGlassSurface",true); chrome->addWidget(menuButton);
     auto *menuShortcut = new QAction(tr("Preview menus"),this); menuShortcut->setShortcut(QKeySequence(Qt::Key_F10)); addAction(menuShortcut);
     connect(menuShortcut, &QAction::triggered,this,[menuButton] { menuButton->showMenu(); });
@@ -360,7 +362,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
         setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} #previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
             "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);} QMenu{background:palette(window);color:palette(window-text);padding:6px;}"));
     };
-    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) button->update(); updateActions(); });
+    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) button->setIcon(QIcon(new DocumentIcon(button->property("documentSymbol").toString()))); button->update(); } updateActions(); });
     m_thumbnailTimer.setSingleShot(true); m_thumbnailTimer.setInterval(75);
     connect(&m_thumbnailTimer, &QTimer::timeout, this, [this] { loadThumbnails(); });
     connect(m_sidebar->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_thumbnailTimer.start(); });

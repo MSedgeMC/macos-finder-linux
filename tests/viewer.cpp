@@ -53,6 +53,8 @@ int main(int argc, char **argv) {
     check(title && title->toolTip() == imageUrl.fileName(), "leading document title preserves full accessible name");
     window.findChild<QToolButton *>("previewAppZoomInButton")->click(); check(pane->zoomFactor()>1, "grouped zoom button invokes real image zoom");
     pane->actualSize(); check(pane->imageScale() == 1, "standalone actual size");
+    pane->setZoomFactor(16); check(!window.findChild<QToolButton *>("previewAppZoomInButton")->icon().isNull(), "action capability changes preserve vector toolbar symbols");
+    pane->actualSize();
     check(waitFor([&] { return sidebar->item(0)->data(Qt::UserRole + 1).toBool(); }), "native image thumbnail delivered");
     auto *splitter = window.findChild<QSplitter *>("previewAppSplitter");
     splitter->setSizes({100, 860}); QApplication::processEvents();
