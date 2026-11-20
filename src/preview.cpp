@@ -1140,6 +1140,8 @@ void PreviewPane::setShareProviderAvailable(bool available)
     updateNativeActions();
 }
 
+QMenu *PreviewPane::shareMenu() const { return m_shareMenu; }
+
 void PreviewPane::shareCurrent()
 {
     if (m_shareProviderAvailable && !actionUrls().isEmpty()) emit shareRequested(actionUrls());

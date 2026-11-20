@@ -98,6 +98,8 @@ public:
     // additional real sharing backend can enable Share… with this capability.
     void setShareProviderAvailable(bool available);
     void shareCurrent();
+    // Borrowed native share menu (URL copy/email and optional host provider).
+    QMenu *shareMenu() const;
     // PrintSupport is optional: compile with FINDER_PREVIEW_PRINT_SUPPORT=1
     // and link Qt6::PrintSupport. Otherwise Print remains visibly disabled.
     bool canPrintCurrent() const;

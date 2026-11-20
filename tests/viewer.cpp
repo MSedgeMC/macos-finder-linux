@@ -49,6 +49,7 @@ int main(int argc, char **argv) {
     check(pane->documentPresentation() && !pane->hostedQuickLook() && pane->quickLookHeaderWidget()->isHidden(), "document host keeps Quick Look chrome hidden");
     check(window.menuBar()->isHidden() && window.findChild<QToolButton *>("previewAppMenuButton")->menu(), "global menus with persistent local fallback and no duplicate menu row");
     auto *title = window.findChild<QLabel *>("previewAppDocumentTitle");
+    check(window.findChild<QToolButton *>("previewAppShareButton")->menu() == pane->shareMenu(), "Share button opens actual copy/email menu without requiring an uninstalled provider");
     check(title && title->toolTip() == imageUrl.fileName(), "leading document title preserves full accessible name");
     window.findChild<QToolButton *>("previewAppZoomInButton")->click(); check(pane->zoomFactor()>1, "grouped zoom button invokes real image zoom");
     pane->actualSize(); check(pane->imageScale() == 1, "standalone actual size");

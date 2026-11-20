@@ -264,7 +264,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
         auto *dialog = new KPropertiesDialog(url, this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->show();
     });
     file->addAction(m_preview->findChild<QAction *>("previewGetInfoAction"));
-    auto *share = file->addAction(tr("Share"), m_preview, &PreviewPane::shareCurrent); share->setObjectName("previewAppShare");
+    auto *share = file->addMenu(m_preview->shareMenu()); share->setObjectName("previewAppShare");
     auto *localMenu = new QMenu(this); localMenu->setObjectName("previewAppMenu");
     for (auto *action : menus->actions()) localMenu->addAction(action);
     auto tool = [this](QWidget *parent, QAction *action, const QString &symbol, const QString &name) {
@@ -286,7 +286,8 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *documentTools = new GlassCapsule(header); documentTools->setObjectName("previewAppDocumentTools"); auto *toolsLayout = new QHBoxLayout(documentTools); toolsLayout->setContentsMargins(3,0,3,0); toolsLayout->setSpacing(0);
     toolsLayout->addWidget(tool(documentTools,markup,"markup","previewAppMarkupButton"));
     toolsLayout->addWidget(tool(documentTools,rotate,"rotate","previewAppRotateButton"));
-    toolsLayout->addWidget(tool(documentTools,share,"share","previewAppShareButton"));
+    auto *shareButton = tool(documentTools,share,"share","previewAppShareButton");
+    shareButton->setMenu(m_preview->shareMenu()); shareButton->setPopupMode(QToolButton::InstantPopup); toolsLayout->addWidget(shareButton);
     toolsLayout->addWidget(tool(documentTools,find,"find","previewAppFindButton")); chrome->addWidget(documentTools);
     auto *menuButton = new GlassToolButton(header); menuButton->setObjectName("previewAppMenuButton"); menuButton->setIcon(QIcon(new DocumentIcon("menu"))); menuButton->setIconSize(QSize(22,22)); menuButton->setFixedSize(36,32);
     menuButton->setAccessibleName(tr("Preview menus")); menuButton->setToolTip(tr("Preview menus")); menuButton->setMenu(localMenu); menuButton->setPopupMode(QToolButton::InstantPopup); menuButton->setProperty("finderGlassSurface",true); chrome->addWidget(menuButton);
