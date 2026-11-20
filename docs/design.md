@@ -367,3 +367,22 @@ viewers. OCR, structural PDF editing/markup, Apple signatures, HDR parity and
 Live Photos remain unavailable; codec/thumbnail availability determines format
 coverage. Five-second metadata budgets and decoder cancellation remain
 cooperative between native calls.
+
+
+### Current standalone document hierarchy
+
+The standalone viewer now uses a dedicated document presentation rather than
+Quick Look’s Open/Actions header. Apple’s current macOS 27 Preview guide and
+image/PDF screenshots are the visual reference; older community screenshots
+are used only for feature/code comparison. A leading document title displays
+current page or image scale, with shared grouped icon zoom/document controls.
+PDF search opens on demand. Single images hide thumbnails automatically unless
+an explicit Viewer/showThumbnails setting exists; PDFs and document collections
+show the sidebar by default. Thumbnails follow sidebar width and preserve aspect.
+
+Application menus export to Plasma and stay accessible from a persistent local
+menu button and F10. Narrow windows move document tools into that menu. Get Info
+opens native properties, rotation/markup/export use source-preserving QuickActions,
+and Share offers actual copy/email choices. The selected font/cursor and right-side
+visible window controls remain user preferences. This is a Linux approximation;
+PDF signatures/editing/OCR and Apple renderer/platform services remain unavailable.

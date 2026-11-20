@@ -591,3 +591,35 @@ text remains with Kate and office documents remain with LibreOffice Writer.
 The installer verified staging hashes/defaults and retained MIME permissions.
 Scoped rollback records exist for both deployments. No working-screen input,
 preview display, compositor restart or local C++ compilation was performed.
+
+### Current Preview reference correction, 2026-11-20
+
+Apple’s current macOS page, stable release listing, Preview guide and Design
+Resources were refreshed: macOS 27 Golden Gate, stable 27.2.1; 27.3 beta is
+listed separately. Current image/PDF screenshots guide the viewer hierarchy.
+KDE/Flutter source and MacRumors discussions were also reviewed. Old viewer
+screenshots serve code/feature comparison only; Reddit returned access errors.
+
+The standalone viewer now uses a leading document title/page-or-scale subtitle,
+grouped icon controls, adaptive thumbnails and on-demand PDF search. Quick Look
+retains its own hosted header. Application menus export to Plasma with a local
+menu/F10 fallback. Get Info/rotated-copy actions have native handlers; Share
+uses actual URL-copy/email choices. User typography and right-side controls
+remain explicit differences. Apple rendering, PDF editing/signatures, HDR,
+pressure acceleration and other unimplemented current features are not claimed.
+
+[GitHub run 44755587528](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44755587528)
+built f1308e0 and passed all 25 component suites. Its exact artifact also passed
+seven private Wayland image/PDF/text and appearance launches and six Finder
+presentation groups. Saved screenshots were inspected directly. Component checks
+cover functional grouped zoom, PDF title/search, thumbnail preference/geometry,
+menu fallback, narrow layout, native MIME, action updates and destruction.
+These overlapping checks establish local correctness, not full macOS parity.
+No compiler warnings were found; private native helpers reported software-rendering
+fallback/portal warnings. No working-screen automation or local compilation occurred.
+
+Artifact SHA256 is
+`caf77ef46073884d6f06a3eb31efeb5f81266a668b8d9349be1e0a23af9ee698`.
+It is staged for the scoped installer. Production installation is pending:
+its existing open-window guard reports a Finder/Preview window and refuses to
+prepare/restart the shared executable. The installed version is unchanged.
