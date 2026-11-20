@@ -31,7 +31,12 @@ protected:
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
         const bool active=window()->isActiveWindow() && isEnabled();
         const bool contrast=FinderAppearance::highContrast();
-        QColor base(kind=="close" ? "#ff5f57" : kind=="minimize" ? "#febc2e" : "#28c840");
+        // Current standard-window kit colors, kept separate from the optional
+        // original glossy shading. Panel controls have different dimensions.
+        const bool dark=FinderAppearance::dark();
+        QColor base(kind=="close" ? (dark ? "#f06e6a" : "#fa9891")
+                    : kind=="minimize" ? (dark ? "#ffcd30" : "#ffda66")
+                    : (dark ? "#58c73b" : "#ade392"));
         if(!active)base=QColor(FinderAppearance::dark() ? "#747478" : "#b5b5b9");
         if(isDown())base=base.darker(118);
         const QRectF circle(3,7,14,14);
