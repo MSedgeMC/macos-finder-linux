@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
     ViewerWindow window({imageUrl, pdfUrl, textUrl}); window.show();
     auto *pane = window.preview(); auto *sidebar = window.findChild<QListWidget *>("previewAppSidebar");
     check(sidebar && sidebar->count() == 3 && waitFor([&] { return pane->originalImageSize() == image.size(); }), "standalone opens an image with ordered documents");
+    check(!window.findChild<QAction *>("previewAppThumbnails")->icon().isNull() && !window.findChild<QAction *>("previewZoomInAction")->icon().isNull(), "toolbar actions own persistent icons when Qt updates button labels");
     check(pane->documentPresentation() && !pane->hostedQuickLook() && pane->quickLookHeaderWidget()->isHidden(), "document host keeps Quick Look chrome hidden");
     check(window.menuBar()->isHidden() && window.findChild<QToolButton *>("previewAppMenuButton")->menu(), "global menus with persistent local fallback and no duplicate menu row");
     auto *title = window.findChild<QLabel *>("previewAppDocumentTitle");

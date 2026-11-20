@@ -268,6 +268,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *localMenu = new QMenu(this); localMenu->setObjectName("previewAppMenu");
     for (auto *action : menus->actions()) localMenu->addAction(action);
     auto tool = [this](QWidget *parent, QAction *action, const QString &symbol, const QString &name) {
+        action->setIcon(QIcon(new DocumentIcon(symbol)));
         auto *button = new GlassToolButton(parent); button->setObjectName(name);
         // QToolButton::setDefaultAction(menuAction) followed by setMenu(the
         // same menu) leaves Qt's menu() null. Menu controls own their popup;
@@ -278,7 +279,6 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
             connect(action,&QAction::changed,button,[button,action] { button->setEnabled(action->isEnabled()); });
         } else button->setDefaultAction(action);
         button->setProperty("documentSymbol", symbol);
-        connect(action,&QAction::changed,button,[button,symbol] { button->setIcon(QIcon(new DocumentIcon(symbol))); });
         button->setIcon(QIcon(new DocumentIcon(symbol))); button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         button->setIconSize(QSize(22,22)); button->setFixedSize(36,32); button->setFocusPolicy(Qt::StrongFocus);
         button->setAccessibleName(action->text().remove('&')); return button;
@@ -362,7 +362,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
         setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} #previewAppSidebar{background:palette(window);border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
             "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);} QMenu{background:palette(window);color:palette(window-text);padding:6px;}"));
     };
-    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) button->setIcon(QIcon(new DocumentIcon(button->property("documentSymbol").toString()))); button->update(); } updateActions(); });
+    restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) { const QIcon icon(new DocumentIcon(button->property("documentSymbol").toString())); if (button->defaultAction()) button->defaultAction()->setIcon(icon); else button->setIcon(icon); } button->update(); } updateActions(); });
     m_thumbnailTimer.setSingleShot(true); m_thumbnailTimer.setInterval(75);
     connect(&m_thumbnailTimer, &QTimer::timeout, this, [this] { loadThumbnails(); });
     connect(m_sidebar->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { m_thumbnailTimer.start(); });
