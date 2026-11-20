@@ -30,6 +30,7 @@ public:
             button && !button->property("finderKeyboardFocus").toBool()) {
             if (const auto *native = qstyleoption_cast<const QStyleOptionButton *>(option)) {
                 auto copy = *native; copy.state &= ~State_HasFocus;
+                copy.features &= ~(QStyleOptionButton::DefaultButton | QStyleOptionButton::AutoDefaultButton);
                 QProxyStyle::drawControl(element, &copy, painter, widget); return;
             }
             if (const auto *native = qstyleoption_cast<const QStyleOptionToolButton *>(option)) {
@@ -46,6 +47,7 @@ public:
             if (element == PE_FrameFocusRect) return;
             if (const auto *native = qstyleoption_cast<const QStyleOptionButton *>(option)) {
                 auto copy = *native; copy.state &= ~State_HasFocus;
+                copy.features &= ~(QStyleOptionButton::DefaultButton | QStyleOptionButton::AutoDefaultButton);
                 QProxyStyle::drawPrimitive(element, &copy, painter, widget); return;
             }
         }
