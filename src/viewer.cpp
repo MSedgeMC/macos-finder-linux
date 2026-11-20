@@ -297,7 +297,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     for (const auto &kind : {"minimize", "maximize", "close"}) {
         auto *control = new WindowControl(kind,header); chrome->addWidget(control);
         connect(control,&QToolButton::clicked,this,[this,kind] {
-            if (QString(kind)=="close") close(); else if (QString(kind)=="minimize") showMinimized(); else m_preview->setFullScreen(!isFullScreen());
+            if (QString(kind)=="close") this->close(); else if (QString(kind)=="minimize") showMinimized(); else m_preview->setFullScreen(!isFullScreen());
         });
     }
     for (auto *action : findChildren<QAction *>()) addAction(action);
@@ -399,7 +399,8 @@ void ViewerWindow::setUrls(const QList<QUrl> &urls) {
     m_preview->setUrls(accepted); m_sidebar->setCurrentRow(accepted.indexOf(m_preview->currentUrl()));
     QStringList recent = QSettings().value("Viewer/recentUrls").toStringList();
     for (const auto &url : accepted) { const auto key = url.toString(QUrl::FullyEncoded); recent.removeAll(key); recent.prepend(key); }
-    while (recent.size() > 20) recent.removeLast(); QSettings().setValue("Viewer/recentUrls", recent);
+    while (recent.size() > 20) recent.removeLast();
+    QSettings().setValue("Viewer/recentUrls", recent);
     rebuildSidebar(); updateSidebarVisibility(); updateActions(); m_thumbnailTimer.start();
 }
 QList<QUrl> ViewerWindow::urls() const { return m_preview->urls(); }
