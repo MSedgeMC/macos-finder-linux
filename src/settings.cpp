@@ -55,6 +55,15 @@ protected:
     }
 };
 
+class SettingsContent final : public QWidget {
+public:
+    using QWidget::QWidget;
+    QSize minimumSizeHint() const override {
+        const QSize original = QWidget::minimumSizeHint();
+        return QSize(0, original.height());
+    }
+};
+
 QIcon tagIcon(const QColor &color) {
     QPixmap pixmap(20, 20);
     pixmap.fill(Qt::transparent);
@@ -149,7 +158,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         auto *scroll = new SettingsPage(tabs);
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
-        auto *widget = new QWidget(scroll);
+        auto *widget = new SettingsContent(scroll);
         widget->setObjectName(name);
         auto *form = new QFormLayout(widget);
         scroll->form = form;
