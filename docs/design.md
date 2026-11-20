@@ -411,4 +411,7 @@ native KWin blur. Translucency updates the sidebar and its header region; the
 file/document canvas stays opaque. Without compositor blur the coating is solid.
 Reduce Transparency and Increase Contrast override to opaque while preserving
 the stored slider value. Navigation text/glyph colors adapt to stronger
-transmission. There is no wallpaper substitution, new capture loop or idle timer.
+transmission. There is no wallpaper substitution, new capture loop or idle timer. A native
+file/directory watcher follows atomic settings replacements so separate Preview
+processes update too. Native button style suppresses mouse-origin focus frames
+while retaining Tab/Backtab/shortcut focus and ordinary pressed/checked feedback.
