@@ -386,3 +386,29 @@ opens native properties, rotation/markup/export use source-preserving QuickActio
 and Share offers actual copy/email choices. The selected font/cursor and right-side
 visible window controls remain user preferences. This is a Linux approximation;
 PDF signatures/editing/OCR and Apple renderer/platform services remain unavailable.
+
+### Configurable window controls and sidebar translucency
+
+Finder Settings → General offers Glossy/Flat, Left/Right and Always visible/On
+hover window-control choices. Preview Settings exposes the same application-wide
+preferences. Cached keys are Appearance/windowControlsStyle (glossy default),
+windowControlsSide (right), windowControlsSymbols (always), and
+sidebarTranslucency (0–40 percent backdrop contribution). Invalid enums fall back
+to defaults. Missing translucency retains dark/light 17/9 percent transmission.
+Changes update existing Finder, Quick Look and Preview windows. Shared control
+instances and their native action/menu connections survive side changes.
+
+Standard traffic lights have 14-pixel circles and 23-pixel center spacing, with
+20×28 input targets. Current audited Apple standard-window colors inform the
+original vector drawing; the glossy finish is a restrained adaptation, not a
+claim of Apple's renderer or pixel equality. Hover mode reveals symbols for the
+entire group; keyboard focus and high contrast retain visible identification.
+Mouse clicks do not show the keyboard focus ring. Tab/Backtab/shortcut focus
+retains it, while text fields retain their editing focus indication.
+
+Finder and Preview use one alpha/scale-aware contour cache for region-limited
+native KWin blur. Translucency updates the sidebar and its header region; the
+file/document canvas stays opaque. Without compositor blur the coating is solid.
+Reduce Transparency and Increase Contrast override to opaque while preserving
+the stored slider value. Navigation text/glyph colors adapt to stronger
+transmission. There is no wallpaper substitution, new capture loop or idle timer.
