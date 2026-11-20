@@ -313,7 +313,8 @@ int main(int argc, char **argv)
     check(side->currentData().toString()=="right","other settings views reload without feedback writes");
     check(mode && increased && reduced && !mode->accessibleName().isEmpty(), "accessible appearance settings controls");
     settings.show(); settings.activateWindow(); QApplication::processEvents();
-    auto *nativeButton = settings.findChild<QPushButton *>("finderSettingsDesktopSettings");
+    QPushButton focusButton("Native focus", &settings);focusButton.setGeometry(20,20,120,32);focusButton.show();
+    auto *nativeButton = &focusButton;
     QFocusEvent mouseFocus(QEvent::FocusIn, Qt::MouseFocusReason);
     nativeButton->setFocus(Qt::MouseFocusReason); QApplication::sendEvent(nativeButton, &mouseFocus);
     const auto mousePaint = nativeButton->grab().toImage();
