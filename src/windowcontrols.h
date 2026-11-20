@@ -4,6 +4,7 @@
 #include "appearance.h"
 #include <QToolButton>
 #include <QPainter>
+#include <QPainterPath>
 #include <QLinearGradient>
 #include <QRadialGradient>
 #include <QContextMenuEvent>
