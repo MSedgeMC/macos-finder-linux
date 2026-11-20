@@ -13,9 +13,45 @@
 #include <QFileSystemWatcher>
 #include <QFileInfo>
 #include <QDir>
+#include <QProxyStyle>
+#include <QStyleOption>
 
 namespace {
 QPointer<FinderAppearance> appearance;
+
+// Native button feedback stays intact; only a mouse-origin focus cue is
+// suppressed. Text editing and keyboard traversal keep their native state.
+class ButtonFocusStyle final : public QProxyStyle {
+public:
+    explicit ButtonFocusStyle(QStyle *base) : QProxyStyle(base) {}
+    void drawControl(ControlElement element, const QStyleOption *option, QPainter *painter,
+                     const QWidget *widget = nullptr) const override {
+        if (const auto *button = qobject_cast<const QAbstractButton *>(widget);
+            button && !button->property("finderKeyboardFocus").toBool()) {
+            if (const auto *native = qstyleoption_cast<const QStyleOptionButton *>(option)) {
+                auto copy = *native; copy.state &= ~State_HasFocus;
+                QProxyStyle::drawControl(element, &copy, painter, widget); return;
+            }
+            if (const auto *native = qstyleoption_cast<const QStyleOptionToolButton *>(option)) {
+                auto copy = *native; copy.state &= ~State_HasFocus;
+                QProxyStyle::drawControl(element, &copy, painter, widget); return;
+            }
+        }
+        QProxyStyle::drawControl(element, option, painter, widget);
+    }
+    void drawPrimitive(PrimitiveElement element, const QStyleOption *option, QPainter *painter,
+                       const QWidget *widget = nullptr) const override {
+        if (const auto *button = qobject_cast<const QAbstractButton *>(widget);
+            button && !button->property("finderKeyboardFocus").toBool()) {
+            if (element == PE_FrameFocusRect) return;
+            if (const auto *native = qstyleoption_cast<const QStyleOptionButton *>(option)) {
+                auto copy = *native; copy.state &= ~State_HasFocus;
+                QProxyStyle::drawPrimitive(element, &copy, painter, widget); return;
+            }
+        }
+        QProxyStyle::drawPrimitive(element, option, painter, widget);
+    }
+};
 
 QPalette makePalette(bool dark, bool contrast)
 {
@@ -62,6 +98,7 @@ FinderAppearance::FinderAppearance(QApplication *application)
       m_palette(makePalette(true, false)), m_application(application)
 {
     application->installEventFilter(this);
+    application->setStyle(new ButtonFocusStyle(application->style()));
     m_preferencesWatcher = new QFileSystemWatcher(this);
     connect(m_preferencesWatcher, &QFileSystemWatcher::fileChanged, this, [this] { queuePreferencesRefresh(); });
     connect(m_preferencesWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { queuePreferencesRefresh(); });

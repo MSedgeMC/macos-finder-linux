@@ -156,6 +156,10 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         form->setContentsMargins(24, 20, 24, 20);
         form->setSpacing(12);
         form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        // Wrapped help text must use the viewport width rather than force
+        // a wider scroll widget through its unwrapped minimum-size hint.
+        form->setSizeConstraint(QLayout::SetNoConstraint);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll->setWidget(widget);
         const auto icon = label == tr("General") ? QStyle::SP_ComputerIcon : label == tr("Tags") ? QStyle::SP_FileDialogDetailedView :
             label == tr("Sidebar") ? QStyle::SP_DirIcon : QStyle::SP_FileDialogInfoView;

@@ -9,6 +9,9 @@
 #include <QSlider>
 #include <QFocusEvent>
 #include <QSaveFile>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include "browser.h"
 #include "places.h"
 #include "preview.h"
@@ -309,6 +312,17 @@ int main(int argc, char **argv)
     QSettings().setValue("Appearance/windowControlsSide","right"); FinderAppearance::apply(&app);
     check(side->currentData().toString()=="right","other settings views reload without feedback writes");
     check(mode && increased && reduced && !mode->accessibleName().isEmpty(), "accessible appearance settings controls");
+    settings.show(); settings.activateWindow(); QApplication::processEvents();
+    auto *nativeButton = settings.findChild<QPushButton *>("finderSettingsDesktopSettings");
+    QFocusEvent mouseFocus(QEvent::FocusIn, Qt::MouseFocusReason);
+    nativeButton->setFocus(Qt::MouseFocusReason); QApplication::sendEvent(nativeButton, &mouseFocus);
+    const auto mousePaint = nativeButton->grab().toImage();
+    QFocusEvent tabFocus(QEvent::FocusIn, Qt::TabFocusReason); QApplication::sendEvent(nativeButton, &tabFocus);
+    check(nativeButton->grab().toImage() != mousePaint, "native buttons distinguish keyboard and mouse focus painting");
+    settings.resize(370,520); QApplication::processEvents();
+    for (auto *page : settings.findChildren<QScrollArea *>())
+        if (page->isVisible()) check(page->horizontalScrollBar()->maximum()==0, "narrow Settings has no horizontal overflow");
+    settings.hide(); settings.resize(580,530);
     for (const auto &name : {QStringLiteral("dark"), QStringLiteral("light")}) {
         for (bool high : {false, true}) {
             apply(name, high);
