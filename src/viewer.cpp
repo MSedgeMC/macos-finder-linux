@@ -268,7 +268,15 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto *localMenu = new QMenu(this); localMenu->setObjectName("previewAppMenu");
     for (auto *action : menus->actions()) localMenu->addAction(action);
     auto tool = [this](QWidget *parent, QAction *action, const QString &symbol, const QString &name) {
-        auto *button = new GlassToolButton(parent); button->setDefaultAction(action); button->setObjectName(name);
+        auto *button = new GlassToolButton(parent); button->setObjectName(name);
+        // QToolButton::setDefaultAction(menuAction) followed by setMenu(the
+        // same menu) leaves Qt's menu() null. Menu controls own their popup;
+        // ordinary commands continue to use native QAction forwarding.
+        if (action->menu()) {
+            button->setMenu(action->menu()); button->setText(action->text()); button->setToolTip(action->text());
+            button->setEnabled(action->isEnabled());
+            connect(action,&QAction::changed,button,[button,action] { button->setEnabled(action->isEnabled()); });
+        } else button->setDefaultAction(action);
         button->setIcon(QIcon(new DocumentIcon(symbol))); button->setToolButtonStyle(Qt::ToolButtonIconOnly);
         button->setIconSize(QSize(22,22)); button->setFixedSize(36,32); button->setFocusPolicy(Qt::StrongFocus);
         button->setAccessibleName(action->text().remove('&')); return button;
