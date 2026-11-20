@@ -10,6 +10,9 @@
 #include <QAbstractButton>
 #include <QFocusEvent>
 #include <QStyle>
+#include <QFileSystemWatcher>
+#include <QFileInfo>
+#include <QDir>
 
 namespace {
 QPointer<FinderAppearance> appearance;
@@ -59,10 +62,35 @@ FinderAppearance::FinderAppearance(QApplication *application)
       m_palette(makePalette(true, false)), m_application(application)
 {
     application->installEventFilter(this);
+    m_preferencesWatcher = new QFileSystemWatcher(this);
+    connect(m_preferencesWatcher, &QFileSystemWatcher::fileChanged, this, [this] { queuePreferencesRefresh(); });
+    connect(m_preferencesWatcher, &QFileSystemWatcher::directoryChanged, this, [this] { queuePreferencesRefresh(); });
+    watchPreferences();
     connect(application->styleHints(), &QStyleHints::colorSchemeChanged, this, [this] {
         // Qt may update its native palette after delivering the scheme signal.
         QMetaObject::invokeMethod(this, [this] { refresh(); }, Qt::QueuedConnection);
     });
+}
+
+void FinderAppearance::watchPreferences()
+{
+    // QSettings publishes by atomic replacement. Watch its directory too,
+    // then re-arm the file after replacement; no idle polling is required.
+    const QFileInfo file(QSettings().fileName());
+    const QString directory = file.absolutePath();
+    if (QDir().mkpath(directory) && !m_preferencesWatcher->directories().contains(directory))
+        m_preferencesWatcher->addPath(directory);
+    if (file.isFile() && !m_preferencesWatcher->files().contains(file.absoluteFilePath()))
+        m_preferencesWatcher->addPath(file.absoluteFilePath());
+}
+
+void FinderAppearance::queuePreferencesRefresh()
+{
+    if (m_refreshQueued) return;
+    m_refreshQueued = true;
+    QMetaObject::invokeMethod(this, [this] {
+        m_refreshQueued = false; watchPreferences(); refresh();
+    }, Qt::QueuedConnection);
 }
 
 FinderAppearance *FinderAppearance::instance()

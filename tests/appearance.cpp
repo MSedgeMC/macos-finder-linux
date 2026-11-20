@@ -8,6 +8,7 @@
 #include "glasscontrols.h"
 #include <QSlider>
 #include <QFocusEvent>
+#include <QSaveFile>
 #include "browser.h"
 #include "places.h"
 #include "preview.h"
@@ -168,6 +169,18 @@ int main(int argc, char **argv)
     const int controlChanges=changes;
     for(int i=0;i<10000;++i) { (void)FinderAppearance::materialTint(); (void)FinderAppearance::hoverWindowSymbols(); }
     check(changes==controlChanges,"painting policy reads never reapply settings");
+    // Another process uses the same settings file. Replace it atomically as
+    // QSettings does; both the first delivery and watcher re-arm must work.
+    for (const QString sideName : {QString("right"),QString("left")}) {
+        QSettings().sync();
+        QFile input(QSettings().fileName());check(input.open(QIODevice::ReadOnly),"external settings read");
+        QByteArray data=input.readAll();input.close();
+        data.replace("windowControlsSide=left", "windowControlsSide="+sideName.toUtf8());
+        data.replace("windowControlsSide=right", "windowControlsSide="+sideName.toUtf8());
+        QSaveFile replacement(QSettings().fileName());check(replacement.open(QIODevice::WriteOnly),"external atomic settings update");
+        check(replacement.write(data)==data.size() && replacement.commit(),"external settings publication");
+        check(waitFor([&] {return FinderAppearance::leftWindowControls()==(sideName=="left");}),"external preferences refresh without polling");
+    }
     QSettings().setValue("Appearance/sidebarTranslucency",300); FinderAppearance::apply(&app);
     check(FinderAppearance::sidebarTranslucency()==40 && FinderAppearance::materialTint().alpha()==153,"translucency bounded");
     QSettings().setValue("Appearance/sidebarTranslucency","invalid"); FinderAppearance::apply(&app);

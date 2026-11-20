@@ -56,6 +56,8 @@ protected:
 private:
     explicit FinderAppearance(QApplication *application);
     void refresh();
+    void watchPreferences();
+    void queuePreferencesRefresh();
     QPalette m_systemPalette;
     QPalette m_palette;
     bool m_dark = true;
@@ -67,5 +69,7 @@ private:
     int m_sidebarTranslucency = 17;
     bool m_initialized = false;
     bool m_applying = false;
+    bool m_refreshQueued = false;
+    class QFileSystemWatcher *m_preferencesWatcher = nullptr;
     QPointer<QApplication> m_application;
 };
