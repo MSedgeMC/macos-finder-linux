@@ -10,6 +10,7 @@
 #include <QFocusEvent>
 #include <QSaveFile>
 #include <QPushButton>
+#include <QStyleOptionButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include "browser.h"
@@ -315,11 +316,18 @@ int main(int argc, char **argv)
     settings.show(); settings.activateWindow(); QApplication::processEvents();
     QPushButton focusButton("Native focus", &settings);focusButton.setGeometry(20,20,120,32);focusButton.show();
     auto *nativeButton = &focusButton;
-    QFocusEvent mouseFocus(QEvent::FocusIn, Qt::MouseFocusReason);
-    nativeButton->setFocus(Qt::MouseFocusReason); QApplication::sendEvent(nativeButton, &mouseFocus);
-    const auto mousePaint = nativeButton->grab().toImage();
-    QFocusEvent tabFocus(QEvent::FocusIn, Qt::TabFocusReason); QApplication::sendEvent(nativeButton, &tabFocus);
-    check(nativeButton->grab().toImage() != mousePaint, "native buttons distinguish keyboard and mouse focus painting");
+    auto nativeFocusPaint = [&] {
+        QStyleOptionButton option; option.initFrom(nativeButton); option.rect=QRect(0,0,120,32); option.text="Native focus";
+        option.state |= QStyle::State_Enabled | QStyle::State_Active | QStyle::State_HasFocus | QStyle::State_KeyboardFocusChange;
+        QImage pixels(120,32,QImage::Format_ARGB32_Premultiplied); pixels.fill(app.palette().color(QPalette::Window));
+        QPainter painter(&pixels);app.style()->drawControl(QStyle::CE_PushButton,&option,&painter,nativeButton);return pixels;
+    };
+    QFocusEvent mouseFocus(QEvent::FocusIn, Qt::MouseFocusReason);QApplication::sendEvent(nativeButton,&mouseFocus);
+    check(!nativeButton->property("finderKeyboardFocus").toBool(),"native mouse focus policy");
+    const auto mousePaint=nativeFocusPaint();
+    QFocusEvent tabFocus(QEvent::FocusIn, Qt::TabFocusReason);QApplication::sendEvent(nativeButton,&tabFocus);
+    check(nativeButton->property("finderKeyboardFocus").toBool() && nativeFocusPaint()!=mousePaint,
+        "native style retains keyboard focus and suppresses mouse focus cue");
     settings.resize(370,520); QApplication::processEvents();
     for (auto *page : settings.findChildren<QScrollArea *>())
         if (page->isVisible()) check(page->horizontalScrollBar()->maximum()==0, "narrow Settings has no horizontal overflow");
