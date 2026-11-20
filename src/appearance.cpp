@@ -207,7 +207,7 @@ QColor FinderAppearance::color(Role role)
     case SidebarText: return highContrast() ? p.color(QPalette::Text) : QColor(dark() ? (sidebarTranslucency()>25 ? "#ffffff" : "#ededf2") : "#202024");
     case SidebarSecondaryText:
         if(highContrast()) return p.color(QPalette::PlaceholderText);
-        if(dark()) return QColor(sidebarTranslucency()>25 ? "#f5f5f8" : sidebarTranslucency()>17 ? "#d0d0d6" : "#aaaab1");
+        if(dark()) return QColor(sidebarTranslucency()>25 ? "#fafafa" : sidebarTranslucency()>17 ? "#d0d0d6" : "#aaaab1");
         return QColor(sidebarTranslucency()>9 ? "#303036" : "#5a5a63");
     }
     return p.color(QPalette::Text);

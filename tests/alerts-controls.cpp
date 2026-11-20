@@ -46,14 +46,14 @@ int main(int argc,char **argv){
   QWidget chrome;auto *layout=new QHBoxLayout(&chrome);auto *group=new WindowControls(&chrome);layout->addWidget(group);
   auto *tool=new GlassToolButton(&chrome);tool->setProperty("finderGlassSurface",true);tool->setFixedSize(36,32);tool->setFocusPolicy(Qt::StrongFocus);layout->addWidget(tool);
   chrome.show();chrome.activateWindow();QApplication::processEvents();
-  auto *close=group->findChild<WindowControl *>("window-close");
+  auto *close=static_cast<WindowControl *>(group->findChild<QToolButton *>("window-close"));
   QEvent leave(QEvent::Leave);QApplication::sendEvent(close,&leave);QApplication::sendEvent(group,&leave);close->clearFocus();
   check(!close->symbolsVisible(),"hover-only symbols hidden at rest");
   const QImage glossy=close->grab().toImage();
   QSettings().setValue("Appearance/windowControlsStyle","flat");FinderAppearance::apply(&app);
   check(close->grab().toImage()!=glossy,"flat controls remove glossy paint");
   QEnterEvent enter(QPointF(5,5),QPointF(5,5),QPointF(5,5));QApplication::sendEvent(group,&enter);
-  check(close->symbolsVisible()&&group->findChild<WindowControl *>("window-minimize")->symbolsVisible(),"hover reveals entire control group");
+  check(close->symbolsVisible()&&static_cast<WindowControl *>(group->findChild<QToolButton *>("window-minimize"))->symbolsVisible(),"hover reveals entire control group");
   QApplication::sendEvent(group,&leave);
   QFocusEvent keyboard(QEvent::FocusIn,Qt::TabFocusReason);QApplication::sendEvent(close,&keyboard);
   close->setFocus(Qt::TabFocusReason);QApplication::processEvents();
@@ -65,9 +65,9 @@ int main(int argc,char **argv){
   const QImage toolFocus=tool->grab().toImage();QApplication::sendEvent(tool,&mouse);
   check(toolFocus!=tool->grab().toImage()&&tool->focusPolicy()==Qt::StrongFocus,"toolbar ring only for keyboard focus");
   QSettings().setValue("Appearance/windowControlsSide","left");FinderAppearance::apply(&app);QApplication::processEvents();
-  check(close->x()<group->findChild<WindowControl *>("window-maximize")->x(),"left control order");
+  check(close->x()<group->findChild<QToolButton *>("window-maximize")->x(),"left control order");
   QSettings().setValue("Appearance/windowControlsSide","right");FinderAppearance::apply(&app);QApplication::processEvents();
-  check(close->x()>group->findChild<WindowControl *>("window-maximize")->x(),"right control order");
+  check(close->x()>group->findChild<QToolButton *>("window-maximize")->x(),"right control order");
   int clicks=0;QObject::connect(close,&QToolButton::clicked,&chrome,[&]{++clicks;});close->click();check(clicks==1,"side changes retain native click connection");
   QSettings().setValue("Appearance/increaseContrast",true);FinderAppearance::apply(&app);
   check(close->symbolsVisible(),"high contrast keeps symbols visible");

@@ -82,7 +82,7 @@ protected:
 private:
     void refreshGroup() {
         update();
-        if(parentWidget()) for(auto *button:parentWidget()->findChildren<WindowControl *>(QString(),Qt::FindDirectChildrenOnly)) button->update();
+        if(parentWidget()) for(auto *button:parentWidget()->findChildren<QToolButton *>(QString(),Qt::FindDirectChildrenOnly)) button->update();
     }
     QString kind;
 };
@@ -102,7 +102,7 @@ protected:
     void enterEvent(QEnterEvent *event) override {QWidget::enterEvent(event);setProperty("windowControlsHovered",true);repaintControls();}
     void leaveEvent(QEvent *event) override {QWidget::leaveEvent(event);setProperty("windowControlsHovered",false);repaintControls();}
 private:
-    void repaintControls() {for(auto *button:findChildren<WindowControl *>())button->update();}
+    void repaintControls() {for(auto *button:findChildren<QToolButton *>())button->update();}
     void reorder() {
         const bool left=FinderAppearance::leftWindowControls();
         if (ordered && lastLeft==left) {repaintControls();return;}
@@ -110,9 +110,9 @@ private:
         auto *row=qobject_cast<QHBoxLayout *>(layout());
         const QStringList order=FinderAppearance::leftWindowControls()
             ? QStringList{"close","minimize","maximize"}:QStringList{"minimize","maximize","close"};
-        for(const auto &kind:order) {auto *button=findChild<WindowControl *>("window-"+kind);row->removeWidget(button);row->addWidget(button);}
-        QWidget::setTabOrder(findChild<WindowControl *>("window-"+order[0]),findChild<WindowControl *>("window-"+order[1]));
-        QWidget::setTabOrder(findChild<WindowControl *>("window-"+order[1]),findChild<WindowControl *>("window-"+order[2]));
+        for(const auto &kind:order) {auto *button=findChild<QToolButton *>("window-"+kind);row->removeWidget(button);row->addWidget(button);}
+        QWidget::setTabOrder(findChild<QToolButton *>("window-"+order[0]),findChild<QToolButton *>("window-"+order[1]));
+        QWidget::setTabOrder(findChild<QToolButton *>("window-"+order[1]),findChild<QToolButton *>("window-"+order[2]));
         repaintControls();
     }
     bool ordered=false,lastLeft=false;
