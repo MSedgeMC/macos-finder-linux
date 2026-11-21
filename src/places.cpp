@@ -48,6 +48,7 @@ enum Role {
     HiddenRole,
 };
 constexpr int HeadingHeight = 28;
+constexpr int IconSize = 20; // Hidden native provider; visible glyphs use the density preset.
 
 QRect actionRect(const QRect &row, Qt::LayoutDirection direction) {
     // Painting and pointer handling use this exact rectangle. The device
