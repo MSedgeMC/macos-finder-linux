@@ -601,7 +601,7 @@ public:
     actionsLayout->addWidget(more);
     hl->addWidget(actionsCapsule);
     persistentMenu = button("more", "Finder Menus", header);
-    persistentMenu->setObjectName("finderAppMenu"); persistentMenu->setMenu(actionsMenu);
+    persistentMenu->setObjectName("finderAppMenu");
     persistentMenu->setPopupMode(QToolButton::InstantPopup); persistentMenu->hide();
     hl->addWidget(persistentMenu);
     search = new QLineEdit;
@@ -3418,22 +3418,34 @@ private:
     });
     auto *help = menuBar()->addMenu("Help");
     help->addAction("Finder Help", this, [this] { openUrl(QUrl("https://github.com/MSedgeMC/macos-finder-linux#readme")); });
-    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress", "extract", "cancelArchive",
-                   "trash", "info"})
+    auto *localMenus = new QMenu(persistentMenu); localMenus->setObjectName("finderApplicationMenus");
+    persistentMenu->setMenu(localMenus);
+    localMenus->addAction(namedActions["settings"]); localMenus->addSeparator();
+    for (auto *menu : {finder, file, edit, view, go, window, help}) localMenus->addMenu(menu);
+    auto *menuShortcut = new QAction(tr("Finder Menus"),this);
+    menuShortcut->setObjectName("finderMenusShortcut"); menuShortcut->setShortcut(QKeySequence(Qt::Key_F10));
+    QMainWindow::addAction(menuShortcut);
+    connect(menuShortcut,&QAction::triggered,this,[this,localMenus] {
+      const auto point = header->mapToGlobal(QPoint(header->width()-100,header->height())); localMenus->popup(point);
+    });
+    actionsMenu->setObjectName("finderActionsMenu");
+    actionsMenu->addAction(namedActions["settings"]);
+    actionsMenu->addSeparator();
+    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress", "extract", "cancelArchive", "trash", "info"})
       actionsMenu->addAction(namedActions[n]);
     actionsMenu->addSeparator();
-    actionsMenu->addAction(namedActions["hidden"]);
-    actionsMenu->addAction(namedActions["path"]);
-    actionsMenu->addAction(namedActions["statusBar"]);
-    actionsMenu->addAction(namedActions["preview"]);
     actionsMenu->addAction(namedActions["viewOptions"]);
-    actionsMenu->addAction(namedActions["previewOptions"]);
     actionsMenu->addMenu(arrange->menu())->setText("Sort and Group");
     actionsMenu->addMenu(share->menu())->setText("Share");
     actionsMenu->addMenu(tagMenu)->setText("Tags");
-    actionsMenu->addSeparator();
-    for (auto menu : {finder, file, edit, view, go, window, help})
-      actionsMenu->addMenu(menu);
+    actionsMenu->addMenu(localMenus)->setText("Application Menus");
+    connect(actionsMenu,&QMenu::aboutToShow,this,[this] {
+      refresh();
+      for (const auto &name : {"newFolderSelection","open","openWith","quickLook","rename","duplicate","compress","extract","cancelArchive","trash","info"}) {
+        auto *action = namedActions.value(name);
+        if (action) action->setVisible(action->isEnabled());
+      }
+    });
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] { refresh(); });
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoAvailable, this, [this] { updateEditActions(); });
     connect(KIO::FileUndoManager::self(), &KIO::FileUndoManager::undoTextChanged, this, [this] { updateEditActions(); });
