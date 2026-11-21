@@ -620,6 +620,58 @@ fallback/portal warnings. No working-screen automation or local compilation occu
 
 Artifact SHA256 is
 `caf77ef46073884d6f06a3eb31efeb5f81266a668b8d9349be1e0a23af9ee698`.
-It is staged for the scoped installer. Production installation is pending:
-its existing open-window guard reports a Finder/Preview window and refuses to
-prepare/restart the shared executable. The installed version is unchanged.
+That artifact was initially staged while the open-window guard prevented
+installation. It is superseded by the configurable-controls release installed
+and verified on 2026-11-21 below, which includes the Preview corrections.
+
+### Configurable controls, sidebar translucency and mouse focus, 2026-11-21
+
+[GitHub run 44779867877](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44779867877)
+built source `6dfe4987e780a37e3f2bdba6ee590998ea36ab90` and passed all 25
+isolated component suites. All C++ compilation ran on GitHub Actions. The
+downloaded source record and SHA256 were checked, and local runtime linkage
+resolved without missing libraries. Binary SHA256 is
+`9e5cb1eba55649829003662d5368ad3323cc3f6fd3ef86811dfe242ba8b0e6a4`.
+
+Finder General Settings and standalone Preview Settings share immediate
+Glossy/Flat, Left/Right, Always visible/On hover and 0–40% sidebar-translucency
+controls. Defaults preserve glossy right-side controls with visible symbols
+and dark/light 17/9% backdrop contribution. Hover reveals the whole control
+group; keyboard focus and high contrast retain identification. Accessibility
+overrides keep the coating opaque without discarding the slider preference.
+Native button painting suppresses mouse-origin focus/default outlines without
+changing Enter/default actions, pressed feedback or keyboard focus indication.
+Atomic settings replacements refresh separate Preview processes through native
+file/directory signals; there is no new polling or capture loop.
+
+The exact final artifact passed 11 private native-Wayland appearance groups
+and six presentation groups. These cover live ordering, glossy/flat rendering,
+real group hover, mouse focus, Quick Look placement/close, dark/light alpha,
+opaque document content, transparent contours, accessibility, narrow Settings,
+standalone controls/lifecycle and composited Preview frost. Six presentation
+groups cover view options, all Settings pages, Gallery, search and image/text
+Quick Look. Saved captures were inspected directly, including the absence of
+the unwanted blue Other Folder button outline. An earlier artifact at
+`33a04c6` passed 17 windowing checks; those were not rerun after the final
+two-line default-button painting correction. Test counts overlap and do not
+establish macOS parity. Native test helpers reported software-rendering and
+private-session warnings; they did not affect the passing checks.
+
+After the user confirmed closure and private tests finished, the unchanged
+zero-open-window installer prepared a rollback backup and installed the exact
+artifact on 2026-11-21. Independent verification established artifact/staged/
+installed/running hash equality, the active Finder daemon, directory default,
+shared Finder/FileManager1 ownership and native methods, and absence of the
+private test interface. Only the executable changed among nine integration
+files. Finder preferences retained their exact pre-install hash. Existing
+Preview launcher and PDF/image MIME routes match their current expected bytes;
+text remains with Kate and ODT with LibreOffice Writer. No separate Preview
+route rewrite was needed. Only the file-manager service restarted; the working
+compositor and desktop shell were not restarted. Private test processes and
+runtime directories were removed, with no working-screen input automation.
+
+Current audited standard-window geometry and colors inform the original
+traffic-light drawing. The glossy shading is a requested Linux approximation
+inspired by Finder and Apple Liquid Glass; exact macOS pixels or Apple's
+renderer are not claimed. Sidebar frost uses real region-limited KWin blur,
+not wallpaper substitution or a claimed refraction texture.
