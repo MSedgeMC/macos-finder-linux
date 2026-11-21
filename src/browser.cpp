@@ -1457,7 +1457,7 @@ public:
             auto *surface = it.key(); auto *state = it.value();
             // Gallery owns one full-size directory state above its preview.
             // The filmstrip must not repeat it in the same window.
-            if (currentMode == Gallery && surface == strip->viewport()) {
+            if (currentMode == Gallery && strip && surface == strip->viewport()) {
                 state->showState({}, {}, {}); continue;
             }
             auto *view = qobject_cast<QAbstractItemView *>(surface->parentWidget());
@@ -1501,9 +1501,9 @@ public:
     FinderIconView *icons;
     FinderListView *list;
     ColumnsView *columns;
-    DropView<QListView> *strip;
+    DropView<QListView> *strip = nullptr;
     QWidget *gallery;
-    QWidget *galleryHost;
+    QWidget *galleryHost = nullptr;
     QWidget *columnHost = nullptr;
     QWidget *sidePreviewHost;
     QSplitter *previewSplitter;
