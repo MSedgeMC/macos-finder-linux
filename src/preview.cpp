@@ -1589,6 +1589,7 @@ void PreviewPane::setGallery(bool gallery)
         qobject_cast<QVBoxLayout *>(information->layout())->addWidget(m_metadata);
         auto *actions = m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewQuickActions"));
         qobject_cast<QHBoxLayout *>(actions->layout())->insertWidget(0, m_open, 1);
+        m_name->show(); m_open->show();
         m_layout->setContentsMargins(0, 0, 0, 0);
         m_layout->setSpacing(0);
         m_previewArea->layout()->setContentsMargins(22, 18, 22, 12);
@@ -2130,6 +2131,7 @@ void PreviewPane::showCurrent()
     m_renderWork->cancel();
     ++m_previewGeneration;
     m_fingerprint = fingerprint;
+    if (m_gallerySidebar) m_gallerySidebar->setVisible(true);
     m_mime.clear();
     m_tagError = m_tagErrors.value(url);
     m_information.clear();

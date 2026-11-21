@@ -476,6 +476,7 @@ int main(int argc, char **argv)
         && pane.findChild<QLabel *>("previewMetadata")->text().isEmpty(), "empty Gallery suppresses phantom identity and inspector");
     pane.setUrls({blueUrl}); QApplication::processEvents();
     check(!pane.findChild<QWidget *>("previewGalleryDetails")->isHidden()
+        && pane.findChild<QLabel *>("previewName")->isVisible()
         && !pane.findChild<QLabel *>("previewName")->text().isEmpty(), "Gallery inspector returns with actual selection");
     pane.setGallery(false);
     const auto textPath = files.filePath("preview.txt");

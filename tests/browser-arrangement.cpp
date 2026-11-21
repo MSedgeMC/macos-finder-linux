@@ -100,6 +100,21 @@ int main(int argc, char **argv) {
     QObject::connect(&browser, &Browser::springUrlChanged, [&](const QUrl &) { ++temporaryNavigations; });
     browser.navigateValidated(root);
     check(waitFor([&] { return browser.itemCount() == 3; }), "validated KIO listing");
+    {
+        Browser gallery;gallery.resize(800,450);gallery.setIconPreviewsShown(false);gallery.show();
+        gallery.setMode(Browser::Gallery);gallery.navigateValidated(root);
+        check(waitFor([&] { return gallery.itemCount()==3 && gallery.selectedUrls().size()==1; }), "direct Gallery entry selects its first sorted item");
+        const auto first=findUrl(gallery,gallery.selectedUrls().first());check(first.row()==0,"initial Gallery selection follows actual sort");
+        gallery.selectUrls({});settle();check(gallery.selectedUrls().isEmpty(),"explicit Gallery deselection remains empty");
+        gallery.setSort(Browser::NameColumn,false);settle();check(gallery.selectedUrls().isEmpty(),"sort never recreates a cleared Gallery selection");
+        gallery.selectUrls({zeta});gallery.setMode(Browser::List);gallery.setMode(Browser::Gallery);settle();
+        check(gallery.selectedUrls()==QList<QUrl>{zeta},"Gallery keeps existing selection on mode changes");
+        const QByteArray galleryState=gallery.saveViewState();
+        Browser restored;restored.resize(800,450);restored.restoreViewState(galleryState);restored.show();restored.navigateValidated(root);
+        check(waitFor([&] { return restored.selectedUrls().size()==1; }),"saved Gallery entry is populated after asynchronous listing");
+        const auto chosen=restored.selectedUrls().first();restored.directoryModel()->dirLister()->openUrl(root,KDirLister::Reload);settle();
+        check(restored.selectedUrls()==QList<QUrl>{chosen},"Gallery reload preserves its primary selection");
+    }
     browser.setSort(-1, true);
     check(browser.canArrangeIcons() && browser.sortColumn() == -1, "Icons None enables manual arrangement");
     browser.setIconPosition(alpha, {241, 151}); browser.setIconPosition(zeta, {29, 307});
