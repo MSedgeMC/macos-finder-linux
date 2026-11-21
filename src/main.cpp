@@ -3431,8 +3431,12 @@ private:
     actionsMenu->setObjectName("finderActionsMenu");
     actionsMenu->addAction(namedActions["settings"]);
     actionsMenu->addSeparator();
-    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress", "extract", "cancelArchive", "trash", "info"})
-      actionsMenu->addAction(namedActions[n]);
+    for (auto n : {"newFolder", "newFolderSelection", "open", "openWith", "quickLook", "rename", "duplicate", "compress", "extract", "cancelArchive", "trash", "info"}) {
+      auto *source = namedActions[n]; auto *item = actionsMenu->addAction(source->text());
+      item->setProperty("finderSourceAction",n);
+      item->setShortcut(source->shortcut()); item->setShortcutContext(Qt::WidgetShortcut);
+      connect(item,&QAction::triggered,source,&QAction::trigger);
+    }
     actionsMenu->addSeparator();
     actionsMenu->addAction(namedActions["viewOptions"]);
     actionsMenu->addMenu(arrange->menu())->setText("Sort and Group");
@@ -3441,9 +3445,12 @@ private:
     actionsMenu->addMenu(localMenus)->setText("Application Menus");
     connect(actionsMenu,&QMenu::aboutToShow,this,[this] {
       refresh();
-      for (const auto &name : {"newFolderSelection","open","openWith","quickLook","rename","duplicate","compress","extract","cancelArchive","trash","info"}) {
-        auto *action = namedActions.value(name);
-        if (action) action->setVisible(action->isEnabled());
+      for (auto *item : actionsMenu->actions()) {
+        const auto name = item->property("finderSourceAction").toString();
+        auto *source = namedActions.value(name);
+        if (!source) continue;
+        item->setText(source->text()); item->setEnabled(source->isEnabled());
+        item->setVisible(name == "newFolder" || source->isEnabled());
       }
     });
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this] { refresh(); });
