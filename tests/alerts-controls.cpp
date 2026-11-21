@@ -90,6 +90,7 @@ int main(int argc,char **argv){
   QDialog dialog(&host);dialog.setWindowTitle("Popup details");dialog.resize(420,280);
   auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(12,12,12,12);
   auto *entry=new QLineEdit(&dialog);layout->addWidget(entry);
+  auto *browse=new QPushButton("Other Folder…",&dialog);layout->addWidget(browse);
   auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);layout->addWidget(buttons);
   QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
   QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
@@ -97,12 +98,15 @@ int main(int argc,char **argv){
   dialog.open();QApplication::processEvents();QApplication::processEvents();
   check(dialog.isVisible()&&dialog.windowModality()==Qt::WindowModal&&dialog.property("finderDialogPresented").toBool(),"native dialog remains parent-modal after chrome adoption");
   check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"one shared header preserves content margins");
+  browse->setDefault(true);QApplication::processEvents();const auto browseDefault=browse->grab().toImage();
+  browse->setDefault(false);QApplication::processEvents();check(browse->grab().toImage()==browseDefault,"ancillary browsing button never receives blue default fill");
+  buttons->button(QDialogButtonBox::Ok)->setDefault(true);
   const auto pixels=dialog.grab().toImage();if(argc>1)check(pixels.save(QString::fromLocal8Bit(argv[1])+".dialog.png"),"dialog artifact");
   check(pixels.pixelColor(0,0).alpha()==0&&pixels.pixelColor(200,100).alpha()==255,"rounded opaque dialog contour");
   dialog.resize(470,300);QApplication::processEvents();check(dialog.findChild<QWidget*>("finderDialogHeader")->width()==470,"dialog header follows resize");
   QSettings().setValue("Appearance/windowControlsSide","left");FinderAppearance::apply(&app);QApplication::processEvents();
   auto *controls=dialog.findChild<QWidget*>("finderWindowControls");check(controls&&controls->x()<80,"dialogs share live control placement");
-  entry->setText("Retained native content");buttons->button(QDialogButtonBox::Ok)->click();QApplication::processEvents();
+  entry->setText("Retained native content");QKeyEvent confirm(QEvent::KeyPress,Qt::Key_Return,Qt::NoModifier);QApplication::sendEvent(entry,&confirm);QApplication::processEvents();
   check(accepted==1&&!dialog.isVisible()&&entry->text()=="Retained native content","native accept fires exactly once");
   dialog.open();QApplication::processEvents();QApplication::processEvents();
   check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"reopening does not duplicate titlebar or spacing");

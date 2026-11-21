@@ -25,7 +25,7 @@ inline QString controlsStyle() {
         "QDialog QLabel { background:transparent; }"
         "QDialog QPushButton { min-height:20px;padding:4px 14px;border:1px solid %1;border-radius:14px;background:%2;color:%3; }"
         "QDialog QPushButton:hover { background:%4; } QDialog QPushButton:pressed { background:%5; }"
-        "QDialog QPushButton:default { background:%6;color:%7;border-color:%6; }"
+        "QDialog QDialogButtonBox QPushButton:default { background:%6;color:%7;border-color:%6; }"
         "QDialog QPushButton:disabled { color:%9;background:palette(window); }"
         "QDialog QPushButton[finderKeyboardFocus=true]:focus { border:2px solid %8; }"
         "QDialog QLineEdit,QDialog QComboBox,QDialog QSpinBox,QDialog QDoubleSpinBox { min-height:20px;padding:3px 8px;border:1px solid %1;border-radius:6px;background:palette(base);color:palette(text); }"
