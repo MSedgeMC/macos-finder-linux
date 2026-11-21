@@ -2224,10 +2224,10 @@ private:
     folderTitle->setVisible(!hidden.contains("title"));
     toolbarWidgets.value("actions")->setVisible(toolbar && !hidden.contains("actions"));
     toolbarWidgets.value("search")->setVisible(toolbar && !hidden.contains("search"));
-    // Sidebar remains available through View/shortcut and when hidden. Avoid
-    // an extra icon competing with the reference titlebar in ordinary use.
+    // Right-side traffic lights leave the leading sidebar header free for
+    // the native sidebar toggle instead of an unexplained blank area.
     if (auto *toggle = headerSidebar->findChild<QToolButton *>("finderSidebarToggle"))
-      toggle->setVisible(!sidebar->isVisible() || !toolbar);
+      toggle->setVisible(!FinderAppearance::leftWindowControls() || !sidebar->isVisible() || !toolbar);
     QWidget *controlParent = FinderAppearance::leftWindowControls() ? headerSidebar : header;
     auto *destination = qobject_cast<QHBoxLayout *>(controlParent->layout());
     const int destinationIndex = FinderAppearance::leftWindowControls() ? 0 : destination->count()-1;
@@ -3182,7 +3182,6 @@ private:
     connect(quickMenu, &QMenu::aboutToShow, this, [this, quickMenu] {
       quickMenu->clear(); quickActions->populateMenu(quickMenu, orderedPreviewUrls(selectedUrls()));
     });
-    actionsMenu->addMenu(quickMenu);
     addAction(file, "info", "Get Info", {"Ctrl+I", "Meta+I"}, [this] {
       auto urls = selectedUrls();
       if (urls.isEmpty()) urls << browser()->url();
@@ -3442,6 +3441,7 @@ private:
     actionsMenu->addMenu(arrange->menu())->setText("Sort and Group");
     actionsMenu->addMenu(share->menu())->setText("Share");
     actionsMenu->addMenu(tagMenu)->setText("Tags");
+    actionsMenu->addMenu(quickMenu)->setText("Quick Actions");
     actionsMenu->addMenu(localMenus)->setText("Application Menus");
     connect(actionsMenu,&QMenu::aboutToShow,this,[this] {
       refresh();
