@@ -153,6 +153,12 @@ int main(int argc, char **argv)
     check(changes == 0, "idempotent refresh");
     check(FinderAppearance::glossyWindowControls() && !FinderAppearance::leftWindowControls()
         && !FinderAppearance::hoverWindowSymbols() && FinderAppearance::sidebarTranslucency()==17, "control defaults preserve explicit desktop choices");
+    check(FinderAppearance::alternatingRowColors() && FinderAppearance::sidebarRowHeight()==24, "compact sidebar and striped list defaults");
+    for (const auto &entry : QList<QPair<QString,int>>{{"small",24},{"medium",32},{"large",40},{"invalid",24}}) {
+        QSettings().setValue("Sidebar/itemSize",entry.first); FinderAppearance::apply(&app);
+        check(FinderAppearance::sidebarRowHeight()==entry.second,"sidebar density uses current size presets");
+    }
+    QSettings().remove("Sidebar/itemSize"); FinderAppearance::apply(&app);
     QSettings().setValue("Appearance/windowControlsStyle","flat");
     QSettings().setValue("Appearance/windowControlsSide","left");
     QSettings().setValue("Appearance/windowControlsSymbols","hover");
@@ -303,6 +309,26 @@ int main(int argc, char **argv)
     auto *side = settings.findChild<QComboBox *>("finderSettingsWindowControlsSide");
     auto *symbols = settings.findChild<QComboBox *>("finderSettingsWindowControlsSymbols");
     auto *translucency = settings.findChild<QSlider *>("finderSettingsSidebarTranslucency");
+    auto *stripes = settings.findChild<QCheckBox *>("finderSettingsAlternatingRows");
+    auto *sidebarSize = settings.findChild<QComboBox *>("finderSettingsSidebarItemSize");
+    check(stripes && sidebarSize,"list stripes and sidebar density settings exist");
+    browser.setMode(Browser::List); browser.show(); QApplication::processEvents();
+    auto *fileList = qobject_cast<QTreeView *>(browser.activeView());
+    check(fileList && fileList->alternatingRowColors(),"native list stripes initially enabled");
+    browser.selectUrls({QUrl::fromLocalFile(textFile.fileName())}); QApplication::processEvents();
+    const auto selectionBefore = browser.selectedUrls();
+    const QImage striped = fileList->viewport()->grab().toImage();
+    stripes->setChecked(false); QApplication::processEvents();
+    check(!FinderAppearance::alternatingRowColors() && !fileList->alternatingRowColors()
+        && browser.selectedUrls()==selectionBefore,"disabling stripes retains native selection");
+    const QImage plain = fileList->viewport()->grab().toImage();
+    check(striped.copy(0,plain.height()/2,plain.width(),plain.height()/2)!=plain.copy(0,plain.height()/2,plain.width(),plain.height()/2),
+        "stripe setting removes decorative bands below loaded files");
+    stripes->setChecked(true); QApplication::processEvents();
+    check(fileList->alternatingRowColors() && fileList->viewport()->grab().toImage()==striped,"stripe rendering restores without model mutation");
+    sidebarSize->setCurrentIndex(sidebarSize->findData("large")); QApplication::processEvents();
+    check(FinderAppearance::sidebarRowHeight()==40,"sidebar setting applies immediately");
+    sidebarSize->setCurrentIndex(sidebarSize->findData("small")); QApplication::processEvents();
     check(style && side && symbols && translucency,"shared appearance settings exist");
     style->setCurrentIndex(style->findData("flat")); side->setCurrentIndex(side->findData("left")); symbols->setCurrentIndex(symbols->findData("hover"));
     translucency->setValue(35);

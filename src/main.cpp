@@ -3010,6 +3010,7 @@ private:
     sidebarMaterial.update(this, region, available);
   }
   void applyStyle() {
+    if (searchPresentation) searchPresentation->primaryView()->setAlternatingRowColors(FinderAppearance::alternatingRowColors());
     QString sheet = R"(
         QWidget{color:#ededf2;font-weight:500;} QMainWindow{background:transparent;border:0;}
         #finderFolderTitle{font-size:14px;font-weight:600;background:transparent;}

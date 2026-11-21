@@ -191,7 +191,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
         form->addRow(box);
         connect(box, &QCheckBox::toggled, this, [this, key](bool checked) {
             QSettings().setValue(key, checked);
-            if (key.startsWith(QStringLiteral("Appearance/"))) FinderAppearance::apply(qApp);
+            if (key.startsWith(QStringLiteral("Appearance/")) || key == "View/alternatingRowColors") FinderAppearance::apply(qApp);
             emit preferencesChanged();
         });
         return box;
@@ -258,6 +258,7 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     auto *reduceTransparency = option(general, tr("Reduce transparency"), "Appearance/reduceTransparency", false, "finderSettingsReduceTransparency");
     reduceTransparency->setToolTip(tr("Use an opaque material for Finder window surfaces."));
     FinderAppearanceControls::addRows(general, this, [this] { emit preferencesChanged(); });
+    option(general, tr("Alternating row colors in file lists"), "View/alternatingRowColors", true, "finderSettingsAlternatingRows");
     section(general, tr("Desktop"), "finderSettingsDesktopHeading");
     auto *desktop = new QLabel(tr("Desktop items are managed in Plasma’s Configure Desktop and Wallpaper settings."), this);
     desktop->setProperty("settingsHelp", true);
@@ -434,6 +435,23 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     reloadTags();
 
     auto *sidebar = page(tr("Sidebar"), "finderSettingsSidebar");
+    auto *sidebarSize = new QComboBox(this);
+    sidebarSize->setObjectName("finderSettingsSidebarItemSize");
+    sidebarSize->setAccessibleName(tr("Sidebar icon size"));
+    sidebarSize->addItem(tr("Small"), "small");
+    sidebarSize->addItem(tr("Medium"), "medium");
+    sidebarSize->addItem(tr("Large"), "large");
+    const auto reloadSidebarSize = [sidebarSize] {
+        const QSignalBlocker blocker(sidebarSize);
+        const int index = sidebarSize->findData(QSettings().value("Sidebar/itemSize", "small"));
+        sidebarSize->setCurrentIndex(index < 0 ? 0 : index);
+    };
+    reloadSidebarSize(); sidebar->addRow(tr("Sidebar icon size:"), sidebarSize);
+    connect(FinderAppearance::instance(), &FinderAppearance::changed, sidebarSize, reloadSidebarSize);
+    connect(sidebarSize, &QComboBox::currentIndexChanged, this, [this, sidebarSize] {
+        QSettings().setValue("Sidebar/itemSize", sidebarSize->currentData());
+        FinderAppearance::apply(qApp); emit preferencesChanged();
+    });
     section(sidebar, tr("Favorites"), "finderSettingsFavoritesHeading");
     for (const auto &entry : QList<QPair<QString, QString>>{
         {"recents", tr("Recents")}, {"shared", tr("Shared")}, {"applications", tr("Applications")},

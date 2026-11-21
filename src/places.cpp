@@ -47,9 +47,7 @@ enum Role {
     EjectRole,
     HiddenRole,
 };
-constexpr int RowHeight = 32;
-constexpr int HeadingHeight = 32;
-constexpr int IconSize = 20;
+constexpr int HeadingHeight = 28;
 
 QRect actionRect(const QRect &row, Qt::LayoutDirection direction) {
     // Painting and pointer handling use this exact rectangle. The device
@@ -125,13 +123,14 @@ public:
     int busyAngle = 0;
 
     QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &index) const override {
-        return QSize(180, index.data(HeadingRole).toBool() ? HeadingHeight : RowHeight);
+        return QSize(180, index.data(HeadingRole).toBool() ? HeadingHeight : FinderAppearance::sidebarRowHeight());
     }
 
     void paint(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const override {
         p->save();
         p->setRenderHint(QPainter::Antialiasing);
         const bool reverse = option.direction == Qt::RightToLeft;
+        const int iconSize = FinderAppearance::sidebarRowHeight() == 24 ? 16 : FinderAppearance::sidebarRowHeight() == 40 ? 24 : 20;
         if (index.data(HeadingRole).toBool()) {
             QFont font(option.font); font.setPixelSize(11); font.setWeight(QFont::Medium);
             p->setFont(font);
@@ -151,13 +150,14 @@ public:
         }
         if (index.data(HiddenRole).toBool() && !FinderAppearance::highContrast()) p->setOpacity(0.6);
         const QRect iconRect(reverse ? row.right() - 29 : row.left() + 10,
-                             row.top() + (row.height() - IconSize) / 2, IconSize, IconSize);
+                             row.top() + (row.height() - iconSize) / 2, iconSize, iconSize);
         const auto color = index.data(TagColorRole).value<QColor>();
         if (color.isValid()) {
             p->setPen(Qt::NoPen); p->setBrush(color);
             p->drawEllipse(QRectF(iconRect).adjusted(4, 4, -4, -4));
         } else {
             p->save(); p->translate(iconRect.topLeft());
+            p->scale(iconSize / 20.0, iconSize / 20.0);
             const QString glyph = index.data(GlyphRole).toString();
             const bool gray = glyph == "trash" || glyph == "device";
             const bool contrastSelection = FinderAppearance::highContrast() && (option.state & QStyle::State_Selected);
@@ -345,6 +345,7 @@ public:
         tree->setModel(rows);
         delegate = new PlacesDelegate(tree);
         tree->setItemDelegate(delegate);
+        QObject::connect(FinderAppearance::instance(), &FinderAppearance::changed, q, [this] { schedule(); });
         rebuildTimer.setSingleShot(true);
         QObject::connect(&rebuildTimer, &QTimer::timeout, q, [this] { rebuild(); });
         busyTimer.setInterval(80);
@@ -582,6 +583,11 @@ public:
                     hide |= hiddenKeys.contains(entry.first);
             if (hide) rows->removeRow(row);
         }
+        // A hidden section must not leave an orphan heading and blank gap.
+        for (int row = rows->rowCount() - 1; row >= 0; --row)
+            if (rows->index(row,0).data(HeadingRole).toBool()
+                && (row + 1 == rows->rowCount() || rows->index(row + 1,0).data(HeadingRole).toBool()))
+                rows->removeRow(row);
         bool busy = false;
         for (int row = 0; row < rows->rowCount(); ++row) busy |= rows->index(row, 0).data(BusyRole).toBool();
         if (busy && !busyTimer.isActive()) busyTimer.start();

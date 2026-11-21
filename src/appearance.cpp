@@ -171,11 +171,15 @@ void FinderAppearance::refresh()
     bool validTranslucency = false;
     const int storedTranslucency = settings.value("Appearance/sidebarTranslucency", isDark ? 17 : 9).toInt(&validTranslucency);
     const int translucency = validTranslucency ? qBound(0, storedTranslucency, 40) : (isDark ? 17 : 9);
+    const bool alternatingRows = settings.value("View/alternatingRowColors", true).toBool();
+    const QString sidebarSize = settings.value("Sidebar/itemSize", "small").toString();
+    const int sidebarHeight = sidebarSize == "large" ? 40 : sidebarSize == "medium" ? 32 : 24;
     const QPalette next = makePalette(isDark, contrast);
     const bool changedPolicy = !m_initialized || isDark != m_dark || contrast != m_highContrast
         || reduced != m_reduceTransparency || next != m_palette
         || glossy != m_glossyControls || left != m_leftControls
-        || hover != m_hoverSymbols || translucency != m_sidebarTranslucency;
+        || hover != m_hoverSymbols || translucency != m_sidebarTranslucency
+        || alternatingRows != m_alternatingRows || sidebarHeight != m_sidebarRowHeight;
     m_dark = isDark;
     m_highContrast = contrast;
     m_reduceTransparency = reduced;
@@ -183,6 +187,8 @@ void FinderAppearance::refresh()
     m_leftControls = left;
     m_hoverSymbols = hover;
     m_sidebarTranslucency = translucency;
+    m_alternatingRows = alternatingRows;
+    m_sidebarRowHeight = sidebarHeight;
     m_palette = next;
     m_initialized = true;
     m_applying = true;
@@ -225,6 +231,8 @@ bool FinderAppearance::glossyWindowControls() { return !appearance || appearance
 bool FinderAppearance::leftWindowControls() { return appearance && appearance->m_leftControls; }
 bool FinderAppearance::hoverWindowSymbols() { return appearance && appearance->m_hoverSymbols; }
 int FinderAppearance::sidebarTranslucency() { return appearance ? appearance->m_sidebarTranslucency : 17; }
+bool FinderAppearance::alternatingRowColors() { return !appearance || appearance->m_alternatingRows; }
+int FinderAppearance::sidebarRowHeight() { return appearance ? appearance->m_sidebarRowHeight : 24; }
 
 QColor FinderAppearance::materialTint()
 {

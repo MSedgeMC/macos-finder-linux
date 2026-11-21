@@ -1295,6 +1295,7 @@ protected:
         // empty space for selection, context menus, drops and accessibility.
         // Walk only visible rows, including expanded children, so partial
         // repaint and pixel scrolling keep the trailing pattern aligned.
+        if (!alternatingRowColors()) return;
         QModelIndex index = QTreeView::indexAt(QPoint(0, 0));
         if (!index.isValid()) index = model() ? model()->index(0, 0, rootIndex()) : QModelIndex();
         int bottom = 0;
@@ -2370,6 +2371,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         for (auto *view : QList<QAbstractItemView *>{d->icons, d->list, d->columns, d->strip}) view->viewport()->update();
     });
     const auto updateAppearance = [this] {
+        d->list->setAlternatingRowColors(FinderAppearance::alternatingRowColors());
         setStyleSheet(QStringLiteral(
             "#finderBrowser QAbstractItemView{background:palette(base);color:palette(text);border:0;}"
             "#finderColumnView::item:selected{background:%1;color:%2;}"

@@ -42,6 +42,8 @@ public:
     // Percentage of backdrop contribution, bounded to 0..40. Missing values
     // retain the established dark/light frosting (17/9 percent).
     static int sidebarTranslucency();
+    static bool alternatingRowColors();
+    static int sidebarRowHeight();
     static QColor materialTint();
     static qreal materialBackdropSaturation();
     static QColor color(Role role);
@@ -68,6 +70,8 @@ private:
     bool m_leftControls = false;
     bool m_hoverSymbols = false;
     int m_sidebarTranslucency = 17;
+    bool m_alternatingRows = true;
+    int m_sidebarRowHeight = 24;
     bool m_initialized = false;
     bool m_applying = false;
     bool m_refreshQueued = false;
