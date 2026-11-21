@@ -134,6 +134,8 @@ protected:
     void paintEvent(QPaintEvent *) override {
         if (title.isEmpty() || width() < 120 || height() < 55) return;
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
+        if (property("finderOpaqueState").toBool())
+            p.fillRect(rect(), FinderAppearance::palette().color(QPalette::Base));
         const int textWidth = qMin(340, width() - 32);
         QFont heading = font(); heading.setPixelSize(15); heading.setWeight(QFont::DemiBold);
         QFont body = font(); body.setPixelSize(13);
@@ -1453,6 +1455,11 @@ public:
         if (!stack) return;
         for (auto it = directoryStates.begin(); it != directoryStates.end(); ++it) {
             auto *surface = it.key(); auto *state = it.value();
+            // Gallery owns one full-size directory state above its preview.
+            // The filmstrip must not repeat it in the same window.
+            if (currentMode == Gallery && surface == strip->viewport()) {
+                state->showState({}, {}, {}); continue;
+            }
             auto *view = qobject_cast<QAbstractItemView *>(surface->parentWidget());
             QModelIndex root;
             QUrl location = rootUrl;
@@ -1487,6 +1494,7 @@ public:
     void installDirectoryState(QWidget *surface) {
         if (directoryStates.contains(surface)) return;
         directoryStates.insert(surface, new DirectoryState(surface));
+        directoryStates.value(surface)->setProperty("finderOpaqueState", surface == galleryHost);
         surface->installEventFilter(q);
         QObject::connect(surface, &QObject::destroyed, q, [this, surface] { directoryStates.remove(surface); });
     }

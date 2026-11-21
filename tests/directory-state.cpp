@@ -25,6 +25,10 @@ int main(int argc,char **argv){
   b.setMode(Browser::Mode(mode));b.navigate(url);
   check(wait([&]{return visibleState(b)&&visibleState(b)->property("title")=="This folder is empty";}),"all-mode successful empty state");
   auto *s=visibleState(b);check(s->testAttribute(Qt::WA_TransparentForMouseEvents)&&s->focusPolicy()==Qt::NoFocus,"native input surface preserved");
+  if(mode==Browser::Gallery){
+   int visible=0;for(auto *state:b.findChildren<QWidget*>("finderDirectoryState"))if(state->isVisible())++visible;
+   check(visible==1&&s->property("finderOpaqueState").toBool(),"Gallery has one opaque directory state above its empty preview");
+  }
   check(s->width()>200&&s->height()>70,"viewport geometry");
   if(argc>1)check(b.grab().save(QString::fromLocal8Bit(argv[1])+QString(".empty-%1.png").arg(mode)),"artifact");
   b.setFilter("not present");check(wait([&]{return visibleState(b)&&visibleState(b)->property("state")=="filter";}),"filter no matches");
