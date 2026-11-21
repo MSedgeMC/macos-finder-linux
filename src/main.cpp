@@ -1666,7 +1666,7 @@ public:
     return {
         {"url", browser()->url().toString()},
         {"searchResults", searchModel->rowCount()},
-        {"searchRunning", fileSearch->isRunning()},
+        {"searchRunning", fileSearch->isRunning() || (searchTimer && searchTimer->isActive())},
         {"searchVisible", contentStack->currentWidget() == searchPage},
         {"searchCriteria", searchCriteria},
         {"searchProvider", searchProviderStatus},
