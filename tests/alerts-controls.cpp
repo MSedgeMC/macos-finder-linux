@@ -97,7 +97,8 @@ int main(int argc,char **argv){
   dialog.open();QApplication::processEvents();QApplication::processEvents();
   check(dialog.isVisible()&&dialog.windowModality()==Qt::WindowModal&&dialog.property("finderDialogPresented").toBool(),"native dialog remains parent-modal after chrome adoption");
   check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"one shared header preserves content margins");
-  const auto pixels=dialog.grab().toImage();check(pixels.pixelColor(0,0).alpha()==0&&pixels.pixelColor(200,100).alpha()==255,"rounded opaque dialog contour");
+  const auto pixels=dialog.grab().toImage();if(argc>1)check(pixels.save(QString::fromLocal8Bit(argv[1])+".dialog.png"),"dialog artifact");
+  check(pixels.pixelColor(0,0).alpha()==0&&pixels.pixelColor(200,100).alpha()==255,"rounded opaque dialog contour");
   dialog.resize(470,300);QApplication::processEvents();check(dialog.findChild<QWidget*>("finderDialogHeader")->width()==470,"dialog header follows resize");
   QSettings().setValue("Appearance/windowControlsSide","left");FinderAppearance::apply(&app);QApplication::processEvents();
   auto *controls=dialog.findChild<QWidget*>("finderWindowControls");check(controls&&controls->x()<80,"dialogs share live control placement");
@@ -106,6 +107,8 @@ int main(int argc,char **argv){
   dialog.open();QApplication::processEvents();QApplication::processEvents();
   check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"reopening does not duplicate titlebar or spacing");
   dialog.findChild<QToolButton*>("window-close")->click();QApplication::processEvents();check(!dialog.isVisible()&&accepted==1,"traffic-light close preserves native rejection");
+  QDialog immediate(&host);auto *immediateLayout=new QVBoxLayout(&immediate);immediateLayout->addWidget(new QLineEdit(&immediate));
+  immediate.open();immediate.reject();QApplication::processEvents();check(!immediate.isVisible(),"immediate cancellation never resurrects dialog");
   QMenu menu(&host);auto *first=menu.addAction("Open");auto *disabled=menu.addAction("Unavailable");disabled->setEnabled(false);menu.addSeparator();menu.addAction("Settings…");
   int triggered=0;QObject::connect(first,&QAction::triggered,&host,[&]{++triggered;});menu.popup({20,20});QApplication::processEvents();
   check(menu.property("finderRoundedPopup").toBool()&&menu.grab().toImage().pixelColor(0,0).alpha()==0,"native popup receives rounded contour");

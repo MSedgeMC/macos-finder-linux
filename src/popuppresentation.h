@@ -21,7 +21,7 @@ namespace FinderPopupPresentation {
 inline QString controlsStyle() {
     const auto p = FinderAppearance::palette();
     return QStringLiteral(
-        "QDialog { background:palette(window);color:palette(window-text); }"
+        "QDialog { background:transparent;color:palette(window-text); }"
         "QDialog QLabel { background:transparent; }"
         "QDialog QPushButton { min-height:20px;padding:4px 14px;border:1px solid %1;border-radius:14px;background:%2;color:%3; }"
         "QDialog QPushButton:hover { background:%4; } QDialog QPushButton:pressed { background:%5; }"
@@ -41,6 +41,22 @@ inline QString controlsStyle() {
              p.color(QPalette::Button).lighter(110).name(),p.color(QPalette::Button).darker(110).name(),
              p.color(QPalette::Highlight).name(),p.color(QPalette::HighlightedText).name(),FinderAppearance::color(FinderAppearance::Focus).name(),p.color(QPalette::Disabled,QPalette::Text).name());
 }
+
+class Surface final : public QWidget {
+public:
+    explicit Surface(QDialog *dialog) : QWidget(dialog) {
+        setObjectName("finderDialogSurface");
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+        connect(FinderAppearance::instance(),&FinderAppearance::changed,this,qOverload<>(&QWidget::update));
+    }
+protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);painter.setBrush(FinderAppearance::palette().color(QPalette::Window));
+        painter.drawPath(windowContour(QRectF(rect()),16));
+    }
+};
 
 class Header final : public QWidget {
 public:
@@ -74,7 +90,7 @@ protected:
     bool eventFilter(QObject *object,QEvent *event) override {
         auto *widget=qobject_cast<QWidget *>(object);
         if(!widget)return false;
-        if(event->type()==QEvent::Show) {
+        if(event->type()==QEvent::Polish) {
             if(auto *menu=qobject_cast<QMenu *>(widget)) {
                 menu->setAttribute(Qt::WA_TranslucentBackground);
                 if(!menu->property("finderRoundedPopup").toBool()) {
@@ -88,13 +104,17 @@ protected:
                 const QMargins original=layout->contentsMargins();
                 layout->setContentsMargins(original.left(),original.top()+40,original.right(),original.bottom());
                 dialog->setWindowFlag(Qt::FramelessWindowHint,true);dialog->setAttribute(Qt::WA_TranslucentBackground);
-                dialog->setGraphicsEffect(new ContourEffect(dialog));
+                // Paint the rounded background in a child. A top-level
+                // graphics effect cannot reliably clip QWidget::grab() or
+                // the platform window's own background.
+                auto *surface=new Surface(dialog);surface->setGeometry(dialog->rect());surface->show();surface->lower();
                 auto *header=new Header(dialog);header->setGeometry(0,0,dialog->width(),40);header->show();
-                QMetaObject::invokeMethod(dialog,[dialog] {dialog->show();},Qt::QueuedConnection);
             }
         }
-        if(event->type()==QEvent::Resize && widget->property("finderDialogPresented").toBool())
+        if(event->type()==QEvent::Resize && widget->property("finderDialogPresented").toBool()) {
+            if(auto *surface=widget->findChild<QWidget *>("finderDialogSurface",Qt::FindDirectChildrenOnly))surface->setGeometry(widget->rect());
             if(auto *header=widget->findChild<QWidget *>("finderDialogHeader",Qt::FindDirectChildrenOnly))header->setGeometry(0,0,widget->width(),40);
+        }
         if(event->type()==QEvent::MouseButtonPress && widget->window()->property("finderDialogPresented").toBool()) {
             auto *window=widget->window();auto *mouse=static_cast<QMouseEvent *>(event);
             const QPoint point=window->mapFromGlobal(mouse->globalPosition().toPoint());Qt::Edges edges;
