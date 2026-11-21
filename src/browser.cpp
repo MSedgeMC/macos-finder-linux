@@ -1550,6 +1550,7 @@ public:
     QUrl springRestoreColumns;
     Mode currentMode = Icons;
     QList<QUrl> pendingSelection;
+    QList<QUrl> galleryReloadSelection;
     bool restoringGallerySelection = false;
     bool initialGallerySelectionPending = false;
     bool gallerySelectionQueued = false;
@@ -2196,8 +2197,10 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         if (urls.isEmpty()) return;
         const auto primary = primaryUrl();
         if (urls.removeOne(primary)) urls.prepend(primary);
-        d->pendingSelection = urls;
-        d->restoringGallerySelection = true;
+        d->galleryReloadSelection = urls;
+        // A real deletion may also remove all rows. Only started() in this
+        // turn confirms a listing replacement, rather than an item removal.
+        QTimer::singleShot(0, this, [this] { d->galleryReloadSelection.clear(); });
     });
     d->proxy = new FinderProxy(this);
     d->proxy->setSourceModel(d->model);
@@ -2391,6 +2394,10 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         emit statusMessage({});
     });
     connect(d->model->dirLister(), &KDirLister::started, this, [this](const QUrl &url) {
+        if (url == d->rootUrl && !d->galleryReloadSelection.isEmpty()) {
+            d->pendingSelection = d->galleryReloadSelection;
+            d->galleryReloadSelection.clear(); d->restoringGallerySelection = true;
+        }
         d->listingErrors.remove(url); d->loadedDirectories.remove(url); d->loadingDirectories.insert(url);
         d->updateDirectoryStates(); emit statusMessage("Loading…");
     });
@@ -2720,7 +2727,7 @@ void Browser::navigateValidated(const QUrl &requested) {
     d->springRestoreColumns = QUrl();
     d->changing = true;
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear(); d->pendingRename = QUrl();
-    d->restoringGallerySelection = false;
+    d->restoringGallerySelection = false; d->galleryReloadSelection.clear();
     ++d->folderCreationGeneration; d->creatingFolder = false;
     d->rootUrl = target; d->currentUrl = target;
     d->initialGallerySelectionPending = true;
