@@ -1550,6 +1550,8 @@ public:
     QUrl springRestoreColumns;
     Mode currentMode = Icons;
     QList<QUrl> pendingSelection;
+    bool initialGallerySelectionPending = false;
+    bool gallerySelectionQueued = false;
     QUrl pendingRename;
     quint64 folderCreationGeneration = 0;
     bool creatingFolder = false;
@@ -1989,6 +1991,23 @@ public:
         return {};
     }
 
+    void scheduleGallerySelection() {
+        if (gallerySelectionQueued) return;
+        gallerySelectionQueued = true;
+        QTimer::singleShot(0, q, [this] {
+            gallerySelectionQueued = false;
+            if (!initialGallerySelectionPending || changing || springActive || springNavigating
+                || currentMode != Gallery || loadingDirectories.contains(rootUrl)) return;
+            if (!pendingSelection.isEmpty()) { applySelection(); return; }
+            if (!selection->selectedRows(0).isEmpty()) { initialGallerySelectionPending = false; return; }
+            const auto first = proxy->index(0, 0);
+            if (!first.isValid()) return;
+            initialGallerySelectionPending = false;
+            selection->setCurrentIndex(first, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+            strip->scrollTo(first);
+        });
+    }
+
     void applySelection() {
         if (pendingSelection.isEmpty()) return;
         QItemSelection selected;
@@ -2336,6 +2355,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
     connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleArrangement(); });
+    connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleGallerySelection(); });
     connect(d->proxy, &QAbstractItemModel::rowsRemoved, this, [this] { d->scheduleArrangement(); });
     connect(d->proxy, &QAbstractItemModel::layoutChanged, this, [this] { d->scheduleArrangement(); });
     connect(d->proxy, &QAbstractItemModel::modelReset, this, [this] { d->scheduleArrangement(); });
@@ -2344,6 +2364,7 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model->dirLister(), &KDirLister::completed, this, [this] {
         d->loadingDirectories.clear(); d->loadedDirectories.insert(d->rootUrl);
         d->count(); d->applySelection();
+        d->scheduleGallerySelection();
         d->scheduleArrangement();
         if (d->pendingScrollRestore) {
             d->pendingScrollRestore = false;
@@ -2683,6 +2704,7 @@ void Browser::navigateValidated(const QUrl &requested) {
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear(); d->pendingRename = QUrl();
     ++d->folderCreationGeneration; d->creatingFolder = false;
     d->rootUrl = target; d->currentUrl = target;
+    d->initialGallerySelectionPending = true;
     d->loadingDirectories.insert(target); d->listingErrors.remove(target); d->loadedDirectories.remove(target);
     d->resetThumbnailRequests();
     refreshMetadata();
@@ -2695,6 +2717,7 @@ void Browser::navigateValidated(const QUrl &requested) {
     if (d->springNavigating) emit springUrlChanged(target);
     else emit urlChanged(target);
     emit selectionChanged({}); emit previewRequested({});
+    d->scheduleGallerySelection();
 }
 void Browser::setMode(Mode mode) {
     if (mode < Icons || mode > Gallery || d->currentMode == mode) return;
@@ -2705,6 +2728,7 @@ void Browser::setMode(Mode mode) {
     const bool previousChanging = d->changing;
     d->changing = true;
     d->currentMode = mode; d->stack->setCurrentIndex(int(mode));
+    if (mode == Gallery && urls.isEmpty()) d->initialGallerySelectionPending = true;
     d->updateDirectoryStates();
     setFocusProxy(activeView());
     d->restoreModeOptions();
@@ -2716,6 +2740,7 @@ void Browser::setMode(Mode mode) {
     selectUrls(urls);
     d->changing = previousChanging;
     activeView()->setFocus(); d->selected();
+    d->scheduleGallerySelection();
     QTimer::singleShot(0, this, [this] { d->restoreScroll(); });
 }
 void Browser::setHiddenFiles(bool show) { d->model->dirLister()->setShowHiddenFiles(show); d->model->dirLister()->emitChanges(); }

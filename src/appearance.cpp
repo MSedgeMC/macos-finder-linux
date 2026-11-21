@@ -236,7 +236,7 @@ int FinderAppearance::sidebarRowHeight() { return appearance ? appearance->m_sid
 
 QColor FinderAppearance::materialTint()
 {
-    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#151412" : "#f2f2f5"));
+    QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#252528" : "#f2f2f5"));
     // A modestly transmitting frost lets native blur reveal broad backdrop
     // colors while retaining the reference's dark neutral navigation tint.
     // The toolbar has its own content-backed coating.
@@ -282,7 +282,7 @@ QColor FinderAppearance::color(Role role)
     case SidebarText: return highContrast() ? p.color(QPalette::Text) : QColor(dark() ? (sidebarTranslucency()>25 ? "#ffffff" : "#ededf2") : "#202024");
     case SidebarSecondaryText:
         if(highContrast()) return p.color(QPalette::PlaceholderText);
-        if(dark()) return QColor(sidebarTranslucency()>25 ? "#fafafa" : sidebarTranslucency()>17 ? "#d0d0d6" : "#aaaab1");
+        if(dark()) return QColor(sidebarTranslucency()>25 ? "#ffffff" : sidebarTranslucency()>17 ? "#dedee3" : "#c8c8ce");
         return QColor(sidebarTranslucency()>9 ? "#202024" : "#5a5a63");
     }
     return p.color(QPalette::Text);

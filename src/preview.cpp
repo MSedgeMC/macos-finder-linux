@@ -1424,6 +1424,9 @@ void PreviewPane::updatePresentation()
     m_close->setVisible(!m_compact && !m_hostWindowControls && !hosted);
     m_metadata->setVisible(!m_documentPresentation && (m_gallery ? m_showPreviewInformation : !hosted || m_informationAction->isChecked()));
     if (m_gallerySidebar) {
+        // With no selected item there is no file identity, metadata or tag
+        // target. Do not present an empty inspector with a generic file icon.
+        m_gallerySidebar->setVisible(!currentUrl().isEmpty());
         m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewInformation"))->setVisible(m_showPreviewInformation);
         m_gallerySidebar->findChild<QWidget *>(QStringLiteral("previewQuickActions"))->setVisible(m_showPreviewActions);
     }
@@ -1839,6 +1842,11 @@ void PreviewPane::setInformation(const QString &key, const QString &value, bool 
 void PreviewPane::updateGalleryMetadata()
 {
     if (!m_gallery || !m_kindSize) return;
+    if (currentUrl().isEmpty()) {
+        m_kindSize->clear(); m_metadata->clear(); m_metadata->setToolTip({});
+        m_showMore->hide();
+        return;
+    }
     m_kindSize->setText(m_kindSizeText);
     m_showMore->setText(m_moreDetails ? tr("Show Less") : tr("Show More"));
     m_showMore->setVisible(!m_moreInformation.isEmpty());
@@ -1868,6 +1876,7 @@ void PreviewPane::updateThumbnail(const QImage &image)
 {
     m_thumbnailImage = image;
     if (!m_thumbnail) return;
+    if (currentUrl().isEmpty()) { m_thumbnail->clear(); return; }
     if (!image.isNull()) {
         m_thumbnail->setPixmap(QPixmap::fromImage(image.scaled(m_thumbnail->size() * devicePixelRatioF(),
             Qt::KeepAspectRatio, Qt::SmoothTransformation)));

@@ -470,6 +470,13 @@ int main(int argc, char **argv)
     check(information->isVisible() && galleryActions->isVisible() && !pane.findChild<QLabel *>("previewMetadata")->text().contains("Modified"),
         "preview option refresh restores sections and filters actual date metadata");
     QSettings().setValue("Preview/showDates", true); pane.reloadPreviewPreferences();
+    pane.setUrls({}); QApplication::processEvents();
+    check(pane.findChild<QWidget *>("previewGalleryDetails")->isHidden()
+        && pane.findChild<QLabel *>("previewThumbnail")->pixmap().isNull()
+        && pane.findChild<QLabel *>("previewMetadata")->text().isEmpty(), "empty Gallery suppresses phantom identity and inspector");
+    pane.setUrls({blueUrl}); QApplication::processEvents();
+    check(!pane.findChild<QWidget *>("previewGalleryDetails")->isHidden()
+        && !pane.findChild<QLabel *>("previewName")->text().isEmpty(), "Gallery inspector returns with actual selection");
     pane.setGallery(false);
     const auto textPath = files.filePath("preview.txt");
     { QFile text(textPath); check(text.open(QIODevice::WriteOnly), "text fixture"); text.write("Plain text preview\n" + QByteArray(5000, 'x')); }
