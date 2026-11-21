@@ -2185,6 +2185,20 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     d->model->dirLister()->setMainWindow(window());
     d->model->dirLister()->setAutoErrorHandlingEnabled(false);
     d->model->dirLister()->setDelayedMimeTypes(true);
+    connect(d->model, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            [this](const QModelIndex &parent, int first, int last) {
+        // KDirLister Reload clears the root rows before started(). Preserve
+        // the existing Gallery targets while their native indexes are valid.
+        if (parent.isValid() || first != 0 || last != d->model->rowCount() - 1
+            || d->currentMode != Gallery || d->changing || d->springActive
+            || d->springNavigating || !d->pendingSelection.isEmpty()) return;
+        auto urls = selectedUrls();
+        if (urls.isEmpty()) return;
+        const auto primary = primaryUrl();
+        if (urls.removeOne(primary)) urls.prepend(primary);
+        d->pendingSelection = urls;
+        d->restoringGallerySelection = true;
+    });
     d->proxy = new FinderProxy(this);
     d->proxy->setSourceModel(d->model);
     d->proxy->watchSource();
@@ -2355,20 +2369,6 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         }
     });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
-    connect(d->model, &QAbstractItemModel::rowsAboutToBeRemoved, this,
-            [this](const QModelIndex &parent, int first, int last) {
-        // KDirLister Reload clears the root rows before started(). Preserve
-        // the existing Gallery targets while their native indexes are valid.
-        if (parent.isValid() || first != 0 || last != d->model->rowCount() - 1
-            || d->currentMode != Gallery || d->changing || d->springActive
-            || d->springNavigating || !d->pendingSelection.isEmpty()) return;
-        auto urls = selectedUrls();
-        if (urls.isEmpty()) return;
-        const auto primary = primaryUrl();
-        if (urls.removeOne(primary)) urls.prepend(primary);
-        d->pendingSelection = urls;
-        d->restoringGallerySelection = true;
-    });
     connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleArrangement(); });
     connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleGallerySelection(); });
     connect(d->proxy, &QAbstractItemModel::rowsRemoved, this, [this] { d->scheduleArrangement(); });
