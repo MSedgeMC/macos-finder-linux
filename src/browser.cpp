@@ -1550,6 +1550,7 @@ public:
     QUrl springRestoreColumns;
     Mode currentMode = Icons;
     QList<QUrl> pendingSelection;
+    bool restoringGallerySelection = false;
     bool initialGallerySelectionPending = false;
     bool gallerySelectionQueued = false;
     QUrl pendingRename;
@@ -2354,6 +2355,20 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
         }
     });
     connect(d->model, &QAbstractItemModel::rowsInserted, this, [this] { d->count(); d->applySelection(); });
+    connect(d->model, &QAbstractItemModel::rowsAboutToBeRemoved, this,
+            [this](const QModelIndex &parent, int first, int last) {
+        // KDirLister Reload clears the root rows before started(). Preserve
+        // the existing Gallery targets while their native indexes are valid.
+        if (parent.isValid() || first != 0 || last != d->model->rowCount() - 1
+            || d->currentMode != Gallery || d->changing || d->springActive
+            || d->springNavigating || !d->pendingSelection.isEmpty()) return;
+        auto urls = selectedUrls();
+        if (urls.isEmpty()) return;
+        const auto primary = primaryUrl();
+        if (urls.removeOne(primary)) urls.prepend(primary);
+        d->pendingSelection = urls;
+        d->restoringGallerySelection = true;
+    });
     connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleArrangement(); });
     connect(d->proxy, &QAbstractItemModel::rowsInserted, this, [this] { d->scheduleGallerySelection(); });
     connect(d->proxy, &QAbstractItemModel::rowsRemoved, this, [this] { d->scheduleArrangement(); });
@@ -2364,6 +2379,9 @@ Browser::Browser(QWidget *parent) : QWidget(parent), d(std::make_unique<Private>
     connect(d->model->dirLister(), &KDirLister::completed, this, [this] {
         d->loadingDirectories.clear(); d->loadedDirectories.insert(d->rootUrl);
         d->count(); d->applySelection();
+        if (d->restoringGallerySelection) {
+            d->pendingSelection.clear(); d->restoringGallerySelection = false;
+        }
         d->scheduleGallerySelection();
         d->scheduleArrangement();
         if (d->pendingScrollRestore) {
@@ -2702,6 +2720,7 @@ void Browser::navigateValidated(const QUrl &requested) {
     d->springRestoreColumns = QUrl();
     d->changing = true;
     d->selection->clear(); d->columnSelection->clear(); d->pendingSelection.clear(); d->pendingRename = QUrl();
+    d->restoringGallerySelection = false;
     ++d->folderCreationGeneration; d->creatingFolder = false;
     d->rootUrl = target; d->currentUrl = target;
     d->initialGallerySelectionPending = true;

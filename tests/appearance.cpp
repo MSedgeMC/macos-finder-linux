@@ -173,6 +173,7 @@ int main(int argc, char **argv)
             QPainter painter(&surface);painter.fillRect(surface.rect(),FinderAppearance::materialTint());painter.end();
             check(contrast(FinderAppearance::color(FinderAppearance::SidebarText),surface.pixelColor(0,0))>=4.5
                 && contrast(FinderAppearance::color(FinderAppearance::SidebarSecondaryText),surface.pixelColor(0,0))>=4.5,"navigation text readable at maximum translucency");
+            check(contrast(FinderAppearance::color(FinderAppearance::SidebarGlyph),surface.pixelColor(0,0))>=3,"navigation glyph readable at maximum translucency");
         }
     }
     QSettings().setValue("Appearance/mode","dark");FinderAppearance::apply(&app);

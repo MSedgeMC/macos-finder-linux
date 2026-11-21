@@ -112,8 +112,10 @@ int main(int argc, char **argv) {
         const QByteArray galleryState=gallery.saveViewState();
         Browser restored;restored.resize(800,450);restored.restoreViewState(galleryState);restored.show();restored.navigateValidated(root);
         check(waitFor([&] { return restored.selectedUrls().size()==1; }),"saved Gallery entry is populated after asynchronous listing");
-        const auto chosen=restored.selectedUrls().first();restored.directoryModel()->dirLister()->openUrl(root,KDirLister::Reload);settle();
-        check(restored.selectedUrls()==QList<QUrl>{chosen},"Gallery reload preserves its primary selection");
+        const auto chosen=restored.selectedUrls().first();restored.directoryModel()->dirLister()->openUrl(root,KDirLister::Reload);
+        check(waitFor([&] { return restored.itemCount()==3 && restored.selectedUrls()==QList<QUrl>{chosen}; }),"Gallery reload preserves its primary selection");
+        restored.selectUrls({zeta,alpha});restored.directoryModel()->dirLister()->openUrl(root,KDirLister::Reload);
+        check(waitFor([&] { return selection(restored)==QSet<QUrl>{zeta,alpha} && restored.primaryUrl()==zeta; }),"Gallery reload preserves multiple targets and primary identity");
     }
     browser.setSort(-1, true);
     check(browser.canArrangeIcons() && browser.sortColumn() == -1, "Icons None enables manual arrangement");
