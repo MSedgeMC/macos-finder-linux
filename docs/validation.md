@@ -675,3 +675,54 @@ traffic-light drawing. The glossy shading is a requested Linux approximation
 inspired by Finder and Apple Liquid Glass; exact macOS pixels or Apple's
 renderer are not claimed. Sidebar frost uses real region-limited KWin blur,
 not wallpaper substitution or a claimed refraction texture.
+
+### Compact sidebar, stripes and shared popups, 2026-11-21
+
+[GitHub run 44872981530](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44872981530)
+built source `c650bca3ae0487f691aaf077fb028a30865e03fd` and passed all 25
+isolated component suites. All C++ compilation ran on GitHub Actions. The
+source record, archive hash, executable hash and local linkage were checked.
+Final executable SHA256 is
+`bfd0ae7b9bf41058b36356979e7aa3f427ec86f3c0e34c34f5545268384209b4`.
+
+The exact artifact passed six focused private Wayland UX groups, six
+presentation groups and 17 windowing checks. The focused checks exercise
+24/32/40px live sidebar rows, no orphan headings, the functional leading
+sidebar toggle, stripe removal/restoration without file or selection changes,
+a real pointer-opened compact Actions menu with Settings first, F10 access,
+dialog close and narrow Settings. Presentation checks cover all four browser
+view options, all Settings pages, Gallery, search and hosted image/text Quick
+Look. Windowing checks cover real move/resize, fullscreen restoration,
+controls, text-focused editing, pinch and tabs. The preceding artifact at
+`8416e2c` passed all 34 broader file/search/session feature groups; those were
+not repeated after the final selector-only neutral-button correction.
+Counts overlap and must not be summed as unique functionality.
+
+The shared-dialog component regression checks alpha corners/opaque centers,
+unchanged parent modality, one header/margin after reopening, resize and
+control placement, Enter acceptance exactly once, close rejection and
+immediate cancellation without queued resurrection. Menus retain native
+keyboard action dispatch. An initial top-level graphics-effect contour failed
+the alpha assertion; the passing implementation paints a child surface and
+adopts chrome during Polish before the native window is shown. Saved native
+captures were inspected, including compact menus, neutral Other Folder,
+Settings, View Options and image/document previews. Native helper logs report
+private-session/software-rendering limitations; physical-device feel and
+macOS pixel equality were not measured.
+
+With no open Finder windows, the unchanged scoped installer prepared a
+rollback backup and installed the exact final artifact. Independent checks
+confirmed artifact/staged/installed/running hash equality, directory default,
+Finder/FileManager1 shared ownership and methods, and absence of the private
+test interface. Only executable bytes changed among nine integration paths.
+Finder preferences retained their exact pre-install hash; Preview launcher
+and PDF/image routes still match their expected bytes. Private processes and
+runtime directories were removed. No working-screen input automation or
+working compositor restart occurred.
+
+Current Apple menu guidance and the locally audited standard sidebar/menu
+presets informed density and hierarchy. This remains a Linux approximation
+inspired by Finder and Apple Liquid Glass. Popup material is an opaque rounded
+fallback; existing sidebar frost uses region-limited KWin blur. External
+portal/provider windows retain their own presentation. Neither Apple's
+renderer nor complete macOS appearance/feature equality is established.
