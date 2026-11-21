@@ -442,3 +442,28 @@ remain. The wrapper does not replace native file/conflict/authentication
 providers or claim it styles windows in external portal processes. Colors follow
 light/dark/high contrast; keyboard focus remains. Popup fallback is opaque and
 uses no wallpaper substitution, backdrop capture loop or claimed refraction.
+
+
+### Gallery entry and truthful inspectors
+
+Gallery selects the first sorted native directory item on folder or mode entry
+when there is no explicit target to restore. Existing selection and primary
+identity survive mode changes and native KDirLister relisting; missing targets
+are released when listing completes. Explicit deselection in the current
+Gallery session remains cleared. Selection continues to use native indexes,
+keyboard navigation, drag/drop and file-operation providers.
+
+A cleared or empty Gallery hides its file-information sidebar, thumbnail and
+disabled actions until a real target exists. Selected image/document/folder
+identity is displayed with actual metadata. Empty folders show one opaque
+full-size directory state, without repeating it in the filmstrip or displaying
+the underlying selection prompt. These choices address demonstrated empty-panel
+UX; exact macOS initial-selection rules are not established.
+
+Dark navigation frost uses a lighter neutral #252528 coating at the default
+17% backdrop contribution, with brighter headings. Above 25% transmission, the
+coating deepens gradually and glyph/text tokens adapt to retain readability
+over bright backdrop extremes. User translucency, location visibility, density
+and width remain intact. Existing region-limited native blur remains; this is
+a Linux approximation inspired by Finder and Apple Liquid Glass, without a
+new capture loop, Apple renderer or measured pixel-equivalence claim.
