@@ -415,3 +415,30 @@ transmission. There is no wallpaper substitution, new capture loop or idle timer
 file/directory watcher follows atomic settings replacements so separate Preview
 processes update too. Native button style suppresses mouse-origin focus frames
 while retaining Tab/Backtab/shortcut focus and ordinary pressed/checked feedback.
+
+
+### Compact sidebar, list stripes and popup presentation
+
+General Settings exposes View/alternatingRowColors (true by default). It controls
+native List alternation and the decorative continuation below files, including
+search List presentation; changing it does not reset selection or the model.
+Sidebar Settings exposes Sidebar/itemSize=small|medium|large. The default small
+preset uses 24px rows/16px glyphs, with 32/20 and 40/24 alternatives from the current
+audited standard sidebar presets. Section headings have compact spacing and
+empty sections are removed after visibility filtering. Right-side traffic lights
+leave a functional sidebar toggle in the leading header.
+
+The Actions popup starts with Settings and frequent context commands. Unavailable
+context actions are hidden only on their forwarding entries, keeping application
+menu actions independently visible. Full application categories stay under
+Application Menus and the F10 route, with a persistent fallback when the toolbar
+is hidden. Native shortcuts and operations remain on their original actions.
+
+The application-wide popup presentation gives menus compact rounded rows and
+actual alpha contours, and gives Qt/KDE dialogs a shared rounded titlebar,
+caption/control placement and consistent content controls. Original dialog
+layouts, ownership, default actions, rejection/close guards and modal behavior
+remain. The wrapper does not replace native file/conflict/authentication
+providers or claim it styles windows in external portal processes. Colors follow
+light/dark/high contrast; keyboard focus remains. Popup fallback is opaque and
+uses no wallpaper substitution, backdrop capture loop or claimed refraction.
