@@ -259,6 +259,11 @@ FinderSettings::FinderSettings(QWidget *parent) : QDialog(parent) {
     reduceTransparency->setToolTip(tr("Use an opaque material for Finder window surfaces."));
     FinderAppearanceControls::addRows(general, this, [this] { emit preferencesChanged(); });
     option(general, tr("Alternating row colors in file lists"), "View/alternatingRowColors", true, "finderSettingsAlternatingRows");
+    connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this] {
+        if (auto *box = findChild<QCheckBox *>("finderSettingsAlternatingRows")) {
+            const QSignalBlocker blocker(box); box->setChecked(FinderAppearance::alternatingRowColors());
+        }
+    });
     section(general, tr("Desktop"), "finderSettingsDesktopHeading");
     auto *desktop = new QLabel(tr("Desktop items are managed in Plasma’s Configure Desktop and Wallpaper settings."), this);
     desktop->setProperty("settingsHelp", true);

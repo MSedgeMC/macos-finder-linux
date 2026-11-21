@@ -6,6 +6,7 @@
 #include <QDialogButtonBox>
 #include <QInputDialog>
 #include <QMenu>
+#include <QLineEdit>
 #include <QApplication>
 #include <QSettings>
 #include <QKeyEvent>

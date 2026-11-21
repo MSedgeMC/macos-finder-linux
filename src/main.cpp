@@ -3784,6 +3784,28 @@ public slots:
       for (auto *action : menu->actions()) if (action->text() == text) { action->trigger(); menu->close(); return true; }
     return false;
   }
+  QString popupState() {
+    QJsonArray menus;
+    for (auto *widget : QApplication::topLevelWidgets())
+      if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->isVisible()) {
+        QJsonArray actions;
+        for (auto *action : menu->actions()) {
+          if (!action->isVisible()) continue;
+          const auto rect = menu->actionGeometry(action);
+          actions << QJsonObject{{"text",action->text()},{"enabled",action->isEnabled()},{"separator",action->isSeparator()},
+            {"submenu",bool(action->menu())},{"x",rect.x()},{"y",rect.y()},{"width",rect.width()},{"height",rect.height()}};
+        }
+        menus << QJsonObject{{"name",menu->objectName()},{"width",menu->width()},{"height",menu->height()},
+          {"rounded",menu->property("finderRoundedPopup").toBool()},{"actions",actions}};
+      }
+    return QString::fromUtf8(QJsonDocument(menus).toJson(QJsonDocument::Compact));
+  }
+  bool capturePopup(const QString &name,const QString &path) {
+    for (auto *widget : QApplication::topLevelWidgets())
+      if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->isVisible() && menu->objectName()==name)
+        return menu->grab().save(path);
+    return false;
+  }
   QString clipboardUrls() {
     QJsonArray result;
     if (const auto *mime = QApplication::clipboard()->mimeData()) for (const auto &url : KUrlMimeData::urlsFromMimeData(mime, KUrlMimeData::PreferLocalUrls)) result << url.toString();
