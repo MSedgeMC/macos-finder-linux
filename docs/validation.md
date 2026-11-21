@@ -726,3 +726,45 @@ inspired by Finder and Apple Liquid Glass. Popup material is an opaque rounded
 fallback; existing sidebar frost uses region-limited KWin blur. External
 portal/provider windows retain their own presentation. Neither Apple's
 renderer nor complete macOS appearance/feature equality is established.
+
+
+### Gallery and both sidebar correction, 2026-11-21
+
+[GitHub run 44890157215](https://github.com/MSedgeMC/macos-finder-linux/actions/runs/44890157215)
+built source `2d83dd01d2b9e0781b68863ec24f71ab33a35bec` and passed all 25
+component suites. C++ compilation ran remotely. Executable SHA256 is
+`b6b6fc1b88caa6750b35aed490594049a6b149892c6afde5a8b728543e5b799f`;
+source records, archive/executable hashes and local runtime linkage were checked.
+
+The exact final artifact passed eight focused private Wayland Gallery groups,
+34 broader feature groups and 17 windowing checks. The saved Gallery startup
+now previews its first sorted native item with real name/metadata/actions;
+keyboard selection, explicit clearing, mode/sort/navigation, empty directory
+and unsupported-file/folder identity were checked. Empty Gallery displays one
+full-size message above the underlying preview, without a repeated filmstrip
+state. Broader checks cover native operations/Undo, four search presentations,
+Quick Look, criteria, tabs/session restoration and appearance controls.
+
+The earlier `7d3bfed` artifact passed six presentation groups and 11 native
+appearance/standalone Preview groups, including live backdrop contribution,
+opaque content, alpha contours, controls and accessibility. Those groups were
+not repeated after the final empty-state and private-diagnostic corrections.
+Counts overlap and do not establish complete Finder parity. Saved client and
+compositor captures were inspected directly on disk.
+
+The reload regression exposed native root-row replacement clearing selection;
+URLs/primary are captured before proxy invalidation, restored only for confirmed
+relisting and missing targets released on completion. The lighter sidebar
+required adjusted glyph colors and high-transmission tint depth for contrast.
+Native harness corrections distinguish inactive duplicate-name Preview panes
+and pending debounced searches; production search behavior did not change.
+
+The zero-window installer applied the tested update with a rollback backup.
+Independent checks confirmed artifact/staged/installed/running hash equality,
+active daemon, native file-manager ownership/methods and default, no private
+test API, unchanged Finder preferences and intact Preview routes. Only the
+executable changed among nine integration paths. Private sessions/processes
+were removed; no working-screen test input, local compilation or working
+compositor restart occurred. This remains a Linux approximation inspired by
+Finder and Apple Liquid Glass. Exact macOS pixels, renderer, initial-selection
+rules and physical-device feel are not established.
