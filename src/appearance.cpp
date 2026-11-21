@@ -237,6 +237,12 @@ int FinderAppearance::sidebarRowHeight() { return appearance ? appearance->m_sid
 QColor FinderAppearance::materialTint()
 {
     QColor tint(highContrast() ? palette().color(QPalette::Window) : QColor(dark() ? "#252528" : "#f2f2f5"));
+    if (dark() && !highContrast() && sidebarTranslucency() > 25) {
+        // At the most transmitting presets, slightly deepen the coating to
+        // keep white navigation text readable over a bright live backdrop.
+        const int depth = qRound(16 * (sidebarTranslucency() - 25) / 15.0);
+        tint.setRgb(37 - depth, 37 - depth, 40 - depth);
+    }
     // A modestly transmitting frost lets native blur reveal broad backdrop
     // colors while retaining the reference's dark neutral navigation tint.
     // The toolbar has its own content-backed coating.
