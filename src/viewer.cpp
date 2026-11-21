@@ -387,7 +387,7 @@ ViewerWindow::ViewerWindow(const QList<QUrl> &urls, QWidget *parent) : QMainWind
     auto restyle = [this] {
         setPalette(FinderAppearance::palette());
         setStyleSheet(QStringLiteral("QMainWindow{background:transparent;} #previewAppSidebar{background:transparent;border:0;} #previewAppSidebar::item{padding:9px;border-radius:7px;}"
-            "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);} QMenu{background:palette(window);color:palette(window-text);padding:6px;}"));
+            "#previewAppSidebar::item:selected{background:palette(highlight);color:palette(highlighted-text);}"));
     };
     restyle(); connect(FinderAppearance::instance(), &FinderAppearance::changed, this, [this, restyle] { restyle(); for (auto *button : findChildren<QToolButton *>()) { if (button->property("documentSymbol").isValid()) { const QIcon icon(new DocumentIcon(button->property("documentSymbol").toString())); if (button->defaultAction()) button->defaultAction()->setIcon(icon); else button->setIcon(icon); } button->update(); } updateActions(); updateMaterial(); });
     m_thumbnailTimer.setSingleShot(true); m_thumbnailTimer.setInterval(75);

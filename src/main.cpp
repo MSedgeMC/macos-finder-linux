@@ -27,6 +27,7 @@
 #include "windowcontour.h"
 #include "sidebarsplitter.h"
 #include "viewer.h"
+#include "popuppresentation.h"
 #include <KDirLister>
 #include <KDirModel>
 #include <KPageWidgetItem>
@@ -3022,7 +3023,6 @@ private:
         QLineEdit{background:#343438;border:1px solid #55555b;border-radius:8px;padding:6px 8px;selection-background-color:#277cef;}
         QTabWidget::pane{border:0;background:#1e1e1e;} QTabBar::tab{background:#27272b;border:0;padding:6px 20px;} QTabBar::tab:selected{background:#3b3b3f;}
         #finderFooter{background:#252525;} #finderFooter QPushButton{background:transparent;border:0;padding:0 2px;font-size:11px;} #finderFooter QLabel{font-size:11px;color:#aaaab1;}
-        QMenu{background:#303035;border:1px solid #55555b;padding:6px;border-radius:10px;} QMenu::item{padding:6px 16px;border-radius:5px;} QMenu::item:selected{background:#277cef;}
         QHeaderView::section{background:#252525;color:#bbbbc0;border:0;padding:4px 8px;border-bottom:1px solid #36363a;}
         #finderPreviewPane{background:#1e1e1e;} QPushButton{background:#333337;border:1px solid #4e4e54;border-radius:8px;padding:4px 9px;} QPushButton:hover{background:#424248;}
         QScrollBar:vertical{background:transparent;width:9px;margin:2px;} QScrollBar::handle:vertical{background:#ffffff38;border-radius:3px;min-height:30px;} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}
@@ -4207,6 +4207,7 @@ int main(int argc, char **argv) {
   font.setWeight(QFont::Medium);
   app.setFont(font);
   FinderAppearance::apply(&app);
+  FinderPopupPresentation::install(&app);
   const QStringList args = app.arguments();
   auto bus = QDBusConnection::sessionBus();
   bool quick = args.contains("--quick-look"),

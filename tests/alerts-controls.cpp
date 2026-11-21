@@ -2,6 +2,10 @@
 #include "alerts.h"
 #include "windowcontrols.h"
 #include "glasscontrols.h"
+#include "popuppresentation.h"
+#include <QDialogButtonBox>
+#include <QInputDialog>
+#include <QMenu>
 #include <QApplication>
 #include <QSettings>
 #include <QKeyEvent>
@@ -80,5 +84,32 @@ int main(int argc,char **argv){
   auto *longError=owner->findChildren<QDialog*>("finderErrorAlert").last();
   check(longError->height()<600&&longError->findChild<QPlainTextEdit*>("finderAlertDetails")->toPlainText().size()==3000,"long diagnostics bounded and retained");
   delete owner;QApplication::processEvents();}
+ {
+  FinderPopupPresentation::install(&app);FinderPopupPresentation::install(&app);
+  QDialog dialog(&host);dialog.setWindowTitle("Popup details");dialog.resize(420,280);
+  auto *layout=new QVBoxLayout(&dialog);layout->setContentsMargins(12,12,12,12);
+  auto *entry=new QLineEdit(&dialog);layout->addWidget(entry);
+  auto *buttons=new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog);layout->addWidget(buttons);
+  QObject::connect(buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);
+  QObject::connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+  int accepted=0;QObject::connect(&dialog,&QDialog::accepted,&host,[&]{++accepted;});
+  dialog.open();QApplication::processEvents();QApplication::processEvents();
+  check(dialog.isVisible()&&dialog.windowModality()==Qt::WindowModal&&dialog.property("finderDialogPresented").toBool(),"native dialog remains parent-modal after chrome adoption");
+  check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"one shared header preserves content margins");
+  const auto pixels=dialog.grab().toImage();check(pixels.pixelColor(0,0).alpha()==0&&pixels.pixelColor(200,100).alpha()==255,"rounded opaque dialog contour");
+  dialog.resize(470,300);QApplication::processEvents();check(dialog.findChild<QWidget*>("finderDialogHeader")->width()==470,"dialog header follows resize");
+  QSettings().setValue("Appearance/windowControlsSide","left");FinderAppearance::apply(&app);QApplication::processEvents();
+  auto *controls=dialog.findChild<QWidget*>("finderWindowControls");check(controls&&controls->x()<80,"dialogs share live control placement");
+  entry->setText("Retained native content");buttons->button(QDialogButtonBox::Ok)->click();QApplication::processEvents();
+  check(accepted==1&&!dialog.isVisible()&&entry->text()=="Retained native content","native accept fires exactly once");
+  dialog.open();QApplication::processEvents();QApplication::processEvents();
+  check(dialog.findChildren<QWidget*>("finderDialogHeader").size()==1&&layout->contentsMargins().top()==52,"reopening does not duplicate titlebar or spacing");
+  dialog.findChild<QToolButton*>("window-close")->click();QApplication::processEvents();check(!dialog.isVisible()&&accepted==1,"traffic-light close preserves native rejection");
+  QMenu menu(&host);auto *first=menu.addAction("Open");auto *disabled=menu.addAction("Unavailable");disabled->setEnabled(false);menu.addSeparator();menu.addAction("Settings…");
+  int triggered=0;QObject::connect(first,&QAction::triggered,&host,[&]{++triggered;});menu.popup({20,20});QApplication::processEvents();
+  check(menu.property("finderRoundedPopup").toBool()&&menu.grab().toImage().pixelColor(0,0).alpha()==0,"native popup receives rounded contour");
+  menu.setActiveAction(first);QKeyEvent enter(QEvent::KeyPress,Qt::Key_Return,Qt::NoModifier);QApplication::sendEvent(&menu,&enter);
+  check(triggered==1&&!menu.isVisible(),"native menu keyboard action remains intact");
+ }
  std::cout<<"PASS alert detail/default/Escape/parent/native delegate and active controls/contrast/pressed/lifetime\n";
 }
